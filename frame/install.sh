@@ -36,7 +36,7 @@ sudo systemctl enable birdframe.timer
 cat <<DONE
 
 Installed. Set your image source in ~/.birdframe/config.toml (your /frame.png
-key, or shoot = true); the panel fills itself in and refreshes every 15 min,
+key, or shoot = true); the panel fills itself in and refreshes every 5 min,
 only when the birds change.
 DONE
 
