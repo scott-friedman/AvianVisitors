@@ -18,17 +18,36 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 1. Read `CLAUDE.md` (architecture, hardware facts, constraints).
 2. Skim "Current state" and "Prerequisites" below.
-3. Execute phases in order. **Phases 1 & 3 (cloud) are unblocked right now**; **Phases 2 & 4 need the Pi + mic.**
+3. **Phases 0/1/3 are already deployed + verified, and `display.py` is ported (Phase 4 part).** Read "Current state (snapshot)" for the live resources + the exact remaining steps. The unblocked pickup is **Phase 4 rest** (`/frame` view + `/frame.png`); Phases 2 & 5 + the Phase 4 Pi install need the Pi + USB mic.
 4. Each phase has a **Goal → Steps → Done when → Needs Scott**. Stop and ask on anything marked OPEN or "Needs Scott".
 
 ---
 
-## Current state (snapshot)
+## Current state (snapshot) — updated 2026-06-18 (Phases 0,1,3 live; 4 part-done)
 
-- **Repo** `/Users/scott/bird` = Scott's fork `scott-friedman/AvianVisitors`, shallow clone, branch `avian-visitors` tracking `origin`. `upstream` = `Twarner491/AvianVisitors`. **`CLAUDE.md` and `PLAN.md` are the only local changes and are NOT committed yet.**
-- **Pi**: Raspberry Pi Zero 2 W, 512 MB, Bookworm 64-bit, Python 3.11.2, at `inky@inky.local` (SSH works, key in known_hosts). Currently runs **inky-web** (systemd, drives the 7.3" panel). **No USB mic attached yet.** BirdNET-Pi **not installed yet**.
-- **Cloudflare**: nothing created for bird yet. foobos resources exist in the SAME account and are **OFF-LIMITS** (never reference their IDs).
-- **Tooling available to the session**: `gh` (authed as scott-friedman, HTTPS), Cloudflare MCP tools (`d1_database_create`, `d1_database_query`, `kv_namespace_create`, `r2_bucket_create`, `workers_list/get`, `search_cloudflare_documentation`), `wrangler` (used in `/Users/scott/sandbag`), Pi SSH.
+**Deployed & verified on Cloudflare** (account `78b235c12ec2f4d437534392b48ed173`, via wrangler OAuth; isolated from foobos):
+
+| Resource | Value |
+|---|---|
+| Worker | `avian-worker` → https://avian-worker.s-friedman.workers.dev |
+| D1 | `avian-detections` id `9145557b-fbe3-43f5-baf8-ff0bb14c1a3f` (ENAM). Schema `detections(id,sci,com,conf,ts)`, ts=unix UTC. Migration `worker/migrations/0001_init.sql` applied `--remote`. |
+| Pages | `avianvisitors` → https://avianvisitors.pages.dev (prod branch `avian-visitors`) |
+| Ingest secret | `AVIAN_INGEST_SECRET` set on the worker; plaintext gitignored at `worker/.avian-ingest-secret` — the Pi needs the same value in the `X-Avian-Secret` header. |
+
+- **Repo**: branch `avian-visitors` on `origin` (`scott-friedman/AvianVisitors`). Commits: plan · worker · worker-deploy · pages · frame-port · this status update.
+- **Demo data**: 6 species seeded in prod D1 so the page isn't blank pre-Pi. Clear when the Pi goes live: `wrangler d1 execute avian-detections --remote --command "DELETE FROM detections"`.
+- **Pi**: Zero 2 W at `inky@inky.local`, still runs **inky-web**, **no USB mic** ⇒ no real detections; BirdNET-Pi not installed.
+- **Local tooling**: `wrangler` authed (OAuth, account-wide — careful re foobos), `gh` (scott-friedman), Cloudflare MCP, **Google Chrome.app** (off-Pi frame previews), Pillow 11.3.
+
+**Per-phase status:** 0 ✅ · 1 ✅ live · 2 ⛔ needs mic · 3 ✅ live · 4 🟡 `display.py` ported+validated, frame view + `/frame.png` remain · 5 ⛔ needs Pi.
+
+**Remaining work (cold-start pickup):**
+1. **Phase 4 rest** (cloud, unblocked): (a) chrome-less, pure-white **`/frame` view** in the Pages site (hide `.top`/`.slider`/`.menu-btn`/`#returnToAtlas`; `body.frame{background:#fff}`; trigger via `?frame=1`). Verify off-Pi: headless-Chrome screenshot of `…pages.dev/?frame=1` → `python3 frame/display.py --image shot.png --no-signature --preview out.png`. (b) Worker **`GET /frame.png`** via **Browser Rendering** (FRAME_KEY-gated, 800×480 viewport, screenshot the `/frame` view, cache ~60–120 s). ⚠ Browser Rendering availability on the plan is **UNVERIFIED** (may need Workers Paid); adds `@cloudflare/puppeteer` + uses pooled quota.
+2. **Phase 2** (needs mic): install BirdNET-Pi; add the on-detection hook POSTing `{sci,com,conf,ts}` + `X-Avian-Secret` to `…workers.dev/api/detection`.
+3. **Phase 4 Pi install** (needs Pi): `~/.birdframe/config.toml` from `frame/config.example.toml` (set `image_url=…/frame.png?k=FRAME_KEY`); `frame/install.sh` (systemd timer ~1–2 min); `sudo systemctl disable --now inky-web`.
+4. **Phase 5**: SSH-only Cloudflare Tunnel; **scoped** CI token → GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`).
+
+**Deviation logged:** dithering runs on the Pi (Inky `set_image`), not the Worker as CLAUDE.md's diagram says — 7-colour dither in a Worker is impractical, so the Worker serves a clean 800×480 PNG and the Pi dithers. "No browser on the Pi" still honored (rendering is off-Pi).
 
 ## Decisions locked (do not re-litigate — see CLAUDE.md for rationale)
 
@@ -45,14 +64,14 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 ---
 
-## Phase 0 — Save the plan (5 min)
+## Phase 0 — Save the plan (5 min)  ·  ✅ DONE
 
 - **Goal**: the locked plan is committed so the handoff is durable.
 - **Steps**: `git -C /Users/scott/bird add CLAUDE.md PLAN.md` → commit (message ends with the required Co-Authored-By / Claude-Session trailers). Push to `origin` **only if Scott confirms** (outward-facing, public fork).
 - **Done when**: `git log` shows the commit; `git status` clean except ignored files.
 - **Needs Scott**: confirm push.
 
-## Phase 1 — Cloudflare spine (unblocked now; no Pi needed)
+## Phase 1 — Cloudflare spine  ·  ✅ DONE (live: avian-worker.s-friedman.workers.dev + D1 avian-detections)
 
 - **Goal**: a deployed `avian-worker` + `avian-detections` D1 that ingests and serves detections, testable by curl.
 - **Steps**:
@@ -77,7 +96,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Done when**: `curl -X POST .../api/detection` with the secret inserts a row, and `GET /api/recent` returns it. Verify the row via MCP `d1_database_query`.
 - **Needs Scott**: Cloudflare token/auth for deploy (D1 create can be MCP-driven with his ok).
 
-## Phase 2 — Pi: detection engine + hook (needs Pi + mic)
+## Phase 2 — Pi: detection engine + hook (needs Pi + mic)  ·  ⛔ BLOCKED (no mic)
 
 - **Goal**: every real BirdNET detection POSTs to `/api/detection`.
 - **Steps**:
@@ -90,7 +109,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Needs Scott**: mic attached; confirm the BirdNET install reboot.
 - **OPEN**: exact hook mechanism in the Nachtzuster fork — confirm during step 4.
 
-## Phase 3 — Static collage on Cloudflare Pages (mostly unblocked once Phase 1 serves data)
+## Phase 3 — Static collage on Cloudflare Pages  ·  ✅ DONE (live: avianvisitors.pages.dev)
 
 - **Goal**: public collage at `avianvisitors.pages.dev` reading live data from `avian-worker`.
 - **Steps**:
@@ -102,7 +121,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Needs Scott**: Cloudflare token in CI; confirm Pages project name/host.
 - **DEFERRED**: per-bird **audio playback** (`recording.php`) needs the live Pi — defer to v2 (publish clips or add a narrow tunnel).
 
-## Phase 4 — E-ink frame (needs Pi; primary output)
+## Phase 4 — E-ink frame (primary output)  ·  🟡 PART (display.py ported + validated off-Pi; `/frame` view + `/frame.png` + Pi install remain)
 
 - **Goal**: the 7.3" panel shows today's birds, rendered off-Pi.
 - **Steps**:
@@ -113,7 +132,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Done when**: a detected bird appears on the physical panel within ~1–2 min; refresh only on change.
 - **Needs Scott**: physical access to confirm the panel renders; ok to disable inky-web.
 
-## Phase 5 — Remote admin + hardening
+## Phase 5 — Remote admin + hardening  ·  ⛔ BLOCKED (needs Pi)
 
 - **Goal**: Scott can manage/update the Pi remotely; bird is isolated from foobos.
 - **Steps**:
