@@ -1,6 +1,8 @@
 # AvianVisitors (bird) — v1 Build Plan
 
 > **For a fresh Claude Code session.** Read `CLAUDE.md` first — it holds the full decided architecture. This file is the **ordered, executable build plan**. It was written to hand off from a planning session without carrying its context. Everything here is decided unless marked "OPEN".
+>
+> **⚠️ 2026-06-19 — the Pi hit a memory crisis.** BirdNET-Pi's full stack is too heavy for the 512 MB Zero 2 W; it thrashed unreachable and was recovered via an SD-card boot edit. **If you're doing any Pi work, start with `PI-RECOVERY.md`, not the "Phase 2 done" status below.** The Cloudflare side (Worker/D1/Pages/frame) is unaffected.
 
 ---
 
@@ -23,7 +25,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 ---
 
-## Current state (snapshot) — updated 2026-06-19 (Phases 0–4 DONE end-to-end; only the USB mic + Phase 5 token remain)
+## Current state (snapshot) — updated 2026-06-19 (Cloudflare side DONE & verified; **Pi BirdNET-Pi hit a 512 MB memory crisis → see `PI-RECOVERY.md`**; USB mic + Phase 5 token still remain)
 
 **Deployed & verified on Cloudflare** (account `78b235c12ec2f4d437534392b48ed173`, via wrangler OAuth; isolated from foobos):
 
