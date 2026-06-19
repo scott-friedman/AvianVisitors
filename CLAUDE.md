@@ -42,10 +42,10 @@ Reuse foobos **patterns**, not its **resources**. Create bird's own, with new na
 
 | Resource | bird (new) | (foobos, do not touch) |
 |---|---|---|
-| Pages project | `avianvisitors` | `foobos` |
+| Pages project | `barrysbirds` (renamed from `avianvisitors` 2026-06-19) | `foobos` |
 | Worker | `avian-worker` | `foobos-worker` |
 | D1 database | `avian-detections` | `foobos-users` |
-| Host | `avianvisitors.pages.dev` (free) or own domain | `foobos.net` |
+| Host | `barrysbirds.pages.dev` (free) or own domain | `foobos.net` |
 
 - Start on the free `*.pages.dev` / `*.workers.dev` hostnames — fully isolated, not even a shared DNS zone. Add a custom domain later.
 - Give the bird GitHub Action a **Cloudflare API token scoped to bird's resources** so CI can't touch foobos.
@@ -61,7 +61,7 @@ Probed `inky@inky.local` (2026-06-18): **Raspberry Pi Zero 2 W Rev 1.0**, **512 
 
 - **OS passes** the installer (aarch64 + Bookworm + Py ≥ 3.10) — **no reflash required**.
 - **512 MB is the hard constraint.** The edge architecture offloads the website + render but **NOT BirdNET's own ~150 MB analyzer** — so *stripping services alone is not enough* (it saves only tens of MB; the full stack OOM-thrashed the box unreachable on 2026-06-19). A Zero 2 W runs detection-only **only after the 512 MB tuning** in `pi/zero2w-tune.sh` (zram swap, mono/30 s recording, `gpu_mem=16`, watchdog). **With** that tuning it is stable — measured steady-state: ~370 MB used / ~90 MB free, analyzer plateaus ~150 MB, keeps up with realtime (no Pi 4 needed). The real enabler is **swap (the required Zero-2-W step) + cache hygiene**, not stripping. See `PI-RECOVERY.md`.
-- **USB mic required** (none attached yet). The Zero 2 W's only data port is **micro-USB OTG** → needs a **micro-USB→USB-A OTG adapter**; USB audio is class-compliant.
+- **USB mic** — attached + working 2026-06-19 (KTMicro UAC 1.0, ALSA card 1; `REC_CARD=default` so arecord records *through* PulseAudio — direct `plughw` collides with the pulse the recording script auto-starts → "Device or resource busy" crash-loop). The Zero 2 W's only data port is **micro-USB OTG** → needs a **micro-USB→USB-A OTG adapter**; USB audio is class-compliant.
 
 ## Repo layout (verified)
 
@@ -90,7 +90,7 @@ Authoritative upstream docs: `README.md`, `frame/README.md`, `avian/forwarding/R
 
 ## Cloudflare side (public site + render)
 
-- **Pages (`avianvisitors`)**: the static collage shell (adapted `avian/frontend/` + `avian/assets/`), deployed via a GitHub Action cloned from foobos's `cf-deploy-pages.yml`. Deploys only on design/code changes.
+- **Pages (`barrysbirds`, renamed from `avianvisitors` 2026-06-19)**: the static collage shell (adapted `avian/frontend/` + `avian/assets/`), built by `avian/build-site.sh` then `wrangler pages deploy _site --project-name barrysbirds --branch production` (run from `worker/` so the local wrangler resolves). Deploys only on design/code changes.
 - **Worker (`avian-worker`)**: owns `POST /api/detection` (hook ingest → D1 insert, secret-gated), `GET /api/recent` (+ stats/lifelist/timeseries — reimplement `avian/api/*.php` logic against **D1**), and `GET /frame.png` (Browser Rendering → screenshot the Pages collage → output **800×480 7-color** for the 7.3" panel).
 - **D1 (`avian-detections`)**: detection rows. Use **D1, not KV** — KV's free tier is ~1k writes/day, too few for per-detection writes; D1's write limits are generous.
 
@@ -126,6 +126,7 @@ The Pi currently runs **inky-web** (separate Flask project at `/Users/scott/inky
 
 - **License CC-BY-NC-SA-4.0 (non-commercial)** — don't propose commercial use.
 - **No mic ⇒ no detections** — the #1 failure mode.
+- **Detected ≠ shown** — the collage renders only species that have illustration art (`avian/assets/illustrations/<sci>.png`). A detected bird with **no art** still logs to D1 and appears in stats/lifelist, but is **invisible in the collage**. The bundled 249-species set skews boreal and **misses common eastern-MA backyard birds** (Cardinal, Blue Jay, Chickadee, Titmouse, Red-bellied Woodpecker, Grackle, Carolina Wren, Catbird, E. Bluebird, WT Sparrow). Add art via the `avian/scripts/` Gemini pipeline → rebuild → redeploy Pages — fully decoupled from the Pi (past detections render retroactively). Gotcha: Cloudflare Pages serves a **200 HTML fallback** for a missing `.png`, so probe art by `content-type`/local file, not HTTP status.
 - **512 MB tuning is mandatory** — even *detection-only* untuned OOM-thrashes the Zero 2 W unreachable (RAM, not CPU, is the bottleneck). The real fixes are **swap (zram) + numba cache hygiene + clearing the StreamData backlog**, not stripping services. Applied by `pi/zero2w-tune.sh`; see `PI-RECOVERY.md`.
 - **D1, not KV**, for detection writes (KV free tier ≈ 1k writes/day).
 - **Separate from foobos** — never reference foobos resource IDs in this repo's `wrangler.toml`; same account, but pooled free-tier quotas.
