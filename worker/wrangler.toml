@@ -10,7 +10,7 @@ preview_urls = false
 [[d1_databases]]
 binding = "DB"
 database_name = "avian-detections"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "9145557b-fbe3-43f5-baf8-ff0bb14c1a3f"
 
 [vars]
 # Local-day offset (hours from UTC) for the "today"/daily buckets, e.g. "-4" for
