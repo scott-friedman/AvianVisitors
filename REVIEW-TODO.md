@@ -135,6 +135,15 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   if the frame isn't clone-based. (No runtime-tracked
   files, so `--ff-only` is safe; it fails loud rather than silently merging.)
 
+- [ ] **[Low] `update.sh` can mask a failed pull as "up to date".** It runs `set -uo pipefail`
+  (no `-e`), so if `git pull --ff-only` errors (untracked-file collision, diverged history), the
+  script falls through with `before == after` and prints "already up to date — nothing to restart"
+  & exits 0 — a silent no-update on the box's only remote-update path. Real bite avoided during the
+  2026-06-19 re-align by pulling by hand and watching stdout (see `pi/README.md` → "One-time
+  re-align" and memory `avian-pi-ops`).
+  **Fix:** check the pull's exit status (or compare `HEAD` to `origin/avian-visitors` after fetch)
+  and abort loudly on failure instead of falling through to the no-op path.
+
 - [ ] **[Low] Enable unattended security upgrades.** Internet-connected box running for months
   unattended. **Fix:** `unattended-upgrades` for OS + `cloudflared` patches; fold into the
   tuning script.
