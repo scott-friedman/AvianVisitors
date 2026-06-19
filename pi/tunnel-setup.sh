@@ -11,7 +11,7 @@
 #
 # Usage:
 #   bash tunnel-setup.sh <hostname> [tunnel-name]
-#   e.g. bash tunnel-setup.sh ssh.bird.onethreenine.net avian-admin
+#   e.g. bash tunnel-setup.sh bird-ssh.foobos.net avian-admin   # single-level subdomain (free SSL covers *.zone only)
 #
 # Idempotent: re-running reuses an existing tunnel of the same name.
 set -euo pipefail
@@ -63,17 +63,17 @@ systemctl --no-pager status cloudflared | head -n 10 || true
 
 cat <<NEXT
 
-==> Pi side done (tunnel UUID $UUID). Two no-API-token steps remain:
+==> Pi side done (tunnel UUID $UUID). Final step (no API token, no dashboard):
 
-1. Lock it down with Access (Cloudflare dashboard):
-   Zero Trust -> Access -> Applications -> Add an application -> Self-hosted
-     Application domain: $HOSTNAME
-     Policy: Action=Allow  ->  Include -> Emails -> friedmannn2@gmail.com
-
-2. On your Mac, add to ~/.ssh/config:
+Add to ~/.ssh/config on any computer you'll manage from:
    Host bird-pi
      HostName $HOSTNAME
      User inky
      ProxyCommand cloudflared access ssh --hostname %h
-   Then:  ssh bird-pi   (first connect opens a browser to authenticate)
+   Then:  ssh bird-pi   (prompts for the inky password)
+
+Security posture: PASSWORD-GATED, no Cloudflare Access app (deliberate — usable
+from any machine with cloudflared, not tied to one key/email). The tunnel hides
+SSH from internet port-scanning, so the gate is a STRONG, UNIQUE inky password —
+make sure it is one. (Want it tighter? Add an Access app, or switch to key auth.)
 NEXT

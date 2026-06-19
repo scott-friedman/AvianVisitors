@@ -15,7 +15,8 @@ The software is essentially done; the rest is the move. Status as of **2026-06-1
 - ✅ **Remote-access tooling** — `cloudflared` on the Pi (2026.6.1) + Mac (2026.5.2); `sshd` enabled at boot; tunnel scripts written.
 - ⏳ **Wifi — pre-stage Dad's network** so it self-joins at Sudbury. *Needs Dad's SSID + password.* → `pi/set-wifi.sh "<ssid>" "<pw>" 100`
 - ⏳ **Wifi — rescue network** (your phone hotspot) so a wrong Dad's-password isn't a brick. *Needs hotspot SSID + password.* → `pi/set-wifi.sh "<hotspot>" "<pw>" 50`
-- ✅ **Remote tunnel — LIVE** — `avian-admin` routes `bird-ssh.foobos.net` → the Pi's SSH; **`ssh bird-pi`** works from the Mac (boot-persistent). **One step left:** add a Cloudflare Access app to gate it to your email (steps below).
+- ✅ **Remote tunnel — LIVE** — `avian-admin` routes `bird-ssh.foobos.net` → the Pi's SSH; **`ssh bird-pi`** works from the Mac (boot-persistent). **Password-gated, no Access app** (deliberate — see `pi/README.md`); the gate is a strong, unique `inky` password behind the tunnel. *(Confirm that password is strong before the box ships.)*
+- ⬜ **Liveness heartbeat + alert** — install the 15-min heartbeat timer (`pi/README.md` → "Liveness heartbeat") and add an UptimeRobot HTTP monitor on `<worker>/api/status`. It alerts when the box goes silent for ~45 min, so a failure at Dad's reaches *you* instead of him noticing a frozen frame.
 - ⬜ **Commit the new `pi/` files** to the `avian-visitors` branch.
 
 ## B. Hardware to bring
@@ -61,6 +62,7 @@ rescue-hotspot covers the same need with zero added software. Say the word to ad
 
 After the on-site visit, every service comes up on its own at each power-up:
 - ✅ `avian-forwarder` (detections → cloud), `birdframe.timer` (e-ink), `sshd` — already enabled at boot.
+- ⬜ `avian-heartbeat.timer` (liveness ping) — comes up at boot once installed at home (section A).
 - ✅ `cloudflared` (remote access) — service enabled at boot; `ssh bird-pi` reaches it from anywhere.
 - ⬜ `birdnet_analysis` + `birdnet_recording` — enable at boot in step C4 once the mic is in.
 - Wifi auto-joins via the pre-staged profile; a hung box auto-reboots (hardware watchdog).
@@ -72,8 +74,8 @@ After the on-site visit, every service comes up on its own at each power-up:
 bash pi/set-wifi.sh "<SSID>" "<password>" [priority] [--hidden] [--wpa3]
 # turn detection on at boot (after the mic is in)
 sudo systemctl enable --now birdnet_analysis birdnet_recording
-# stand up remote access
-cloudflared tunnel login && bash pi/tunnel-setup.sh ssh.bird.<zone>
+# stand up remote access (single-level subdomain; free SSL covers *.zone only)
+cloudflared tunnel login && bash pi/tunnel-setup.sh bird-ssh.<zone> avian-admin
 # clear demo birds (from the Mac, in worker/)
 npx wrangler d1 execute avian-detections --remote --command "DELETE FROM detections"
 ```

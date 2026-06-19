@@ -27,7 +27,12 @@ TZ_OFFSET_HOURS = "-4"  # Sudbury, MA = US Eastern (EDT). Fixed offset: reads -5
 
 # The page Browser Rendering screenshots for /frame.png. ?frame=1 strips chrome
 # to a pure-white, animation-free collage (see avian/frontend/index.html).
-FRAME_URL = "https://avianvisitors.pages.dev/?frame=1"
+FRAME_URL = "https://barrysbirds.pages.dev/?frame=1"
+
+# Liveness threshold for GET /api/status. The Pi pings POST /api/heartbeat every
+# 15 min, so 2700 s (45 min) = 3 missed pings before /api/status returns 503.
+# Point an external uptime monitor (UptimeRobot, etc.) at /api/status to get alerted.
+HEARTBEAT_MAX_AGE_SECONDS = "2700"
 
 # NOTE: AVIAN_INGEST_SECRET and FRAME_KEY are SECRETS, not vars. Set them with:
 #   echo '<random>' | wrangler secret put AVIAN_INGEST_SECRET   # gates POST /api/detection

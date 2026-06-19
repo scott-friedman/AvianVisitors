@@ -14,19 +14,29 @@ worker dedupes by `(sci, ts)`, so a restart replaying a line is harmless.
 
 ## Install (on the Pi, after BirdNET-Pi is installed)
 
-```sh
-# 1. script
-mkdir -p ~/avian && cp pi/detection-forwarder.py ~/avian/
+The forwarder runs **straight from the `~/BirdNET-Pi` clone** (where `newinstaller.sh`
+put the fork), so a `git pull` updates it — no copied file to keep in sync. Run these
+from that clone:
 
-# 2. shared ingest secret (same value as the worker's AVIAN_INGEST_SECRET)
+```sh
+cd ~/BirdNET-Pi
+
+# 1. shared ingest secret (same value as the worker's AVIAN_INGEST_SECRET)
 mkdir -p ~/.avian && umask 077 && printf '%s' '<SECRET>' > ~/.avian/ingest-secret
 
-# 3. systemd service (rewrite User/paths for this Pi)
+# 2. systemd service (rewrite User/paths for this Pi; ExecStart runs the script
+#    from this clone, so `git pull` + restart is the whole update — see below)
 sed "s|REPLACE_USER|$USER|; s|REPLACE_HOME|$HOME|g" pi/systemd/avian-forwarder.service \
   | sudo tee /etc/systemd/system/avian-forwarder.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now avian-forwarder.service
 ```
+
+The forwarder resumes from a persisted byte offset (`~/.avian/forwarder-state.json`),
+so a restart or brief outage doesn't drop detections — only the first-ever run skips
+the existing back-history. **Rotating the ingest secret needs `sudo systemctl restart
+avian-forwarder`** (it reads the secret once at startup; without a restart every POST
+401s and is dropped). The heartbeat re-reads the secret each run, so it needs no restart.
 
 ## Test without a mic
 
@@ -42,6 +52,36 @@ curl -s "$AVIAN_WORKER/api/recent?hours=24" | grep -i cardinal
 
 Remove test rows from the worker when done:
 `wrangler d1 execute avian-detections --remote --command "DELETE FROM detections WHERE com='Northern Cardinal'"`
+
+---
+
+# Liveness heartbeat — `heartbeat.sh` (so silent failure isn't invisible)
+
+`heartbeat.sh` pings `avian-worker`'s `/api/heartbeat` every ~15 min on a systemd
+timer, **independent of bird activity** (a quiet night must not read as a dead box).
+If the mic dies, BirdNET hangs, or wifi drops at Dad's, the pings stop and the
+Worker's `GET /api/status` flips from **200** to **503** — so an uptime monitor can
+alert you. Without it, the frame just freezes on its last image and nobody notices.
+
+Install (reuses the same ingest secret as the forwarder; units run from the
+`~/BirdNET-Pi` clone — see "Updating the Pi" below):
+
+```sh
+sed "s|REPLACE_USER|$USER|; s|REPLACE_HOME|$HOME|g" pi/systemd/avian-heartbeat.service \
+  | sudo tee /etc/systemd/system/avian-heartbeat.service >/dev/null
+sudo cp pi/systemd/avian-heartbeat.timer /etc/systemd/system/avian-heartbeat.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now avian-heartbeat.timer
+sudo systemctl start avian-heartbeat.service       # fire one now
+journalctl -u avian-heartbeat -n 3 --no-pager      # expect "heartbeat: ok (204)"
+```
+
+**Wire the alert (UptimeRobot, or any HTTP monitor):** add an HTTP(s) monitor for
+`https://avian-worker.s-friedman.workers.dev/api/status`. It returns **503** once the
+Pi has missed ~3 pings (45 min, tunable via the Worker's `HEARTBEAT_MAX_AGE_SECONDS`),
+which the monitor treats as "down". The JSON body also reports `last_detection_age_seconds`
+— a long gap there while `alive:true` means the box is fine but the **mic/analyzer**
+has gone quiet.
 
 ---
 
@@ -83,48 +123,71 @@ plateaus ~150 MB, backlog holds ~2 (keeps up with realtime), SSH responsive, no 
 
 ---
 
-# Remote admin (Phase 5) — SSH over Cloudflare Tunnel
+# Remote admin (Phase 5) — SSH over Cloudflare Tunnel  ·  LIVE
 
-How you manage the Pi from home once it lives at your dad's. The Pi dials out to
-Cloudflare and exposes **only its local sshd** through an Access-gated hostname —
-**no ports opened** at the house, nothing public. This is the back door that lets
-you improve things later without your dad's involvement.
+Manage the Pi from anywhere once it lives at your dad's. It dials out to Cloudflare
+and exposes **only its local sshd** through a tunnel hostname — **no ports opened**
+at the house. This is the back door for improving it later without his involvement.
 
-**Already done (this repo / on the Pi):** `cloudflared` installed; `sshd` enabled
-at boot; `tunnel-setup.sh` + `cloudflared-config.example.yml` ready; `cloudflared`
-installed on the Mac (`brew install cloudflared`).
+**Live (2026-06-19):** tunnel `avian-admin` → `bird-ssh.foobos.net` → `ssh://localhost:22`,
+cloudflared service enabled@boot, `ssh bird-pi` verified. **Password-gated, no
+Cloudflare Access app** (Scott's choice — usable from any machine with `cloudflared`,
+not tied to one key/email). Safe because the tunnel hides SSH from internet
+port-scanning; the gate is a strong `inky` password. Admin DNS uses the **foobos.net**
+zone only (DNS record, no shared Workers/D1).
 
-**You still need:** a hostname on a **zone in your Cloudflare account**
-(e.g. `ssh.bird.onethreenine.net`). This needs only a one-time browser login —
-**not** the scoped CI API token (that token is only for the GitHub Actions deploys).
+## Client setup (any computer)
 
-## One-time setup
-
-```sh
-# On the Pi (NOT sudo) — prints a URL; open it on your laptop, pick the zone:
-cloudflared tunnel login
-
-# Then, from the repo's pi/ dir on the Pi:
-bash tunnel-setup.sh ssh.bird.<your-zone> avian-admin
+Install `cloudflared` (`brew install cloudflared` / `winget install cloudflare.cloudflared` /
+apt), add this to `~/.ssh/config`, then `ssh bird-pi` and enter the inky password:
+```
+Host bird-pi
+    HostName bird-ssh.foobos.net
+    User inky
+    ProxyCommand cloudflared access ssh --hostname %h
 ```
 
-The script creates the tunnel, routes DNS, writes `/etc/cloudflared/config.yml`,
-and installs the boot service, then prints the final two steps:
+## Redoing the tunnel on a fresh Pi / new hostname
 
-1. **Access policy** (dashboard, no token): Zero Trust → Access → Applications →
-   Add → Self-hosted → domain = your hostname → Allow `friedmannn2@gmail.com`.
-2. **Mac `~/.ssh/config`:**
-   ```
-   Host bird-pi
-     HostName ssh.bird.<your-zone>
-     User inky
-     ProxyCommand cloudflared access ssh --hostname %h
-   ```
-   Then `ssh bird-pi` (first connect opens a browser to authenticate).
+Two gotchas learned the hard way:
+- **`cloudflared tunnel login` fails headless on the Pi** ("Failed to fetch resource" —
+  it can't pull the cert back). Run the login on a machine with a browser (the Mac),
+  then copy the cert over: `cloudflared tunnel login` → `scp ~/.cloudflared/cert.pem
+  inky@<pi>:~/.cloudflared/`.
+- **Use a single-level subdomain** (`bird-ssh.<zone>`, NOT `ssh.bird.<zone>`) — free-plan
+  universal SSL only covers `*.<zone>` one level deep, so a 2-level name breaks the cert.
 
-## Why this is the critical pre-move step
+Then on the Pi (cert in place): `bash tunnel-setup.sh bird-ssh.<your-zone> avian-admin`
+(creates the tunnel, routes DNS, writes `/etc/cloudflared/config.yml`, installs the service).
 
-Once the Pi is on your dad's wifi, `inky.local` / `192.168.0.29` no longer reach
-it — the tunnel is your only way in. **Verify `ssh bird-pi` works from a network
-that is NOT your dad's (tether to your phone) before you leave his house.**
+## Critical pre-move check
+
+Once the Pi is on your dad's wifi, `inky.local` / `192.168.0.29` no longer reach it —
+the tunnel is your only way in. **Verify `ssh bird-pi` works from a network that is NOT
+your dad's (phone tether) before you leave.**
+
+---
+
+# Updating the Pi — `update.sh`
+
+The avian glue (forwarder, heartbeat, frame client) runs straight from the
+`~/BirdNET-Pi` clone — `newinstaller.sh` clones the whole fork there, so the
+detection engine **and** the glue are one repo. To ship a code change:
+
+```sh
+ssh bird-pi
+bash ~/BirdNET-Pi/pi/update.sh     # git pull --ff-only → re-sync units → restart
+```
+
+`update.sh` is idempotent and a no-op when there's nothing new. It pulls, re-renders
+the forwarder + heartbeat units (in case a template changed), `daemon-reload`s, and
+restarts `avian-forwarder` + `avian-heartbeat.timer` + `birdframe.timer`. The
+detection engine (BirdNET-Pi) updates the same way it always did — its services are
+unaffected by a glue-only change; a `git pull` simply also carries any base updates.
+
+**One-time re-align for older boxes:** the forwarder used to run from a `cp`'d copy in
+`~/avian/` and the frame from `~/birdframe`. For `git pull` to actually update them they
+must run from the clone. Re-run the forwarder install above, and re-run the frame
+installer from the clone: `cd ~/BirdNET-Pi/frame && ./install.sh` (builds its venv there
+and points the unit at the clone). `update.sh` warns if the frame isn't clone-based yet.
 

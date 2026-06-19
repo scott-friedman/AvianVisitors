@@ -41,13 +41,13 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Pi**: Zero 2 W at `inky@inky.local`. **BirdNET-Pi installed** (services up; admin UI http://inky.local/ → set sound card + region here; origin repointed to scott-friedman fork). **Frame client live on the panel** (`~/birdframe`, reuses `inky-web`'s venv; inky-web disabled; hourly timer). **Forwarder live** (`~/avian/detection-forwarder.py`, tails `BirdDB.txt` → worker; tested end-to-end). **No USB mic yet** ⇒ no real detections.
 - **Local tooling**: `wrangler` authed (OAuth, account-wide — careful re foobos), `gh` (scott-friedman), Cloudflare MCP, **Google Chrome.app** (off-Pi frame previews), Pillow 11.3.
 
-**Per-phase status:** 0 ✅ · 1 ✅ · 2 ✅ (BirdNET-Pi installed; forwarder live + tested end-to-end — real audio needs the mic) · 3 ✅ · 4 ✅ (frame rendering off-Pi + physically on the panel, hourly) · 5 ⛔ needs Scott's scoped CF token.
+**Per-phase status:** 0 ✅ · 1 ✅ · 2 ✅ (BirdNET-Pi installed; forwarder live + tested end-to-end — real audio needs the mic) · 3 ✅ · 4 ✅ (frame rendering off-Pi + physically on the panel, hourly) · 5 ✅ (remote-admin tunnel LIVE — `ssh bird-pi`, password-gated; only the CI auto-deploy token still pending).
 
 **Phase 4 cloud — DONE (2026-06-19):** (a) `?frame=1` strips chrome to a pure-white, animation-free collage (inline script+`<style>` in `avian/frontend/index.html`; apt.js untouched) — Pages deployed. (b) Worker `GET /frame.png` Browser-Renders that view at 800×480, signature-caches the PNG in D1 `frame_cache`, FRAME_KEY-gated — deployed + verified (401 w/o key, miss→hit, dithers to exactly 7 colours). **Browser Rendering confirmed available on the Workers FREE plan** (10 min/day) — the "may need Paid" worry is resolved. Deps: `@cloudflare/puppeteer`, `nodejs_compat` flag, `FRAME_URL` var, `FRAME_KEY` secret (gitignored `worker/.avian-frame-key`).
 
 **Remaining work (cold-start pickup):**
-1. **USB mic + OTG adapter** (hardware — the only thing gating real birds): plug in → `arecord -l` shows a capture device → set sound card + region at http://inky.local/ → real detections flow automatically (forwarder + frame already wired + tested). Then clear the demo data (`DELETE FROM detections`) and set the worker's `TZ_OFFSET_HOURS` to the Pi's offset (EDT = `-4`) for correct day-buckets.
-2. **Phase 5** (needs Scott's scoped CF token): SSH-only Cloudflare Tunnel for admin; CI token → GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`).
+1. **USB mic + OTG adapter** (hardware — the only thing gating real birds): plug in → `arecord -l` shows a capture device → set the sound card at http://inky.local/ → enable detection (`sudo systemctl enable --now birdnet_analysis birdnet_recording`) → real detections flow (forwarder + frame already wired + tested). Then clear the demo data (`DELETE FROM detections`). *(Region → Sudbury 42.3834,-71.4162 and worker `TZ_OFFSET_HOURS=-4` already set 2026-06-19.)*
+2. **CI auto-deploy** (needs Scott's scoped CF token): GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`). *(The Phase 5 remote-admin tunnel is DONE and did NOT need this token — just a browser login.)*
 
 **Deviation logged:** dithering runs on the Pi (Inky `set_image`), not the Worker as CLAUDE.md's diagram says — 7-colour dither in a Worker is impractical, so the Worker serves a clean 800×480 PNG and the Pi dithers. "No browser on the Pi" still honored (rendering is off-Pi).
 
@@ -134,14 +134,11 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Done when**: a detected bird appears on the physical panel within ~1–2 min; refresh only on change.
 - **Needs Scott**: physical access to confirm the panel renders; ok to disable inky-web.
 
-## Phase 5 — Remote admin + hardening  ·  ⛔ BLOCKED (needs Pi)
+## Phase 5 — Remote admin + hardening  ·  ✅ DONE (tunnel live 2026-06-19)
 
-- **Goal**: Scott can manage/update the Pi remotely; bird is isolated from foobos.
-- **Steps**:
-  1. **SSH-only Cloudflare Tunnel + Access** for admin (repurpose `avian/forwarding/cloudflared.yml`; no public web ingress). Document the hostname + `~/.ssh/config` in CLAUDE.md.
-  2. **Update flow**: `ssh pi 'git -C ~/BirdNET-Pi pull && <restart>'`; add `scripts/update-remote.sh` wrapper. BirdNET base updates via its web UI.
-  3. **Scoped CI token** confirmed (bird resources only). Verify nothing in `worker/wrangler.toml` references foobos IDs.
-- **Done when**: Scott can SSH in via Cloudflare and run an update; security review of isolation passes.
+- **Status**: `ssh bird-pi` works from anywhere via Cloudflare Tunnel `avian-admin` → `bird-ssh.foobos.net` (service enabled@boot). **Password-gated, no Access app** (Scott's choice — usable from any machine with `cloudflared`; the tunnel hides SSH from port-scanning, so a strong `inky` password is the gate). Built with `pi/tunnel-setup.sh` (not the old `avian/forwarding/cloudflared.yml`); admin DNS uses the **foobos.net** zone (DNS-only — does not violate the no-shared-resources rule). Setup gotchas (headless login fails → do it on the Mac + scp the cert; single-level subdomain for SSL) are in `pi/README.md`. Client runbook there + in `DEPLOY-SUDBURY.md`.
+- **Update flow**: `ssh bird-pi` then `bash ~/BirdNET-Pi/pi/update.sh` (git pull → re-sync units → restart). The avian glue **and** the BirdNET-Pi engine share the one `~/BirdNET-Pi` clone, so this updates both; see `pi/README.md` → "Updating the Pi". BirdNET base *config* is still via its web UI.
+- **Still pending**: scoped CI token for auto-deploy (separate from the tunnel); `worker/wrangler.toml` already has no foobos resource IDs.
 
 ---
 

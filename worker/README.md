@@ -8,6 +8,8 @@ Cloudflare Worker for **AvianVisitors (bird)** — the live-data spine. See
 | Route | Purpose |
 |---|---|
 | `POST /api/detection` | Pi's BirdNET hook posts `{sci, com, conf, ts}`. Header `X-Avian-Secret` must equal `AVIAN_INGEST_SECRET`. `INSERT OR IGNORE` dedupes by `(sci, ts)`. → **204** |
+| `POST /api/heartbeat` | Pi's liveness ping (15-min timer, same `X-Avian-Secret`). Upserts last-seen into D1. → **204** |
+| `GET /api/status` | Liveness for an uptime monitor. **200** if the Pi pinged within `HEARTBEAT_MAX_AGE_SECONDS` (default 2700 = 45 min), else **503**. JSON body has heartbeat + last-detection ages. Public, `no-store`. |
 | `GET /api/recent?hours=N` | Species-collapsed recent detections. The collage polls this every ~5–10 s. |
 | `GET /api/stats` | Totals / today / week / last hour. |
 | `GET /api/lifelist` | Every species ever heard (first/last seen, count, best conf). |

@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-This repo is **scott-friedman's fork of [AvianVisitors](https://github.com/Twarner491/AvianVisitors)**, checked out here as a **shallow (`--depth=1`) clone** (~1 GB; bulk is `avian/assets/` illustrations + `model/`). Remotes: `origin` → `scott-friedman/AvianVisitors` (the Pi pulls from here), `upstream` → `Twarner491/AvianVisitors`. Branch `avian-visitors` tracks `origin/avian-visitors`. The only local changes vs upstream are this `CLAUDE.md` and **`PLAN.md`** — the ordered, executable v1 build plan. **New session building this? Start with `PLAN.md`.**
+This repo is **scott-friedman's fork of [AvianVisitors](https://github.com/Twarner491/AvianVisitors)**, checked out here as a **shallow (`--depth=1`) clone** (~1 GB; bulk is `avian/assets/` illustrations + `model/`). Remotes: `origin` → `scott-friedman/AvianVisitors` (the Pi pulls from here), `upstream` → `Twarner491/AvianVisitors`. Branch `avian-visitors` tracks `origin/avian-visitors`. Local work vs upstream includes this `CLAUDE.md`, **`PLAN.md`** (the ordered v1 build plan), the built `worker/` + `pi/`, the ported `frame/`, and `PI-RECOVERY.md` + `DEPLOY-SUDBURY.md`. **New session building this? Start with `PLAN.md`.** **Deploying the box to dad's in Sudbury? See `DEPLOY-SUDBURY.md`** (on-site checklist: wifi, mic, enable detection, verify remote access). **Hardening the box for unattended life (stability / remote-update / remote-access backlog from the 2026-06-19 code review)? See `REVIEW-TODO.md`** — two ⭐ items (liveness heartbeat, Pi update path) are best done before the box ships.
 
 This directory is the **dev copy** (Mac). The **detection software runs on the Pi at `~/BirdNET-Pi`**; the **public site + e-ink rendering run on Cloudflare** (see "Decided architecture"). Don't conflate the three.
 
 ## Overview (plain English)
 
-This turns a Raspberry Pi into a "bird visitors" display. A USB mic listens 24/7; BirdNET (machine-learning audio ID) recognizes nearby birds, and they appear as a live, growing collage of illustrated birds — on a public web page **and** on an e-ink picture frame (the headline output). The Pi lives at a relative's house, so it does as little as possible: it just **listens, reports each bird to the cloud, and downloads a finished picture for the frame.** The website and the heavy image work run on Cloudflare, not the Pi.
+This turns a Raspberry Pi into a "bird visitors" display. A USB mic listens 24/7; BirdNET (machine-learning audio ID) recognizes nearby birds, and they appear as a live, growing collage of illustrated birds — on a public web page **and** on an e-ink picture frame (the headline output). The Pi lives at Scott's dad's house in Sudbury, MA, so it does as little as possible: it just **listens, reports each bird to the cloud, and downloads a finished picture for the frame.** The website and the heavy image work run on Cloudflare, not the Pi.
 
 ## Decided architecture (THIS deployment — read first)
 
@@ -86,7 +86,7 @@ Authoritative upstream docs: `README.md`, `frame/README.md`, `avian/forwarding/R
    `curl -s https://raw.githubusercontent.com/Twarner491/AvianVisitors/avian-visitors/newinstaller.sh | bash` (clones to `~/BirdNET-Pi`, reboots). Point origin at the fork: `git -C ~/BirdNET-Pi remote set-url origin https://github.com/scott-friedman/AvianVisitors.git`.
 2. Configure BirdNET locally via its admin UI (`http://inky.local/index.php`): mic/sound card, region/Database Language, sensitivity. We use only the detection engine + SQLite; the on-Pi public collage/Caddy is unused.
 3. Add the **on-detection hook** (BirdNET-Pi runs a script per new detection) that POSTs the detection to `avian-worker` with a shared secret. *(v1 build — not yet written.)*
-4. **Remote admin:** SSH for updates lives behind a small **Cloudflare Tunnel + Access** (SSH only, no public web) — repurpose `avian/forwarding/cloudflared.yml`. Updates are manual: `git -C ~/BirdNET-Pi pull` + restart.
+4. **Remote admin (LIVE):** `ssh bird-pi` from any machine with `cloudflared` — Cloudflare Tunnel `avian-admin` → `bird-ssh.foobos.net` → the Pi's sshd, service enabled@boot. **Password-gated, no Access app** (Scott's choice — flexible across computers, not tied to one key/email; the tunnel hides SSH from internet port-scanning, so a strong `inky` password is the gate). Built via `pi/tunnel-setup.sh` (see `pi/README.md` for redo gotchas: headless login fails → run it on the Mac + scp the cert; use a single-level subdomain). Admin DNS uses the **foobos.net** zone (DNS-only; no shared Workers/D1). Updates: `bash ~/BirdNET-Pi/pi/update.sh` (git pull + re-sync units + restart; see `pi/README.md` → "Updating the Pi").
 
 ## Cloudflare side (public site + render)
 

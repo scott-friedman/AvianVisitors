@@ -4,6 +4,8 @@
  * Three responsibilities (see ../PLAN.md Phase 1, ../CLAUDE.md):
  *   POST /api/detection  — the Pi's BirdNET hook posts each detection
  *                          (secret-gated via X-Avian-Secret) → D1 insert.
+ *   POST /api/heartbeat  — the Pi's 15-min liveness ping (same secret) → D1.
+ *   GET  /api/status     — 200 (fresh) / 503 (Pi silent) for uptime monitors.
  *   GET  /api/recent     — species-collapsed recent detections. The public
  *                          collage polls this every ~5–10 s.
  *   GET  /api/{stats,lifelist,timeseries,species,firstseen}  (or ?action=)
@@ -68,6 +70,12 @@ export default {
       if (path === '/api/detection' && request.method === 'POST') {
         return await ingest(request, env);
       }
+      if (path === '/api/heartbeat' && request.method === 'POST') {
+        return await heartbeat(request, env);
+      }
+      if (path === '/api/status' && request.method === 'GET') {
+        return await status(env);
+      }
       if (path === '/frame.png' && request.method === 'GET') {
         return await frame(request, env, url);
       }
@@ -116,6 +124,50 @@ async function ingest(request, env) {
   ).bind(sci, com, c, ts).run();
 
   return new Response(null, { status: 204, headers: CORS });
+}
+
+// ---- liveness (dead-man's switch) -------------------------------------------
+// The Pi pings POST /api/heartbeat every ~15 min, independent of bird activity.
+// GET /api/status reports 200 (fresh) / 503 (stale) so any uptime monitor can
+// alert when the box at Dad's goes silent (mic dead, BirdNET hung, wifi dropped).
+// See REVIEW-TODO.md A-High.
+
+const HEARTBEAT_DEFAULT_MAX_AGE = 2700; // 45 min = 3 missed 15-min pings before "dead"
+
+async function heartbeat(request, env) {
+  const secret = request.headers.get('X-Avian-Secret') || '';
+  if (!env.AVIAN_INGEST_SECRET || secret !== env.AVIAN_INGEST_SECRET) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare('INSERT OR REPLACE INTO heartbeat (id, ts) VALUES (1, ?)').bind(now).run();
+  return new Response(null, { status: 204, headers: CORS });
+}
+
+async function status(env) {
+  const now = Math.floor(Date.now() / 1000);
+  const maxAge = parseInt(env.HEARTBEAT_MAX_AGE_SECONDS ?? '', 10) || HEARTBEAT_DEFAULT_MAX_AGE;
+
+  const hb = await env.DB.prepare('SELECT ts FROM heartbeat WHERE id = 1').first();
+  const lastBeat = hb ? hb.ts : null;
+  const beatAge = lastBeat == null ? null : now - lastBeat;
+  const alive = beatAge != null && beatAge <= maxAge;
+
+  // Informational only (does NOT affect `alive`): when did we last hear any bird?
+  // A long gap with alive=true points at the mic/analyzer, not the box or network.
+  const det = await env.DB.prepare('SELECT MAX(ts) AS ts FROM detections').first();
+  const lastDet = det && det.ts != null ? det.ts : null;
+
+  // no-store: an uptime monitor must see the true current state, never an edge copy.
+  return json({
+    alive,
+    last_heartbeat: lastBeat ? new Date(lastBeat * 1000).toISOString() : null,
+    heartbeat_age_seconds: beatAge,
+    max_age_seconds: maxAge,
+    last_detection: lastDet ? new Date(lastDet * 1000).toISOString() : null,
+    last_detection_age_seconds: lastDet == null ? null : now - lastDet,
+    as_of: new Date().toISOString(),
+  }, alive ? 200 : 503, { 'Cache-Control': 'no-store' });
 }
 
 // ---- e-ink frame (Browser Rendering → 800x480 PNG, signature-cached) ---------

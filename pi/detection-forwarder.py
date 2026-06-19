@@ -12,13 +12,19 @@ BirdDB.txt line format (see scripts/utils/reporting.py ``summary()``):
 e.g.  2026-06-19;07:48:01;Turdus migratorius;American Robin;0.91;...
 
 The worker dedupes by (sci, ts) with INSERT OR IGNORE, so an occasional replay
-(e.g. this service restarting) is harmless. We start at end-of-file so a restart
-doesn't re-post the whole history.
+(e.g. this service restarting) is harmless. We persist the last-forwarded byte
+offset to a state file and resume from it on restart, so detections appended
+while the forwarder — or the network at Dad's — was down aren't dropped; only the
+very first run starts at end-of-file so it doesn't re-post the whole back-history.
 
 Config via env (set in the systemd unit):
     AVIAN_WORKER       base URL of avian-worker (no trailing /api)
     AVIAN_SECRET_FILE  path to a file holding the shared ingest secret (mode 600)
     AVIAN_BIRDDB       path to BirdDB.txt
+    AVIAN_STATE_FILE   where to persist the read offset (default ~/.avian/forwarder-state.json)
+
+Note: the ingest secret is read once at startup, so rotating it requires a
+forwarder restart (otherwise every POST 401s and is dropped).
 """
 from __future__ import annotations
 
@@ -32,12 +38,35 @@ from datetime import datetime
 WORKER = os.environ.get("AVIAN_WORKER", "https://avian-worker.s-friedman.workers.dev")
 SECRET_FILE = os.environ.get("AVIAN_SECRET_FILE", os.path.expanduser("~/.avian/ingest-secret"))
 DB_TXT = os.environ.get("AVIAN_BIRDDB", os.path.expanduser("~/BirdNET-Pi/BirdDB.txt"))
+STATE_FILE = os.environ.get("AVIAN_STATE_FILE", os.path.expanduser("~/.avian/forwarder-state.json"))
 ENDPOINT = WORKER.rstrip("/") + "/api/detection"
 
 
 def load_secret() -> str:
     with open(os.path.expanduser(SECRET_FILE)) as f:
         return f.read().strip()
+
+
+def load_state() -> tuple[int | None, int | None]:
+    """Last persisted (byte offset, file inode), or (None, None) on first run."""
+    try:
+        with open(os.path.expanduser(STATE_FILE)) as f:
+            d = json.load(f)
+        return int(d["offset"]), int(d["inode"])
+    except Exception:
+        return None, None
+
+
+def save_state(offset: int, inode: int) -> None:
+    # Atomic via os.replace (mirrors display.py). No fsync: re-posting is harmless
+    # (the worker dedupes), so durability-across-power-loss doesn't matter here, and
+    # skipping it spares the SD card — atomicity alone prevents a corrupt half-write.
+    path = os.path.expanduser(STATE_FILE)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"offset": offset, "inode": inode}, f)
+    os.replace(tmp, path)
 
 
 def parse_ts(date_s: str, time_s: str) -> int:
@@ -74,26 +103,47 @@ def handle_line(secret: str, line: str) -> None:
         ts = parse_ts(date_s, time_s)
     except ValueError:
         return  # header line or malformed; skip
-    try:
-        status = post(secret, sci, com, conf, ts)
-        print(f"posted {sci} ({com}) conf={conf:.3f} ts={ts} -> {status}", flush=True)
-    except Exception as e:  # network blip etc. — drop this one, keep watching
-        print(f"POST failed for {sci}: {e}", file=sys.stderr, flush=True)
+
+    # A few quick retries ride out a transient blip (DNS, a momentary wifi drop) —
+    # common on a Pi. A sustained outage still drops the line: acceptable for a
+    # species collage (common birds re-detect constantly; the worker dedupes), and
+    # not worth a persistent spool. Offset persistence covers the *restart* case.
+    last = None
+    for attempt in range(3):
+        try:
+            status = post(secret, sci, com, conf, ts)
+            print(f"posted {sci} ({com}) conf={conf:.3f} ts={ts} -> {status}", flush=True)
+            return
+        except Exception as e:  # HTTPError (4xx/5xx) or URLError (network) — retry then give up
+            last = e
+            if attempt < 2:
+                time.sleep(2)
+    print(f"POST failed for {sci} after retries: {last}", file=sys.stderr, flush=True)
 
 
 def follow(path: str):
-    """Yield new lines appended to ``path``, surviving the file not existing yet,
-    truncation, and rotation/recreation (BirdNET-Pi can roll BirdDB.txt)."""
+    """Yield ``(line, offset, inode)`` for new lines, resuming from the persisted
+    offset across restarts so anything appended while we were down isn't lost (the
+    worker dedupes any overlap). Survives the file not existing yet, truncation, and
+    rotation/recreation (BirdNET-Pi can roll BirdDB.txt)."""
     path = os.path.expanduser(path)
     while not os.path.exists(path):
         time.sleep(2)
     f = open(path, "r")
-    f.seek(0, os.SEEK_END)
     inode = os.fstat(f.fileno()).st_ino
+    size = os.fstat(f.fileno()).st_size
+    saved_offset, saved_inode = load_state()
+    if saved_offset is None:
+        f.seek(0, os.SEEK_END)               # first run: skip pre-existing history
+    elif saved_inode == inode and saved_offset <= size:
+        f.seek(saved_offset)                 # resume exactly where we left off
+    else:
+        f.seek(0)                            # rotation/truncation: read the new file from the start
+    save_state(f.tell(), inode)              # persist now so a quick restart resumes here, not at a newer EOF
     while True:
         line = f.readline()
         if line:
-            yield line
+            yield line, f.tell(), inode
             continue
         time.sleep(1)
         try:
@@ -102,7 +152,7 @@ def follow(path: str):
                 f.close()
                 while not os.path.exists(path):
                     time.sleep(2)
-                f = open(path, "r")
+                f = open(path, "r")          # fresh open is at offset 0 → don't miss the new file's head
                 inode = os.fstat(f.fileno()).st_ino
         except FileNotFoundError:
             f.close()
@@ -115,8 +165,11 @@ def follow(path: str):
 def main() -> None:
     secret = load_secret()
     print(f"avian-forwarder: watching {os.path.expanduser(DB_TXT)} -> {ENDPOINT}", flush=True)
-    for line in follow(DB_TXT):
+    for line, offset, inode in follow(DB_TXT):
         handle_line(secret, line)
+        # Persist after each handled line so a restart resumes here. Re-posting is
+        # dedupe-safe, so even if a POST failed above, advancing the offset is fine.
+        save_state(offset, inode)
 
 
 if __name__ == "__main__":
