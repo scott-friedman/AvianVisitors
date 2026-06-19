@@ -1,0 +1,17 @@
+# bird remote-admin tunnel — SSH ONLY, no public web ingress.
+# tunnel-setup.sh copies this to /etc/cloudflared/config.yml and substitutes:
+#   __TUNNEL_UUID__      id from `cloudflared tunnel create`
+#   __TUNNEL_HOSTNAME__  e.g. ssh.bird.onethreenine.net (must be a zone in your CF account)
+#
+# This is the admin back door: it exposes ONLY the Pi's local sshd, outbound-only
+# (the Pi dials Cloudflare; no ports are opened at your dad's house). Protect the
+# hostname with a Cloudflare Access policy (see pi/README.md) so only you can reach it.
+
+tunnel: __TUNNEL_UUID__
+credentials-file: /etc/cloudflared/__TUNNEL_UUID__.json
+
+ingress:
+  - hostname: __TUNNEL_HOSTNAME__
+    service: ssh://localhost:22
+  # Required catch-all — refuse anything that isn't the SSH hostname above.
+  - service: http_status:404

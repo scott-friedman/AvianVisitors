@@ -23,7 +23,7 @@ binding = "BROWSER"
 # Local-day offset (hours from UTC) for the "today"/daily buckets, e.g. "-4" for
 # US Eastern (EDT). Rolling windows (recent/last_hour/week) are computed in UTC
 # seconds and are unaffected. Default UTC.
-TZ_OFFSET_HOURS = "0"
+TZ_OFFSET_HOURS = "-4"  # Sudbury, MA = US Eastern (EDT). Fixed offset: reads -5 (EST) in winter; acceptable for v1 day-buckets.
 
 # The page Browser Rendering screenshots for /frame.png. ?frame=1 strips chrome
 # to a pure-white, animation-free collage (see avian/frontend/index.html).

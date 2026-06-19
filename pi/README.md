@@ -80,3 +80,51 @@ sustained memory pressure): `rm ~/BirdSongs/StreamData/*.wav`.
 **Measured (2026-06-19, no mic):** steady-state ~370 MB used / ~90 MB free, analyzer
 plateaus ~150 MB, backlog holds ~2 (keeps up with realtime), SSH responsive, no thrash.
 **Verdict: stripped + tuned BirdNET-Pi is viable on a 512 MB Zero 2 W — no BirdNET-Go.**
+
+---
+
+# Remote admin (Phase 5) — SSH over Cloudflare Tunnel
+
+How you manage the Pi from home once it lives at your dad's. The Pi dials out to
+Cloudflare and exposes **only its local sshd** through an Access-gated hostname —
+**no ports opened** at the house, nothing public. This is the back door that lets
+you improve things later without your dad's involvement.
+
+**Already done (this repo / on the Pi):** `cloudflared` installed; `sshd` enabled
+at boot; `tunnel-setup.sh` + `cloudflared-config.example.yml` ready; `cloudflared`
+installed on the Mac (`brew install cloudflared`).
+
+**You still need:** a hostname on a **zone in your Cloudflare account**
+(e.g. `ssh.bird.onethreenine.net`). This needs only a one-time browser login —
+**not** the scoped CI API token (that token is only for the GitHub Actions deploys).
+
+## One-time setup
+
+```sh
+# On the Pi (NOT sudo) — prints a URL; open it on your laptop, pick the zone:
+cloudflared tunnel login
+
+# Then, from the repo's pi/ dir on the Pi:
+bash tunnel-setup.sh ssh.bird.<your-zone> avian-admin
+```
+
+The script creates the tunnel, routes DNS, writes `/etc/cloudflared/config.yml`,
+and installs the boot service, then prints the final two steps:
+
+1. **Access policy** (dashboard, no token): Zero Trust → Access → Applications →
+   Add → Self-hosted → domain = your hostname → Allow `friedmannn2@gmail.com`.
+2. **Mac `~/.ssh/config`:**
+   ```
+   Host bird-pi
+     HostName ssh.bird.<your-zone>
+     User inky
+     ProxyCommand cloudflared access ssh --hostname %h
+   ```
+   Then `ssh bird-pi` (first connect opens a browser to authenticate).
+
+## Why this is the critical pre-move step
+
+Once the Pi is on your dad's wifi, `inky.local` / `192.168.0.29` no longer reach
+it — the tunnel is your only way in. **Verify `ssh bird-pi` works from a network
+that is NOT your dad's (tether to your phone) before you leave his house.**
+
