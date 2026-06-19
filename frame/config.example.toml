@@ -1,31 +1,25 @@
-# AvianVisitors e-ink frame. Copy to config.toml and edit.
-# config.toml is gitignored. Nothing here is secret unless your whole site is
-# behind basic-auth (see the bottom).
+# AvianVisitors e-ink frame (Inky Impression 7.3", 800x480, 7-colour).
+# Copy to config.toml and edit. config.toml is gitignored. Nothing here is
+# secret unless your whole site is behind basic-auth (see the bottom).
 
-# The collage to mirror. The Pi reads the recent API here to decide when a
-# refresh is worth it, so point it at the public site (a Pi Zero W cannot reach
-# a LAN BirdNET-Pi by default anyway).
-base_url = "https://bird.onethreenine.net"
-# base_url = "http://birdnet.local"   # same-LAN BirdNET-Pi instead
+# avian-worker base. The Pi reads the recent API here to decide when a refresh
+# is worth it, and fetches the rendered frame from /frame.png. All outbound —
+# a Pi Zero 2 W at a relative's house never serves anything.
+base_url = "https://avian-worker.s-friedman.workers.dev"
 
-hours = 24             # window shown on the frame
+hours = 24             # window reflected on the frame
 
-# Where the screenshot comes from. birdpic (a Pi Zero W) has no browser, so it
-# fetches a ready-made PNG: the aggregator Worker renders the collage via
-# Cloudflare Browser Rendering at /frame.png, gated by its FRAME_KEY secret.
-# Put that key after k=.
-shoot = false
-image_url = "https://bird.onethreenine.net/frame.png?k=YOUR_FRAME_KEY"
-# On a capable host (Pi 4/5, laptop) shoot inline instead of fetching:
-# shoot = true
+# The ready-made 800x480 PNG, rendered off-Pi by avian-worker's /frame.png
+# (Cloudflare Browser Rendering), gated by its FRAME_KEY secret — put that key
+# after k=. A Pi Zero 2 W has no browser, so it always fetches; never shoots.
+image_url = "https://avian-worker.s-friedman.workers.dev/frame.png?k=YOUR_FRAME_KEY"
 # Or read a PNG a sibling process drops next to us:
 # image = "~/.birdframe/frame.png"
 
 # Panel.
-rotate = 90            # 90 or 270 if the frame hangs the other way up
-saturation = 0.6       # Inky colour saturation, 0 to 1
-mat = 0.0              # extra shrink of the content inside the A5 opening (0 = none)
-# panel = "el133uf1"   # force the 13.3" driver if auto-detect ever fails
+rotate = 0             # 0 = native landscape; 180 if the frame hangs upside down
+saturation = 0.7       # Inky colour saturation, 0 to 1
+# panel = "inky_ac073tc1"   # force the 7.3" driver module if inky.auto() ever fails
 
 # Refresh cadence. The panel refreshes only when the species set or a count
 # bracket changes, plus a daily heal. Quiet hours are off so nocturnal
@@ -36,20 +30,9 @@ heal_hours = 24        # force a refresh at least this often
 
 # Paths.
 state = "~/.birdframe/state.json"
-cache = "~/.birdframe"
 timeout = 45
 
-# Titles and look. Used only when shooting inline (shoot = true). With the
-# Worker endpoint these are baked in, so leave them out.
-# shoot_title = "onethreenine birds"
-# shoot_subtitle = "heard today"
-# shoot_headline_px = 42
-# shoot_eyebrow_px = 18
-# shoot_lowercase = false
-# shoot_mat = 0.04
-# shoot_small_floor = 0.04
-
-# Only if your WHOLE site is behind basic-auth. The AvianVisitors default
-# leaves the collage and detection API public, so usually leave these out.
+# Only if your WHOLE site is behind basic-auth. The AvianVisitors default leaves
+# the collage and detection API public, so usually leave these out.
 # basic_user = "monalisa"
 # basic_pass = "..."
