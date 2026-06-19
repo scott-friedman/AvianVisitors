@@ -1,0 +1,13 @@
+{
+  "name": "avian-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker for AvianVisitors (bird) — detection ingest + JSON API over D1",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply avian-detections --local",
+    "migrate:remote": "wrangler d1 migrations apply avian-detections --remote"
+  }
+}

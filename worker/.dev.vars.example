@@ -1,0 +1,4 @@
+# Copy to .dev.vars (gitignored) for `wrangler dev`. The Pi sends this same
+# value in the X-Avian-Secret header; in production set it via
+# `wrangler secret put AVIAN_INGEST_SECRET` (NOT committed).
+AVIAN_INGEST_SECRET = "dev-local-secret-not-for-prod"
