@@ -1,6 +1,7 @@
 name = "avian-worker"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]  # @cloudflare/puppeteer needs node:buffer (for /frame.png)
 workers_dev = true          # start on avian-worker.<subdomain>.workers.dev (free)
 preview_urls = false
 
@@ -12,12 +13,23 @@ binding = "DB"
 database_name = "avian-detections"
 database_id = "9145557b-fbe3-43f5-baf8-ff0bb14c1a3f"
 
+# Browser Rendering: /frame.png launches a headless browser to screenshot the
+# Pages collage at 800x480 for the e-ink panel. Free plan = 10 min browser/day,
+# so the Worker caches by signature (D1 frame_cache) and re-renders only on change.
+[browser]
+binding = "BROWSER"
+
 [vars]
 # Local-day offset (hours from UTC) for the "today"/daily buckets, e.g. "-4" for
 # US Eastern (EDT). Rolling windows (recent/last_hour/week) are computed in UTC
 # seconds and are unaffected. Default UTC.
 TZ_OFFSET_HOURS = "0"
 
-# NOTE: AVIAN_INGEST_SECRET is a SECRET, not a var. Set it with:
-#   echo '<random>' | wrangler secret put AVIAN_INGEST_SECRET
-# For local dev it lives in worker/.dev.vars (gitignored).
+# The page Browser Rendering screenshots for /frame.png. ?frame=1 strips chrome
+# to a pure-white, animation-free collage (see avian/frontend/index.html).
+FRAME_URL = "https://avianvisitors.pages.dev/?frame=1"
+
+# NOTE: AVIAN_INGEST_SECRET and FRAME_KEY are SECRETS, not vars. Set them with:
+#   echo '<random>' | wrangler secret put AVIAN_INGEST_SECRET   # gates POST /api/detection
+#   echo '<random>' | wrangler secret put FRAME_KEY             # gates GET /frame.png?k=...
+# For local dev they live in worker/.dev.vars (gitignored).

@@ -18,12 +18,12 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 1. Read `CLAUDE.md` (architecture, hardware facts, constraints).
 2. Skim "Current state" and "Prerequisites" below.
-3. **Phases 0/1/3 are already deployed + verified, and `display.py` is ported (Phase 4 part).** Read "Current state (snapshot)" for the live resources + the exact remaining steps. The unblocked pickup is **Phase 4 rest** (`/frame` view + `/frame.png`); Phases 2 & 5 + the Phase 4 Pi install need the Pi + USB mic.
+3. **Phases 0/1/3 live; Phase 4 CLOUD done (`/frame` view + `/frame.png` deployed + verified).** Read "Current state (snapshot)" for the live resources + the exact remaining steps. The remaining work is **Phase 4 Pi install** (Pi is reachable; needs Scott's OK to take the panel from inky-web), **Phase 2** (needs USB mic), and **Phase 5** (needs Scott's scoped CF token).
 4. Each phase has a **Goal → Steps → Done when → Needs Scott**. Stop and ask on anything marked OPEN or "Needs Scott".
 
 ---
 
-## Current state (snapshot) — updated 2026-06-18 (Phases 0,1,3 live; 4 part-done)
+## Current state (snapshot) — updated 2026-06-19 (Phases 0,1,3 live; 4 CLOUD done; Pi install + 2 + 5 remain)
 
 **Deployed & verified on Cloudflare** (account `78b235c12ec2f4d437534392b48ed173`, via wrangler OAuth; isolated from foobos):
 
@@ -39,13 +39,14 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Pi**: Zero 2 W at `inky@inky.local`, still runs **inky-web**, **no USB mic** ⇒ no real detections; BirdNET-Pi not installed.
 - **Local tooling**: `wrangler` authed (OAuth, account-wide — careful re foobos), `gh` (scott-friedman), Cloudflare MCP, **Google Chrome.app** (off-Pi frame previews), Pillow 11.3.
 
-**Per-phase status:** 0 ✅ · 1 ✅ live · 2 ⛔ needs mic · 3 ✅ live · 4 🟡 `display.py` ported+validated, frame view + `/frame.png` remain · 5 ⛔ needs Pi.
+**Per-phase status:** 0 ✅ · 1 ✅ live · 2 ⛔ needs mic · 3 ✅ live · 4 🟢 CLOUD done (`/frame` view + `/frame.png` live+verified; Browser Rendering confirmed on FREE plan), Pi install remains · 5 ⛔ needs Scott's CF token.
+
+**Phase 4 cloud — DONE (2026-06-19):** (a) `?frame=1` strips chrome to a pure-white, animation-free collage (inline script+`<style>` in `avian/frontend/index.html`; apt.js untouched) — Pages deployed. (b) Worker `GET /frame.png` Browser-Renders that view at 800×480, signature-caches the PNG in D1 `frame_cache`, FRAME_KEY-gated — deployed + verified (401 w/o key, miss→hit, dithers to exactly 7 colours). **Browser Rendering confirmed available on the Workers FREE plan** (10 min/day) — the "may need Paid" worry is resolved. Deps: `@cloudflare/puppeteer`, `nodejs_compat` flag, `FRAME_URL` var, `FRAME_KEY` secret (gitignored `worker/.avian-frame-key`).
 
 **Remaining work (cold-start pickup):**
-1. **Phase 4 rest** (cloud, unblocked): (a) chrome-less, pure-white **`/frame` view** in the Pages site (hide `.top`/`.slider`/`.menu-btn`/`#returnToAtlas`; `body.frame{background:#fff}`; trigger via `?frame=1`). Verify off-Pi: headless-Chrome screenshot of `…pages.dev/?frame=1` → `python3 frame/display.py --image shot.png --no-signature --preview out.png`. (b) Worker **`GET /frame.png`** via **Browser Rendering** (FRAME_KEY-gated, 800×480 viewport, screenshot the `/frame` view, cache ~60–120 s). ⚠ Browser Rendering availability on the plan is **UNVERIFIED** (may need Workers Paid); adds `@cloudflare/puppeteer` + uses pooled quota.
-2. **Phase 2** (needs mic): install BirdNET-Pi; add the on-detection hook POSTing `{sci,com,conf,ts}` + `X-Avian-Secret` to `…workers.dev/api/detection`.
-3. **Phase 4 Pi install** (needs Pi): `~/.birdframe/config.toml` from `frame/config.example.toml` (set `image_url=…/frame.png?k=FRAME_KEY`); `frame/install.sh` (systemd timer ~1–2 min); `sudo systemctl disable --now inky-web`.
-4. **Phase 5**: SSH-only Cloudflare Tunnel; **scoped** CI token → GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`).
+1. **Phase 4 Pi install** (Pi reachable at `inky@inky.local`; needs Scott's OK — takes the panel from inky-web): copy `frame/`→Pi; write `~/.birdframe/config.toml` from `frame/config.example.toml` (`image_url=…/frame.png?k=FRAME_KEY`); systemd timer with **ExecStart python = `/home/inky/inky-venv/bin/python`** (reuse the existing venv — it has PIL+inky, so NO venv build/apt compile), ~2-min cadence; `sudo systemctl disable --now inky-web`. `auto()` works here (no `panel=` needed); SPI already up (no reboot). Then the panel shows the demo collage now / real birds when the mic arrives.
+2. **Phase 2** (needs USB mic + OTG adapter): install BirdNET-Pi (~20–40 min, reboots); add the on-detection hook POSTing `{sci,com,conf,ts}` + `X-Avian-Secret` to `…workers.dev/api/detection`.
+3. **Phase 5** (needs Scott's scoped CF token): SSH-only Cloudflare Tunnel; CI token → GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`).
 
 **Deviation logged:** dithering runs on the Pi (Inky `set_image`), not the Worker as CLAUDE.md's diagram says — 7-colour dither in a Worker is impractical, so the Worker serves a clean 800×480 PNG and the Pi dithers. "No browser on the Pi" still honored (rendering is off-Pi).
 
@@ -121,7 +122,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Needs Scott**: Cloudflare token in CI; confirm Pages project name/host.
 - **DEFERRED**: per-bird **audio playback** (`recording.php`) needs the live Pi — defer to v2 (publish clips or add a narrow tunnel).
 
-## Phase 4 — E-ink frame (primary output)  ·  🟡 PART (display.py ported + validated off-Pi; `/frame` view + `/frame.png` + Pi install remain)
+## Phase 4 — E-ink frame (primary output)  ·  🟢 CLOUD DONE (`/frame` view + `/frame.png` live + verified; Pi install remains — needs Scott's OK to take the panel from inky-web)
 
 - **Goal**: the 7.3" panel shows today's birds, rendered off-Pi.
 - **Steps**:

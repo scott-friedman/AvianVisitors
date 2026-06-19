@@ -2,3 +2,4 @@ node_modules/
 .wrangler/
 .dev.vars
 .avian-ingest-secret
+.avian-frame-key

@@ -10,7 +10,26 @@
 <!-- Apply the saved theme before first paint so dark mode doesn't flash
      light on load. The full switcher lives in Settings (writes bird:theme). -->
 <script>try{if(localStorage.getItem('bird:theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
+<!-- Frame mode (?frame=1): the e-ink panel screenshots this view off-Pi.
+     Strip all chrome to a pure-white, animation-free collage so the Pi's
+     7-colour dither doesn't speckle the warm-white page background. The class
+     is set before first paint so no chrome flashes. The collage (#v0) is the
+     default view, so apt.js needs no change — we only hide UI and force white. -->
+<script>try{if(new URLSearchParams(location.search).has('frame'))document.documentElement.classList.add('frame');}catch(e){}</script>
 <link rel="stylesheet" href="./styles.css">
+<style>
+  html.frame, html.frame body { background: #fff !important; }
+  html.frame { --paper: #fff; --paper-2: #fff; --paper-3: #fff; }
+  /* Strip interactive chrome; the frame is just the collage. */
+  html.frame .top, html.frame .slider, html.frame #menu-dd,
+  html.frame #returnToAtlas, html.frame .static-head,
+  html.frame #detail-modal, html.frame #about-modal { display: none !important; }
+  /* Pin to the collage view and let it fill the panel (no slider gutter). */
+  html.frame .views { transform: none !important; }
+  html.frame .view#v0 { padding: 16px 24px !important; }
+  /* Freeze: screenshot the settled state, not a mid-bloom tile. */
+  html.frame * { animation: none !important; transition: none !important; }
+</style>
 </head>
 <body class="av-local">
 <!-- Pill in the top-left slot, only visible on admin overlays
