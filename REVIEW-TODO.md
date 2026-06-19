@@ -33,8 +33,9 @@ bench**, than after the box ships. Read this alongside [`DEPLOY-SUDBURY.md`](DEP
 **Decisions locked this session (don't re-ask on resume):**
 - Liveness = **Worker `/api/heartbeat` + `/api/status` (503 when silent)**, alerted by **UptimeRobot** (Scott has an account).
 - Frame cadence = **hourly** (e-ink wear + free Browser-Rendering budget; item 5 just aligns the docs).
-- Pi layout = **one `~/BirdNET-Pi` clone**; the live box needs a one-time re-align (forwarder was
-  `cp`'d to `~/avian/`, frame at `~/birdframe`) — see `pi/README.md` → "Updating the Pi".
+- Pi layout = **one `~/BirdNET-Pi` clone**; the live-box re-align is **DONE 2026-06-19**
+  (forwarder/heartbeat/mic-watchdog + frame all run from the clone; `~/avian`+`~/birdframe`
+  deleted) — see `pi/README.md` → "Updating the Pi".
 
 **Working tree is UNCOMMITTED** (nothing committed or pushed — awaiting Scott's OK). New files:
 `worker/migrations/0003_heartbeat.sql`, `pi/heartbeat.sh`, `pi/update.sh`,
@@ -129,8 +130,9 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   clone**. Fixed: forwarder + heartbeat units now `ExecStart` from `~/BirdNET-Pi/pi/`; added
   `pi/update.sh` (`git pull --ff-only` → re-render units → `daemon-reload` → restart forwarder +
   heartbeat + frame timers, idempotent, no-op when current); README "Updating the Pi" + reconciled
-  `PLAN.md` Phase 5. **One-time re-align** noted for the live box (forwarder was in `~/avian/`,
-  frame in `~/birdframe`); `update.sh` warns if the frame isn't clone-based. (No runtime-tracked
+  `PLAN.md` Phase 5. **One-time re-align DONE 2026-06-19** for the live box (forwarder/heartbeat/
+  mic-watchdog + frame now run from the clone; `~/avian`+`~/birdframe` deleted); `update.sh` warns
+  if the frame isn't clone-based. (No runtime-tracked
   files, so `--ff-only` is safe; it fails loud rather than silently merging.)
 
 - [ ] **[Low] Enable unattended security upgrades.** Internet-connected box running for months

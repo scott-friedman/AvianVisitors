@@ -215,9 +215,25 @@ the forwarder + heartbeat + mic-watchdog units (in case a template changed),
 detection engine (BirdNET-Pi) updates the same way it always did — its services are
 unaffected by a glue-only change; a `git pull` simply also carries any base updates.
 
-**One-time re-align for older boxes:** the forwarder used to run from a `cp`'d copy in
-`~/avian/` and the frame from `~/birdframe`. For `git pull` to actually update them they
-must run from the clone. Re-run the forwarder install above, and re-run the frame
-installer from the clone: `cd ~/BirdNET-Pi/frame && ./install.sh` (builds its venv there
-and points the unit at the clone). `update.sh` warns if the frame isn't clone-based yet.
+**One-time re-align for older boxes — DONE on Barry's box 2026-06-19.** Older boxes ran
+the forwarder/heartbeat/mic-watchdog from `cp`'d copies in `~/avian/` and the frame from
+`~/birdframe/`; for `git pull` to update them they must run from the clone. The sequence
+that actually worked on a box ~16 commits behind:
+1. **Move untracked junk aside first** (`*.bak`, a stray `.whl`, `requirements_custom.txt`,
+   a dangling `model/labels_flickr.txt` symlink, etc.) so `--ff-only` can't abort, then
+   **pull manually** — on a far-behind clone `update.sh` itself doesn't exist yet, so don't
+   start with it: `git -C ~/BirdNET-Pi pull --ff-only`.
+2. Re-render the glue units (the forwarder install block above) — re-points forwarder +
+   heartbeat + mic-watchdog at `~/BirdNET-Pi/pi/…`.
+3. **Frame:** either build a fresh venv (`cd ~/BirdNET-Pi/frame && ./install.sh`) **or**, to
+   skip the venv build on a 512 MB box, reuse an existing interpreter by pointing the unit's
+   `ExecStart` at it. Barry's box reuses `/home/inky/inky-venv/bin/python` running
+   `~/BirdNET-Pi/frame/display.py` (validate first, no panel touch: `display.py --preview
+   out.png`). Either way `update.sh`'s clone-check passes once `ExecStart` contains
+   `…/BirdNET-Pi/frame`.
+4. Verify by behaviour, then **remove the old `~/avian` + `~/birdframe` code dirs** — but
+   **keep the `~/.avian` + `~/.birdframe` dot dirs** (units read the ingest secret, forwarder
+   offset state, frame config + key, and render state from those).
+
+`update.sh` warns if the frame isn't clone-based yet.
 
