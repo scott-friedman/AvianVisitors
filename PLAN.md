@@ -23,7 +23,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 ---
 
-## Current state (snapshot) — updated 2026-06-19 (Phases 0,1,3 live; 4 CLOUD done; Pi install + 2 + 5 remain)
+## Current state (snapshot) — updated 2026-06-19 (Phases 0–4 DONE end-to-end; only the USB mic + Phase 5 token remain)
 
 **Deployed & verified on Cloudflare** (account `78b235c12ec2f4d437534392b48ed173`, via wrangler OAuth; isolated from foobos):
 
@@ -36,17 +36,16 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 - **Repo**: branch `avian-visitors` on `origin` (`scott-friedman/AvianVisitors`). Commits: plan · worker · worker-deploy · pages · frame-port · this status update.
 - **Demo data**: 6 species seeded in prod D1 so the page isn't blank pre-Pi. Clear when the Pi goes live: `wrangler d1 execute avian-detections --remote --command "DELETE FROM detections"`.
-- **Pi**: Zero 2 W at `inky@inky.local`, still runs **inky-web**, **no USB mic** ⇒ no real detections; BirdNET-Pi not installed.
+- **Pi**: Zero 2 W at `inky@inky.local`. **BirdNET-Pi installed** (services up; admin UI http://inky.local/ → set sound card + region here; origin repointed to scott-friedman fork). **Frame client live on the panel** (`~/birdframe`, reuses `inky-web`'s venv; inky-web disabled; hourly timer). **Forwarder live** (`~/avian/detection-forwarder.py`, tails `BirdDB.txt` → worker; tested end-to-end). **No USB mic yet** ⇒ no real detections.
 - **Local tooling**: `wrangler` authed (OAuth, account-wide — careful re foobos), `gh` (scott-friedman), Cloudflare MCP, **Google Chrome.app** (off-Pi frame previews), Pillow 11.3.
 
-**Per-phase status:** 0 ✅ · 1 ✅ live · 2 ⛔ needs mic · 3 ✅ live · 4 🟢 CLOUD done (`/frame` view + `/frame.png` live+verified; Browser Rendering confirmed on FREE plan), Pi install remains · 5 ⛔ needs Scott's CF token.
+**Per-phase status:** 0 ✅ · 1 ✅ · 2 ✅ (BirdNET-Pi installed; forwarder live + tested end-to-end — real audio needs the mic) · 3 ✅ · 4 ✅ (frame rendering off-Pi + physically on the panel, hourly) · 5 ⛔ needs Scott's scoped CF token.
 
 **Phase 4 cloud — DONE (2026-06-19):** (a) `?frame=1` strips chrome to a pure-white, animation-free collage (inline script+`<style>` in `avian/frontend/index.html`; apt.js untouched) — Pages deployed. (b) Worker `GET /frame.png` Browser-Renders that view at 800×480, signature-caches the PNG in D1 `frame_cache`, FRAME_KEY-gated — deployed + verified (401 w/o key, miss→hit, dithers to exactly 7 colours). **Browser Rendering confirmed available on the Workers FREE plan** (10 min/day) — the "may need Paid" worry is resolved. Deps: `@cloudflare/puppeteer`, `nodejs_compat` flag, `FRAME_URL` var, `FRAME_KEY` secret (gitignored `worker/.avian-frame-key`).
 
 **Remaining work (cold-start pickup):**
-1. **Phase 4 Pi install** (Pi reachable at `inky@inky.local`; needs Scott's OK — takes the panel from inky-web): copy `frame/`→Pi; write `~/.birdframe/config.toml` from `frame/config.example.toml` (`image_url=…/frame.png?k=FRAME_KEY`); systemd timer with **ExecStart python = `/home/inky/inky-venv/bin/python`** (reuse the existing venv — it has PIL+inky, so NO venv build/apt compile), ~2-min cadence; `sudo systemctl disable --now inky-web`. `auto()` works here (no `panel=` needed); SPI already up (no reboot). Then the panel shows the demo collage now / real birds when the mic arrives.
-2. **Phase 2** (needs USB mic + OTG adapter): install BirdNET-Pi (~20–40 min, reboots); add the on-detection hook POSTing `{sci,com,conf,ts}` + `X-Avian-Secret` to `…workers.dev/api/detection`.
-3. **Phase 5** (needs Scott's scoped CF token): SSH-only Cloudflare Tunnel; CI token → GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`).
+1. **USB mic + OTG adapter** (hardware — the only thing gating real birds): plug in → `arecord -l` shows a capture device → set sound card + region at http://inky.local/ → real detections flow automatically (forwarder + frame already wired + tested). Then clear the demo data (`DELETE FROM detections`) and set the worker's `TZ_OFFSET_HOURS` to the Pi's offset (EDT = `-4`) for correct day-buckets.
+2. **Phase 5** (needs Scott's scoped CF token): SSH-only Cloudflare Tunnel for admin; CI token → GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`).
 
 **Deviation logged:** dithering runs on the Pi (Inky `set_image`), not the Worker as CLAUDE.md's diagram says — 7-colour dither in a Worker is impractical, so the Worker serves a clean 800×480 PNG and the Pi dithers. "No browser on the Pi" still honored (rendering is off-Pi).
 

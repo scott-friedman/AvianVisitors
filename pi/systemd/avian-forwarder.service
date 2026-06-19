@@ -1,0 +1,21 @@
+[Unit]
+Description=AvianVisitors detection forwarder (BirdDB.txt -> avian-worker)
+Documentation=https://github.com/scott-friedman/AvianVisitors
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# install rewrites User= and the REPLACE_HOME paths to match your Pi.
+Type=simple
+User=REPLACE_USER
+Environment=AVIAN_WORKER=https://avian-worker.s-friedman.workers.dev
+Environment=AVIAN_SECRET_FILE=REPLACE_HOME/.avian/ingest-secret
+Environment=AVIAN_BIRDDB=REPLACE_HOME/BirdNET-Pi/BirdDB.txt
+# Forwarder is pure stdlib, so the system python is enough (no venv).
+ExecStart=/usr/bin/python3 REPLACE_HOME/avian/detection-forwarder.py
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
