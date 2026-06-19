@@ -1,0 +1,13 @@
+[Unit]
+Description=AvianVisitors mic watchdog (restart recorder if it's capturing silence)
+Documentation=https://github.com/scott-friedman/AvianVisitors
+After=birdnet_recording.service
+
+[Service]
+# Runs as root (no User=): it restarts a system service when recordings go silent.
+# install rewrites the REPLACE_HOME path to match your Pi (see pi/update.sh).
+Type=oneshot
+Environment=AVIAN_STREAMDATA=REPLACE_HOME/BirdSongs/StreamData
+# Runs from the ~/BirdNET-Pi clone so `git pull` + restart updates it.
+ExecStart=/bin/bash REPLACE_HOME/BirdNET-Pi/pi/mic-watchdog.sh
+Nice=10

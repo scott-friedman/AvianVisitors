@@ -85,6 +85,35 @@ has gone quiet.
 
 ---
 
+# Mic watchdog — `mic-watchdog.sh` (auto-recover a silent recorder)
+
+The heartbeat catches a *dead* box; this catches a *deaf* one. A USB mic can enumerate
+fine yet feed silence — most often a PulseAudio boot-timing glitch after a power-cycle
+that leaves `birdnet_recording` on a dead input (seen once at the Sudbury move). BirdNET
+then analyses silence forever and the frame quietly freezes on its last image.
+
+`mic-watchdog.sh` runs on a systemd timer (every ~3 min, and 2 min after boot): it reads
+the RMS of the two newest `~/BirdSongs/StreamData` clips and, **only if both are silent
+(RMS < 5)**, restarts `birdnet_recording` (a fresh pulse re-detects the mic) — the fix
+that reliably clears it. It no-ops when the mic is healthy. **Diagnose by WAV RMS, not by
+pulse's `Default Source` label** — they're decoupled here (a fully detached mic still
+recorded fine in testing), so trust the bytes BirdNET actually gets. Runs as root because
+it restarts a system service.
+
+Install (units run from the `~/BirdNET-Pi` clone — see "Updating the Pi" below):
+
+```sh
+sed "s|REPLACE_HOME|$HOME|g" pi/systemd/avian-mic-watchdog.service \
+  | sudo tee /etc/systemd/system/avian-mic-watchdog.service >/dev/null
+sudo cp pi/systemd/avian-mic-watchdog.timer /etc/systemd/system/avian-mic-watchdog.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now avian-mic-watchdog.timer
+sudo systemctl start avian-mic-watchdog.service     # dry-run now (no-op if healthy)
+journalctl -u avian-mic-watchdog -n 3 --no-pager
+```
+
+---
+
 # Pi 512 MB survival — `lean-mode.sh` + `zero2w-tune.sh`
 
 The Zero 2 W has **512 MB RAM** and BirdNET's analyzer needs ~150 MB resident. The full
@@ -180,8 +209,9 @@ bash ~/BirdNET-Pi/pi/update.sh     # git pull --ff-only → re-sync units → re
 ```
 
 `update.sh` is idempotent and a no-op when there's nothing new. It pulls, re-renders
-the forwarder + heartbeat units (in case a template changed), `daemon-reload`s, and
-restarts `avian-forwarder` + `avian-heartbeat.timer` + `birdframe.timer`. The
+the forwarder + heartbeat + mic-watchdog units (in case a template changed),
+`daemon-reload`s, and restarts `avian-forwarder` + `avian-heartbeat.timer` +
+`avian-mic-watchdog.timer` + `birdframe.timer`. The
 detection engine (BirdNET-Pi) updates the same way it always did — its services are
 unaffected by a glue-only change; a `git pull` simply also carries any base updates.
 

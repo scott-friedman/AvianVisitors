@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the mic every few minutes; heal if recordings go silent
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

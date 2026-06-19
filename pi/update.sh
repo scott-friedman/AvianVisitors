@@ -34,13 +34,15 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(eval echo "~$USER_NAME")"
 
 echo "==> re-syncing systemd units"
-for svc in avian-forwarder.service avian-heartbeat.service; do
+for svc in avian-forwarder.service avian-heartbeat.service avian-mic-watchdog.service; do
   [ -f "$REPO/pi/systemd/$svc" ] || continue
   sed "s|REPLACE_USER|$USER_NAME|; s|REPLACE_HOME|$HOME_DIR|g" "$REPO/pi/systemd/$svc" \
     | sudo tee "/etc/systemd/system/$svc" >/dev/null
 done
 [ -f "$REPO/pi/systemd/avian-heartbeat.timer" ] && \
   sudo cp "$REPO/pi/systemd/avian-heartbeat.timer" /etc/systemd/system/avian-heartbeat.timer
+[ -f "$REPO/pi/systemd/avian-mic-watchdog.timer" ] && \
+  sudo cp "$REPO/pi/systemd/avian-mic-watchdog.timer" /etc/systemd/system/avian-mic-watchdog.timer
 
 sudo systemctl daemon-reload
 
@@ -51,6 +53,8 @@ sudo systemctl enable --now avian-forwarder.service 2>/dev/null || true
 sudo systemctl restart avian-forwarder.service 2>/dev/null || echo "   !! avian-forwarder not installed"
 sudo systemctl enable --now avian-heartbeat.timer 2>/dev/null || true
 sudo systemctl restart avian-heartbeat.timer 2>/dev/null || echo "   !! avian-heartbeat.timer not installed"
+sudo systemctl enable --now avian-mic-watchdog.timer 2>/dev/null || true
+sudo systemctl restart avian-mic-watchdog.timer 2>/dev/null || echo "   !! avian-mic-watchdog.timer not installed"
 
 # The frame unit owns its own venv + path (frame/install.sh), so update.sh doesn't
 # re-render it — it just re-arms the timer to pick up a pulled display.py. That only
