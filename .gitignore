@@ -57,3 +57,7 @@ whitelist_species_list.txt
 avian/assets/references/
 # Superseded assets retained locally
 avian/assets/_legacy/
+# Cloudflare Pages build artifact (assembled by avian/build-site.sh)
+/_site/
+# Stray Miniflare/node cruft if wrangler is ever run from the repo root
+/node_modules/

@@ -1,0 +1,38 @@
+name: Deploy avian-worker
+
+# Deploys worker/ (the detection ingest + JSON API over D1) to Cloudflare.
+# Secrets (AVIAN_INGEST_SECRET) and D1 migrations are managed out-of-band with
+# `wrangler secret put` / `wrangler d1 migrations apply --remote`; they persist
+# across deploys and are intentionally NOT re-applied here.
+#
+# Requires repo secrets (scoped to bird's Cloudflare resources only):
+#   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [avian-visitors]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/cf-deploy-worker.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@4.63.0
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: wrangler deploy

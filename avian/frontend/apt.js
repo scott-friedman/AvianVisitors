@@ -280,6 +280,26 @@
   function slugify(sci) {
     return sci.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   }
+  // --- AvianVisitors edge repoint -------------------------------------------
+  // Data (/api/*) goes to the avian-worker set in config.js; images are static
+  // Pages assets (the worker doesn't serve them). '' base => same-origin.
+  var AV_API = (typeof window !== 'undefined' && window.AVIAN_API_BASE) || '';
+  function avImg(sci, pose) {
+    var p = (+pose > 1) ? '-' + (+pose) : '';
+    return './assets/illustrations/' + slugify(sci) + p + '.png';
+  }
+  // A missing illustration retries once from cutouts/. Image error events don't
+  // bubble, so the listener runs in the capture phase.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('error', function (e) {
+      var t = e.target;
+      if (t && t.tagName === 'IMG' && !t.dataset.avFb &&
+          t.src.indexOf('/assets/illustrations/') > -1) {
+        t.dataset.avFb = '1';
+        t.src = t.src.replace('/assets/illustrations/', '/assets/cutouts/');
+      }
+    }, true);
+  }
   function aspect(sci) {
     var d = DIMS[slugify(sci)];
     return d ? d[0] / d[1] : 1.4;
@@ -539,10 +559,7 @@
       // com flows through so the worker's JIT Gemini job uses the right
       // common name in its prompt for a freshly-detected species.
       // &v=IMG_VERSION busts CF edge cache when we re-render any species.
-      var img = './avian/api/cutout.php?sci=' + encodeURIComponent(s.sci) +
-        (s.com ? '&com=' + encodeURIComponent(s.com) : '') +
-        (r.pose === 2 ? '&pose=2' : '') +
-        '&v=' + IMG_VERSION;
+      var img = avImg(s.sci, r.pose === 2 ? 2 : 1);
       var btn = document.createElement('button');
       btn.className = 'gtile';
       btn.type = 'button';
@@ -1155,9 +1172,7 @@
       var win = winBySci[s.sci] || 0;
       var firstMs = Date.parse((s.first_seen || '').replace(' ', 'T'));
       var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMs;
-      var sketchSrc = './avian/api/cutout.php?sci=' + encodeURIComponent(s.sci) +
-        (s.com ? '&com=' + encodeURIComponent(s.com) : '') +
-        '&v=' + SKETCH_VERSION;
+      var sketchSrc = avImg(s.sci, 1);
       var audioSrc = './avian/api/recording.php?sci=' + encodeURIComponent(s.sci);
       // The "all time" window makes the windowed count identical to the
       // all-time count - collapse to a single stat rather than print the
@@ -1347,7 +1362,7 @@
     // lands later - we discard the stale response so the collage
     // never reverts to a different window.
     var forHours = currentHours;
-    return fetchJson('./avian/api/birdnet-api.php?action=recent&hours=' + forHours)
+    return fetchJson(AV_API + '/api/birdnet-api.php?action=recent&hours=' + forHours)
       .then(function (j) {
         if (forHours !== currentHours) return; // window changed mid-flight
         DATA.recent = j; renderWindowDependent(animate);
@@ -1357,11 +1372,11 @@
   function refreshAll(animate) {
     var forHours = currentHours;
     return Promise.all([
-      fetchJson('./avian/api/birdnet-api.php?action=stats').catch(function () { return null; }),
-      fetchJson('./avian/api/birdnet-api.php?action=lifelist').catch(function () { return null; }),
-      fetchJson('./avian/api/birdnet-api.php?action=timeseries&days=30').catch(function () { return null; }),
-      fetchJson('./avian/api/birdnet-api.php?action=firstseen&limit=10').catch(function () { return null; }),
-      fetchJson('./avian/api/birdnet-api.php?action=recent&hours=' + forHours).catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=stats').catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=lifelist').catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=timeseries&days=30').catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=firstseen&limit=10').catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=recent&hours=' + forHours).catch(function () { return null; }),
     ]).then(function (parts) {
       DATA.stats = parts[0];
       DATA.lifelist = parts[1];
@@ -1967,11 +1982,8 @@
     var sp = ((DATA.lifelist && DATA.lifelist.species) || [])
       .find(function (s) { return s.sci === sci; });
     var com = sp ? (sp.com || '') : '';
-    var base = './avian/api/cutout.php?sci=' + encodeURIComponent(sci) +
-      (com ? '&com=' + encodeURIComponent(com) : '') +
-      '&v=' + SKETCH_VERSION;
     var n = +pose || 1;
-    return n > 1 ? base + '&pose=' + n : base;
+    return avImg(sci, n);
   }
   function openDetailModal(sci) {
     if (!sci) return;
@@ -2068,7 +2080,7 @@
     // Species detail (lifelist row + every detection).
     var loadSpecies = SPECIES_CACHE[sci]
       ? Promise.resolve(SPECIES_CACHE[sci])
-      : fetchJson('./avian/api/birdnet-api.php?action=species&sci=' + encodeURIComponent(sci)).then(function (j) {
+      : fetchJson(AV_API + '/api/birdnet-api.php?action=species&sci=' + encodeURIComponent(sci)).then(function (j) {
           SPECIES_CACHE[sci] = j;
           return j;
         });
