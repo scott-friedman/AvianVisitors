@@ -13,7 +13,7 @@ The software is essentially done; the rest is the move. Status as of **2026-06-1
 
 - ✅ **Point at Sudbury** — BirdNET region `42.3834 / -71.4162`; Pi timezone `America/New_York`; Worker `TZ_OFFSET_HOURS=-4` (deployed + verified).
 - ✅ **Remote-access tooling** — `cloudflared` on the Pi (2026.6.1) + Mac (2026.5.2); `sshd` enabled at boot; tunnel scripts written.
-- ⏳ **Wifi — pre-stage Dad's network** so it self-joins at Sudbury. *Needs Dad's SSID + password.* → `pi/set-wifi.sh "<ssid>" "<pw>" 100`
+- ✅ **Wifi — pre-stage Dad's network** — SSID **`MOTU`** staged (WPA2, priority 100, autoconnect) so it self-joins at Sudbury. *(Earlier wrong guesses `Master_of_the_Universe`/`…f` removed 2026-06-19.)* → `pi/set-wifi.sh "MOTU" "<pw>" 100`
 - ⏳ **Wifi — rescue network** (your phone hotspot) so a wrong Dad's-password isn't a brick. *Needs hotspot SSID + password.* → `pi/set-wifi.sh "<hotspot>" "<pw>" 50`
 - ✅ **Remote tunnel — LIVE** — `avian-admin` routes `bird-ssh.foobos.net` → the Pi's SSH; **`ssh bird-pi`** works from the Mac (boot-persistent). **Password-gated, no Access app** (deliberate — see `pi/README.md`); the gate is a strong, unique `inky` password behind the tunnel. *(Confirm that password is strong before the box ships.)*
 - ⬜ **Liveness heartbeat + alert** — install the 15-min heartbeat timer (`pi/README.md` → "Liveness heartbeat") and add an UptimeRobot HTTP monitor on `<worker>/api/status`. It alerts when the box goes silent for ~45 min, so a failure at Dad's reaches *you* instead of him noticing a frozen frame.
@@ -26,8 +26,8 @@ The software is essentially done; the rest is the move. Status as of **2026-06-1
 ## C. On-site at Dad's (the install visit) — verify ALL of this before you leave
 
 1. ⬜ Power on near his router; wait ~1 min.
-2. ⬜ **Confirm it joined his wifi.** With the tunnel up: `ssh bird-pi`. Without it: put your laptop on his wifi → `ssh inky@inky.local`.
-   - **If it did NOT join:** turn on your phone hotspot (2.4 GHz / iPhone "Maximize Compatibility" ON) → Pi joins the rescue network → `ssh` in → fix it: `bash pi/set-wifi.sh "DadsSSID" "correct-pw" 100`.
+2. ✅ **Confirmed on `MOTU`** (2026-06-19, on-site): Pi joined Dad's `MOTU` (DHCP `10.10.10.111/24`), internet verified, tunnel back over MOTU — `ssh bird-pi` works. Reachable any time via the tunnel; or laptop-on-his-wifi → `ssh inky@inky.local`.
+   - **If it ever drops off:** turn on your phone hotspot (2.4 GHz / iPhone "Maximize Compatibility" ON) → Pi joins the rescue profile (`wifi-Linguine_Pro`, prio 50) → `ssh` in → fix: `bash pi/set-wifi.sh "MOTU" "correct-pw" 100`.
 3. ⬜ Plug in the mic → `arecord -l` shows a capture device → set the sound card at `http://inky.local/`.
 4. ⬜ **Enable detection at boot:** `sudo systemctl enable --now birdnet_analysis birdnet_recording` (it's off by default until the mic exists).
 5. ⬜ Confirm a real bird (or a whistle) lands at `/api/recent` and the panel repaints.
