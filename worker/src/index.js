@@ -142,7 +142,12 @@ async function frameSignature(rows) {
 }
 
 function pngResponse(body, sig, note) {
-  return new Response(body, {
+  // D1 returns a BLOB column as a JS number[] (not an ArrayBuffer), and
+  // new Response(number[]) would stringify it ("137,80,78,..."). Coerce to
+  // bytes so both the fresh Uint8Array (miss) and the cached array (hit/stale)
+  // serve as real binary PNG.
+  const bytes = body instanceof Uint8Array ? body : new Uint8Array(body);
+  return new Response(bytes, {
     status: 200,
     headers: {
       'Content-Type': 'image/png',
