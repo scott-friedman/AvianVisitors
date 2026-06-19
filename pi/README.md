@@ -42,3 +42,41 @@ curl -s "$AVIAN_WORKER/api/recent?hours=24" | grep -i cardinal
 
 Remove test rows from the worker when done:
 `wrangler d1 execute avian-detections --remote --command "DELETE FROM detections WHERE com='Northern Cardinal'"`
+
+---
+
+# Pi 512 MB survival — `lean-mode.sh` + `zero2w-tune.sh`
+
+The Zero 2 W has **512 MB RAM** and BirdNET's analyzer needs ~150 MB resident. The full
+BirdNET-Pi stack (web UI, Streamlit Stats, spectrogram, Icecast/livestream, Caddy+PHP)
+overcommits and **OOM-thrashes the box unreachable**; and even *detection-only* OOMs
+untuned. Two committed scripts make it stable. Full incident + measured numbers:
+[`../PI-RECOVERY.md`](../PI-RECOVERY.md).
+
+## `lean-mode.sh` — strip to detection-only
+`sudo bash pi/lean-mode.sh`. Disables/masks every service this Cloudflare-hosted
+deployment never uses (Stats, chart/spectrogram viewers, Icecast, livestream, web
+terminal, Caddy, PHP, `birdnet_log`), leaving only the detection engine, the forwarder,
+the e-ink frame timer, and ssh. Idempotent; also removes the temporary `systemd.mask=`
+boot hack if present. **Necessary but not sufficient** — stripping saves only tens of MB.
+
+## `zero2w-tune.sh` — make 512 MB actually work
+`sudo bash pi/zero2w-tune.sh`, **then reboot**. Idempotent. Applies:
+- **zram** compressed-RAM swap as the primary lane (~50 % of RAM, lz4) + `vm.swappiness=100`
+  — fast spike absorption, no SD wear. The stock 512 MB SD swapfile stays as a low-priority
+  backstop (deliberately **not** grown to 2 GB — a big SD swapfile thrashes the card to death).
+- **mono capture + 30 s recordings** (`birdnet.conf` `CHANNELS=1`, `RECORDING_LENGTH=30`) —
+  less IO; lets the slow CPU keep pace so no backlog builds.
+- **clears the corrupt numba JIT cache** (`*.nbi`/`*.nbc`) — the prior OOM crashes truncated
+  it, breaking librosa with `EOFError: Ran out of input` on every analysis (numba never
+  recompiles a *corrupt* entry, only a missing one).
+- **`gpu_mem=16`** (headless; the Inky panel is SPI, not the GPU) — frees ~48 MB RAM.
+- **hardware watchdog** (`RuntimeWatchdogSec=15`) — auto-reboots a hung box instead of a
+  physical power-cycle. Plus Wi-Fi power-save off and `journald` capped at 200 MB.
+
+Also clear any recording backlog before going live (a pile of unanalyzed clips drives
+sustained memory pressure): `rm ~/BirdSongs/StreamData/*.wav`.
+
+**Measured (2026-06-19, no mic):** steady-state ~370 MB used / ~90 MB free, analyzer
+plateaus ~150 MB, backlog holds ~2 (keeps up with realtime), SSH responsive, no thrash.
+**Verdict: stripped + tuned BirdNET-Pi is viable on a 512 MB Zero 2 W — no BirdNET-Go.**

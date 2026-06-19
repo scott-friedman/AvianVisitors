@@ -60,7 +60,7 @@ Reuse foobos **patterns**, not its **resources**. Create bird's own, with new na
 Probed `inky@inky.local` (2026-06-18): **Raspberry Pi Zero 2 W Rev 1.0**, **512 MB RAM**, **aarch64**, **Debian 12 Bookworm**, **Python 3.11.2**. Pimoroni Inky Impression **7.3" (800×480, 7-color)** on the 40-pin header (inky-web drives it today).
 
 - **OS passes** the installer (aarch64 + Bookworm + Py ≥ 3.10) — **no reflash required**.
-- **512 MB is the constraint**, but the edge architecture offloads almost everything, so a Zero 2 W is sufficient (detection-only is a supported BirdNET-Pi config). No Pi 4 needed.
+- **512 MB is the hard constraint.** The edge architecture offloads the website + render but **NOT BirdNET's own ~150 MB analyzer** — so *stripping services alone is not enough* (it saves only tens of MB; the full stack OOM-thrashed the box unreachable on 2026-06-19). A Zero 2 W runs detection-only **only after the 512 MB tuning** in `pi/zero2w-tune.sh` (zram swap, mono/30 s recording, `gpu_mem=16`, watchdog). **With** that tuning it is stable — measured steady-state: ~370 MB used / ~90 MB free, analyzer plateaus ~150 MB, keeps up with realtime (no Pi 4 needed). The real enabler is **swap (the required Zero-2-W step) + cache hygiene**, not stripping. See `PI-RECOVERY.md`.
 - **USB mic required** (none attached yet). The Zero 2 W's only data port is **micro-USB OTG** → needs a **micro-USB→USB-A OTG adapter**; USB audio is class-compliant.
 
 ## Repo layout (verified)
@@ -79,6 +79,8 @@ homepage/  model/  templates/  docs/  tests/
 Authoritative upstream docs: `README.md`, `frame/README.md`, `avian/forwarding/README.md`, `avian/scripts/README.md`.
 
 ## Pi setup (detection only)
+
+> **⚠️ 512 MB tuning is MANDATORY** (learned 2026-06-19). After installing BirdNET-Pi, run `pi/lean-mode.sh` (strip to detection-only) then `pi/zero2w-tune.sh` (zram swap, mono/30 s recording, `gpu_mem=16`, watchdog) and reboot — otherwise the box OOM-thrashes itself unreachable. Also clear any `~/BirdSongs/StreamData/*.wav` backlog before going live. Full story + measured numbers: `PI-RECOVERY.md`.
 
 1. Plug in the USB mic (via OTG adapter). Install BirdNET-Pi:
    `curl -s https://raw.githubusercontent.com/Twarner491/AvianVisitors/avian-visitors/newinstaller.sh | bash` (clones to `~/BirdNET-Pi`, reboots). Point origin at the fork: `git -C ~/BirdNET-Pi remote set-url origin https://github.com/scott-friedman/AvianVisitors.git`.
@@ -124,6 +126,7 @@ The Pi currently runs **inky-web** (separate Flask project at `/Users/scott/inky
 
 - **License CC-BY-NC-SA-4.0 (non-commercial)** — don't propose commercial use.
 - **No mic ⇒ no detections** — the #1 failure mode.
+- **512 MB tuning is mandatory** — even *detection-only* untuned OOM-thrashes the Zero 2 W unreachable (RAM, not CPU, is the bottleneck). The real fixes are **swap (zram) + numba cache hygiene + clearing the StreamData backlog**, not stripping services. Applied by `pi/zero2w-tune.sh`; see `PI-RECOVERY.md`.
 - **D1, not KV**, for detection writes (KV free tier ≈ 1k writes/day).
 - **Separate from foobos** — never reference foobos resource IDs in this repo's `wrangler.toml`; same account, but pooled free-tier quotas.
 - **BirdNET latency floor** (~5–15 s on a Zero 2 W) is why ~5–10 s polling is sufficient — don't over-engineer push.

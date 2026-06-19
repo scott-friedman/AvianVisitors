@@ -4,6 +4,8 @@
 > Read `CLAUDE.md` (architecture) and `PLAN.md` (v1 build plan) too, but **this file
 > supersedes the rosy "Phase 2 done" status** — BirdNET-Pi hit a wall tonight. Start here.
 
+> **✅ UPDATE — RESOLVED 2026-06-19 (same day).** Steps 1–5 below are DONE and the box is **stable**. Root cause was NOT the web UI or insufficient stripping — it was **(a)** the stock 512 MB swapfile (the required Zero-2-W bump was never applied), **(b)** a numba JIT cache corrupted by the OOM crashes (`EOFError: Ran out of input`), and **(c)** a 648-file / 1.8 GB `StreamData` backlog from no-mic test recording. **Fix:** `pi/lean-mode.sh` (permanent strip) + `pi/zero2w-tune.sh` (zram swap, mono/30 s recording, cleared numba cache, `gpu_mem=16`, hardware watchdog) + cleared backlog. **Measured steady-state:** ~370 MB used / ~90 MB free, analyzer plateaus ~150 MB, backlog holds ~2 (keeps up with realtime), SSH responsive, no thrash. **Verdict: stripped + tuned BirdNET-Pi is viable — BirdNET-Go NOT needed.** Remaining: USB mic (then `sudo systemctl enable --now birdnet_analysis birdnet_recording`, clear demo data, set worker `TZ_OFFSET_HOURS=-4`) and Phase 5 token. The play-by-play below is kept as the incident record.
+
 ---
 
 ## Plain English summary (for a non-technical reader)

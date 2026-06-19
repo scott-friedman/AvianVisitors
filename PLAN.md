@@ -2,7 +2,7 @@
 
 > **For a fresh Claude Code session.** Read `CLAUDE.md` first — it holds the full decided architecture. This file is the **ordered, executable build plan**. It was written to hand off from a planning session without carrying its context. Everything here is decided unless marked "OPEN".
 >
-> **⚠️ 2026-06-19 — the Pi hit a memory crisis.** BirdNET-Pi's full stack is too heavy for the 512 MB Zero 2 W; it thrashed unreachable and was recovered via an SD-card boot edit. **If you're doing any Pi work, start with `PI-RECOVERY.md`, not the "Phase 2 done" status below.** The Cloudflare side (Worker/D1/Pages/frame) is unaffected.
+> **2026-06-19 — Pi memory crisis, now RESOLVED (same day).** BirdNET-Pi OOM-thrashed the 512 MB Zero 2 W unreachable. Root cause: the stock 512 MB swapfile (the required Zero-2-W bump was never applied) + a crash-corrupted numba cache + a 648-file recording backlog — **not** the web UI or insufficient stripping. Fixed by `pi/lean-mode.sh` + `pi/zero2w-tune.sh` (zram, mono/30 s, cache clear, `gpu_mem=16`, watchdog); measured stable (~370 MB used / ~90 free, keeps up with realtime). **Verdict: Zero 2 W detection-only is viable — no BirdNET-Go.** Full story: `PI-RECOVERY.md`. Cloudflare side was unaffected throughout.
 
 ---
 
