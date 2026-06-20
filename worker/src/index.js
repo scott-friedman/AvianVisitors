@@ -278,7 +278,7 @@ async function queryApi(request, env, url) {
 
   // action from ?action=, else inferred from the path's last segment, so both
   // /api/recent and /api/birdnet-api.php?action=recent resolve the same.
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   const action = url.searchParams.get('action') || (known.includes(seg) ? seg : 'recent');
 
@@ -290,6 +290,7 @@ async function queryApi(request, env, url) {
     case 'stats': return stats(env, tz, now);
     case 'lifelist': return lifelist(env, tz);
     case 'timeseries': return timeseries(env, url, tz, now);
+    case 'hourly': return hourly(env, url, tz, now);
     case 'species': return species(env, url, tz);
     case 'firstseen': return firstseen(env, url, tz);
     default: return json({ error: 'unknown action' }, 404);
@@ -370,6 +371,91 @@ async function timeseries(env, url, tz, now) {
   ).bind(tz, hourSince).all()).results || [];
 
   return json({ days, daily, by_hour, as_of: new Date().toISOString() });
+}
+
+// Rolling-window detections bucketed by LOCAL clock hour, for the Day Dial.
+// Unlike timeseries.by_hour (a fixed 30-day aggregate), this honors ?hours=N so
+// the dial tracks the same window picker as the collage. Returns 24 zero-filled
+// bins (silent hours included), each with detections/distinct-species/top-3, plus
+// tz-correct now + sunrise/sunset in Sudbury-local fractional hours (see CLAUDE.md
+// D5: the viewer's browser may be in any timezone — the Worker is authoritative).
+async function hourly(env, url, tz, now) {
+  const hours = clampInt(url.searchParams.get('hours'), 24, 1, 1000000);
+  const since = now - hours * 3600;
+
+  // hour (local clock) × species counts in the rolling window. ORDER BY ... n DESC
+  // so the first ≤3 rows pushed per hour are that hour's most-heard species.
+  const { results } = await env.DB.prepare(
+    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS hour,
+            sci, com, COUNT(*) AS n
+       FROM detections
+      WHERE ts >= ?
+      GROUP BY hour, sci
+      ORDER BY hour, n DESC`
+  ).bind(tz, since).all();
+
+  const bins = Array.from({ length: 24 }, (_, h) => ({
+    hour: h, detections: 0, species: 0, top: [],
+  }));
+  for (const r of (results || [])) {
+    const b = bins[r.hour];
+    if (!b) continue;                       // defensive: strftime is always 00–23
+    b.detections += r.n;
+    b.species += 1;
+    if (b.top.length < 3) b.top.push({ com: r.com, sci: r.sci, n: r.n });
+  }
+  const total = bins.reduce((s, b) => s + b.detections, 0);
+  let peakHour = null, peakN = -1;
+  for (const b of bins) if (b.detections > peakN) { peakN = b.detections; peakHour = b.hour; }
+
+  // tz-correct "now" and sun, in Sudbury-local fractional hours (see D5). Shift
+  // UTC `now` by the offset, then read the Date's UTC fields = local wall clock.
+  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const localNow = new Date((now + offH * 3600) * 1000);
+  const now_local = {
+    hour: localNow.getUTCHours(),
+    minute: localNow.getUTCMinutes(),
+    frac: localNow.getUTCHours() + localNow.getUTCMinutes() / 60,
+  };
+  const sun = sunArc(env, localNow, offH); // {sunrise, sunset} local frac hours, or null
+
+  return json({
+    hours, total, peak_hour: peakHour,
+    tz_offset_hours: offH, now_local, sun,
+    bins, as_of: new Date().toISOString(),
+  });
+}
+
+// Sunrise/sunset for the daylight band — standard low-precision sunrise equation
+// (Wikipedia). Returns Sudbury-local fractional hours, or null if SITE_LAT/LON are
+// unset/invalid (band omitted client-side) or during polar day/night. Verified for
+// 42.385,-71.417 on 2026-06-20 EDT: sunrise 05:10, sunset 20:27 (≈NOAA 05:08/20:24).
+function sunArc(env, localNow, offH) {
+  const lat = parseFloat(env.SITE_LAT), lon = parseFloat(env.SITE_LON);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const Y = localNow.getUTCFullYear(), M = localNow.getUTCMonth() + 1, D = localNow.getUTCDate();
+  const rad = Math.PI / 180, deg = 180 / Math.PI;
+  const a = Math.floor((14 - M) / 12), y = Y + 4800 - a, m = M + 12 * a - 3;
+  const JDN = D + Math.floor((153 * m + 2) / 5) + 365 * y + Math.floor(y / 4)
+            - Math.floor(y / 100) + Math.floor(y / 400) - 32045;
+  const n = JDN - 2451545.0 + 0.0008;
+  const Jstar = n - lon / 360;                       // lon EAST-positive; -71.4 for Sudbury
+  const Msun = (357.5291 + 0.98560028 * Jstar) % 360;
+  const C = 1.9148 * Math.sin(Msun * rad) + 0.02 * Math.sin(2 * Msun * rad)
+          + 0.0003 * Math.sin(3 * Msun * rad);
+  const lambda = (Msun + C + 282.9372) % 360;
+  const Jtransit = 2451545.0 + Jstar + 0.0053 * Math.sin(Msun * rad)
+                 - 0.0069 * Math.sin(2 * lambda * rad);
+  const decl = Math.asin(Math.sin(lambda * rad) * Math.sin(23.4397 * rad));
+  const cosH = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(decl))
+             / (Math.cos(lat * rad) * Math.cos(decl));
+  if (cosH > 1 || cosH < -1) return null;            // polar day/night
+  const Hd = Math.acos(cosH) * deg / 360;
+  const toLocalFrac = (J) => {
+    const utcHours = ((J - Math.floor(J - 0.5) - 0.5) * 24); // J → hours past UTC midnight
+    return ((utcHours + offH) % 24 + 24) % 24;
+  };
+  return { sunrise: toLocalFrac(Jtransit - Hd), sunset: toLocalFrac(Jtransit + Hd) };
 }
 
 async function species(env, url, tz) {

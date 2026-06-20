@@ -1590,3 +1590,85 @@
  * See avian/forwarding/. */
 body.av-local #dd-locked { display: none; }
 body.av-local #dd-items  { display: block; }
+
+  /* ===== Stats: chart toggle + Day Dial =====
+     The left stats cell holds a segmented toggle (cloned from .atlas-sort)
+     above two stacked, mutually-exclusive charts: the radial Day Dial
+     (default) and the editorial species timeline. Both inherit the
+     ink-on-paper tokens so light/dark themes flip for free. */
+  .stats-charts { display: flex; flex-direction: column; gap: 14px; min-height: 0; flex: 1 1 auto; }
+
+  /* Both charts toggle via the [hidden] attribute. .stats-dial sets
+     display:flex (and .stats-timeline is a flex child), so an explicit
+     rule is needed - the UA [hidden]{display:none} loses to a class's
+     display declaration on specificity. */
+  .stats-dial[hidden], .stats-timeline[hidden] { display: none; }
+
+  .stats-chart-toggle {
+    align-self: flex-start; display: inline-flex; padding: 4px; position: relative;
+    background: var(--paper-2); border-radius: 999px; box-shadow: var(--recess);
+  }
+  .stats-chart-toggle button {
+    background: transparent; border: 0; color: var(--ink-soft);
+    font: 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.18em; text-transform: uppercase;
+    padding: 8px 14px; border-radius: 999px; cursor: pointer; position: relative; z-index: 1;
+    transition: color 200ms ease;
+  }
+  .stats-chart-toggle button:hover,
+  .stats-chart-toggle button[aria-current="true"] { color: var(--ink); }
+
+  .stats-dial { display: flex; align-items: center; justify-content: center; flex: 1 1 auto; min-height: 0; position: relative; }
+  .dial-svg { width: 100%; max-width: 420px; height: auto; overflow: visible; }
+
+  /* Daylight band: the night ring is a full circle; the day arc overlays it
+     across sunrise->sunset. Tones are chosen so DAYTIME always reads BRIGHTER
+     than night in BOTH themes (light: night = darker-than-page, day = page;
+     dark: night = page, day = lighter-than-page - paper-3 is lighter than
+     paper under the charcoal theme, so the pair is swapped). */
+  .dial-night   { stroke: var(--paper-3); }
+  .dial-day     { fill: var(--paper); }
+  :root[data-theme="dark"] .dial-night { stroke: var(--paper); }
+  :root[data-theme="dark"] .dial-day   { fill: var(--paper-3); }
+
+  .dial-ring,
+  .dial-spoke   { stroke: var(--hairline); stroke-width: 1; }
+  .dial-spoke.major { stroke: var(--hairline); }
+  .dial-suntick { stroke: var(--ink-soft); stroke-width: 1; }
+  .dial-petal   { fill: var(--ink); transition: fill 160ms ease; }
+  .dial-petal.is-hover { fill: var(--accent); }
+  .dial-petal.current  { fill: none; stroke: var(--ink); stroke-width: 1; stroke-dasharray: 2 2; }
+  .dial-now     { stroke: var(--ink); stroke-width: 1.5; }
+  .dial-now-dot { fill: var(--ink); }
+  .dial-hlabel  { fill: var(--ink-soft); font: 8px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+  .dial-total     { fill: var(--ink); font: 800 22px/1 ui-serif, "Iowan Old Style", Georgia, serif; }
+  .dial-total-lbl { fill: var(--ink-soft); font: 8px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.18em; text-transform: uppercase; }
+
+  /* hover tooltip pill (reuses the raised-paper look) */
+  .dial-tip {
+    position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+    background: var(--paper); box-shadow: var(--raised); border-radius: 8px;
+    padding: 6px 10px; pointer-events: none; max-width: 220px; z-index: 2;
+  }
+  .dial-tip[hidden] { display: none; }
+  .dial-tip .hd { display: block; font: 9px/1.4 ui-monospace, Menlo, monospace; letter-spacing: 0.08em; color: var(--ink-soft); text-transform: uppercase; margin-bottom: 3px; }
+  .dial-tip .t  { display: flex; justify-content: space-between; gap: 14px; font: 12px/1.4 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink); }
+  .dial-tip .t .n { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+  @keyframes dial-petal-in { from { transform: scale(0.15); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .dial-petal.entering { animation: dial-petal-in 360ms cubic-bezier(.2,.7,.3,1) backwards; transform-box: view-box; transform-origin: 160px 160px; }
+
+  /* Mobile single-column: the dial is the hero at full size with the side
+     panel stacked below. Together they exceed a phone screen, so the grid
+     scrolls WITHIN the fixed-chrome stats view (#v1 stays put) rather than the
+     transparent dial overflowing onto the side-panel text (the old timeline
+     used a definite height so its row never collapsed; the dial's min-height
+     let the height-constrained grid squish the cell). */
+  @media (max-width: 900px) {
+    .stats-grid { overflow-y: auto; -webkit-overflow-scrolling: touch; align-content: start; }
+    /* Let the charts cell claim its content height (override the desktop
+       min-height:0 squish) so the GRID overflows and scrolls, instead of the
+       cell collapsing and the dial spilling over the side panel. */
+    .stats-charts { min-height: auto; }
+    .stats-dial { min-height: clamp(280px, 48vh, 420px); }
+  }
+  @media (prefers-reduced-motion: reduce) { .dial-petal.entering { animation: none; } }

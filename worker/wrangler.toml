@@ -25,6 +25,11 @@ binding = "BROWSER"
 # seconds and are unaffected. Default UTC.
 TZ_OFFSET_HOURS = "-4"  # Sudbury, MA = US Eastern (EDT). Fixed offset: reads -5 (EST) in winter; acceptable for v1 day-buckets.
 
+# Site coordinates for the Day Dial's sunrise/sunset band (/api/hourly → sunArc).
+# Sudbury, MA. East-positive longitude. Unset/invalid → sun:null → band omitted.
+SITE_LAT = "42.385"
+SITE_LON = "-71.417"
+
 # The page Browser Rendering screenshots for /frame.png. ?frame=1 strips chrome
 # to a pure-white, animation-free collage (see avian/frontend/index.html).
 FRAME_URL = "https://barrysbirds.pages.dev/?frame=1"

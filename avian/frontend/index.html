@@ -81,12 +81,26 @@
     <!-- ========== View 2 - Stats ========== -->
     <section class="view" id="v1" aria-label="Stats">
       <div class="stats-grid">
-        <div class="stats-timeline" id="statsTimeline">
-          <!-- Editorial detection timeline. Each column = one species
-               from the current time window. The black square's vertical
-               position encodes detection count; the species name + sci
-               name sit rotated below. Vertical hairlines separate
-               columns. Hard-rendered by renderStatsTimeline(). -->
+        <div class="stats-charts">
+          <!-- Two-way switch (cloned from .atlas-sort) to flip the left
+               cell between the Day Dial (default) and the species timeline.
+               Choice persists in localStorage bird:statsChart. -->
+          <div class="stats-chart-toggle" id="statsChartToggle" role="tablist" aria-label="chart type">
+            <i class="seg-pill" aria-hidden="true"></i>
+            <button type="button" data-chart="dial"     aria-current="true">day</button>
+            <button type="button" data-chart="timeline">species</button>
+          </div>
+          <!-- Day Dial: 24h radial histogram of detections by clock hour
+               (default). Angle = time of day (midnight top, clockwise),
+               radius = count, with a daylight band + "now" hand. Rendered
+               by drawDayDial(). -->
+          <div class="stats-dial" id="statsDial"></div>
+          <!-- Editorial detection timeline. Each column = one species from
+               the current window; the black square's vertical position
+               encodes detection count, with a rotated common+sci name
+               below and vertical hairlines between columns. Rendered by
+               drawHistograms(). -->
+          <div class="stats-timeline" id="statsTimeline" hidden></div>
         </div>
         <aside class="stats-side">
           <div class="grp">
