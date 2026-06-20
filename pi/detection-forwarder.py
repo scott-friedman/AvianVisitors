@@ -7,6 +7,16 @@ and POSTs each new detection to avian-worker's ``/api/detection``. It is fully
 service — so a ``git pull`` of BirdNET-Pi never clobbers it. The Pi stays
 outbound-only: this only makes outbound POSTs, opens no ports.
 
+It also uploads each detection's extracted mp3 to ``/api/clip`` so the public
+site can play it. BirdDB.txt carries no filename, but BirdNET-Pi writes the clip
+to a deterministic path *before* it appends the line (birdnet_analysis.py orders
+extract -> write_to_file), so the clip already exists when we read the line:
+    EXTRACTED/By_Date/<date>/<Com_safe>/<Com_safe>-<pct>-<date>-birdnet-[RTSP_id]<HH:MM:SS>.mp3
+where Com_safe = common name with apostrophes dropped + spaces -> '_' (classes.py).
+We match it by the unique HH:MM:SS within that species/date dir. The basename is
+sent as ``file`` in the detection POST only when the clip upload succeeds, so D1
+never holds a key for an object that isn't in R2 (a missing clip -> "no audio").
+
 BirdDB.txt line format (see scripts/utils/reporting.py ``summary()``):
     Date;Time;Sci_Name;Com_Name;Confidence;Lat;Lon;Cutoff;Week;Sens;Overlap
 e.g.  2026-06-19;07:48:01;Turdus migratorius;American Robin;0.91;...
@@ -22,6 +32,8 @@ Config via env (set in the systemd unit):
     AVIAN_SECRET_FILE  path to a file holding the shared ingest secret (mode 600)
     AVIAN_BIRDDB       path to BirdDB.txt
     AVIAN_STATE_FILE   where to persist the read offset (default ~/.avian/forwarder-state.json)
+    AVIAN_EXTRACTED    BirdNET-Pi's EXTRACTED dir (default ~/BirdSongs/Extracted)
+    AVIAN_AUDIOFMT     extracted clip extension (default mp3; matches AUDIOFMT)
 
 Note: the ingest secret is read once at startup, so rotating it requires a
 forwarder restart (otherwise every POST 401s and is dropped).
@@ -32,6 +44,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -39,7 +52,10 @@ WORKER = os.environ.get("AVIAN_WORKER", "https://avian-worker.s-friedman.workers
 SECRET_FILE = os.environ.get("AVIAN_SECRET_FILE", os.path.expanduser("~/.avian/ingest-secret"))
 DB_TXT = os.environ.get("AVIAN_BIRDDB", os.path.expanduser("~/BirdNET-Pi/BirdDB.txt"))
 STATE_FILE = os.environ.get("AVIAN_STATE_FILE", os.path.expanduser("~/.avian/forwarder-state.json"))
+EXTRACTED = os.environ.get("AVIAN_EXTRACTED", os.path.expanduser("~/BirdSongs/Extracted"))
+AUDIOFMT = os.environ.get("AVIAN_AUDIOFMT", "mp3")
 ENDPOINT = WORKER.rstrip("/") + "/api/detection"
+CLIP_ENDPOINT = WORKER.rstrip("/") + "/api/clip"
 
 
 def load_secret() -> str:
@@ -77,8 +93,11 @@ def parse_ts(date_s: str, time_s: str) -> int:
     return int(dt.timestamp())
 
 
-def post(secret: str, sci: str, com: str, conf: float, ts: int) -> int:
-    body = json.dumps({"sci": sci, "com": com, "conf": conf, "ts": ts}).encode()
+def post(secret: str, sci: str, com: str, conf: float, ts: int, file: str | None = None) -> int:
+    payload = {"sci": sci, "com": com, "conf": conf, "ts": ts}
+    if file:
+        payload["file"] = file
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         ENDPOINT, data=body, method="POST",
         headers={
@@ -88,6 +107,39 @@ def post(secret: str, sci: str, com: str, conf: float, ts: int) -> int:
         },
     )
     with urllib.request.urlopen(req, timeout=15) as r:
+        return r.status
+
+
+def find_clip(date_s: str, time_s: str, com: str) -> tuple[str | None, str | None]:
+    """Locate the extracted mp3 for one detection; return (path, basename) or
+    (None, None). The species dir is deterministic (common_name_safe, classes.py);
+    within it the clip is matched by its unique HH:MM:SS suffix, so an RTSP_ prefix
+    or an unexpected confidence-pct format doesn't matter. scandir (not glob) so a
+    '*'/'[' in a common name can't break the match."""
+    com_safe = com.replace("'", "").replace(" ", "_")
+    species_dir = os.path.join(EXTRACTED, "By_Date", date_s, com_safe)
+    suffix = f"{time_s}.{AUDIOFMT}"  # e.g. "07:48:01.mp3"
+    try:
+        for entry in os.scandir(species_dir):
+            if entry.is_file() and "birdnet-" in entry.name and entry.name.endswith(suffix):
+                return entry.path, entry.name
+    except FileNotFoundError:
+        pass
+    return None, None
+
+
+def post_clip(secret: str, basename: str, data: bytes) -> int:
+    # Key in the query string (percent-encoded — the basename contains ':').
+    url = CLIP_ENDPOINT + "?file=" + urllib.parse.quote(basename, safe="")
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={
+            "Content-Type": "audio/mpeg",
+            "X-Avian-Secret": secret,
+            "User-Agent": "avian-forwarder/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
         return r.status
 
 
@@ -104,6 +156,34 @@ def handle_line(secret: str, line: str) -> None:
     except ValueError:
         return  # header line or malformed; skip
 
+    # Locate + upload the clip first, so the detection's `file` key is set only
+    # when the object is really in R2 (a failed/absent clip -> NULL -> the site
+    # shows "no audio", never a dangling key). Best-effort: never blocks the
+    # detection POST below. The clip is already on disk (extract precedes the
+    # BirdDB.txt line), so this is a local read + one small upload.
+    file_key = None
+    clip_time = time_s.split(".")[0]  # filename uses HH:MM:SS, no fractional
+    path, basename = find_clip(date_s, clip_time, com)
+    if basename:
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+            for attempt in range(2):  # one quick retry rides a transient blip
+                try:
+                    post_clip(secret, basename, data)
+                    file_key = basename
+                    break
+                except Exception:
+                    if attempt == 0:
+                        time.sleep(2)
+                    else:
+                        raise
+        except Exception as e:
+            print(f"clip upload failed for {basename}: {e}", file=sys.stderr, flush=True)
+    else:
+        print(f"no clip for {sci} @ {date_s} {clip_time} under {EXTRACTED}/By_Date",
+              file=sys.stderr, flush=True)
+
     # A few quick retries ride out a transient blip (DNS, a momentary wifi drop) —
     # common on a Pi. A sustained outage still drops the line: acceptable for a
     # species collage (common birds re-detect constantly; the worker dedupes), and
@@ -111,8 +191,8 @@ def handle_line(secret: str, line: str) -> None:
     last = None
     for attempt in range(3):
         try:
-            status = post(secret, sci, com, conf, ts)
-            print(f"posted {sci} ({com}) conf={conf:.3f} ts={ts} -> {status}", flush=True)
+            status = post(secret, sci, com, conf, ts, file_key)
+            print(f"posted {sci} ({com}) conf={conf:.3f} ts={ts} file={file_key or '-'} -> {status}", flush=True)
             return
         except Exception as e:  # HTTPError (4xx/5xx) or URLError (network) — retry then give up
             last = e

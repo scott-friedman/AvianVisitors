@@ -1329,7 +1329,7 @@
       var firstMs = Date.parse((s.first_seen || '').replace(' ', 'T'));
       var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMs;
       var sketchSrc = avImg(s.sci, 1);
-      var audioSrc = './avian/api/recording.php?sci=' + encodeURIComponent(s.sci);
+      var audioSrc = AV_API + '/api/recording?sci=' + encodeURIComponent(s.sci);
       // The "all time" window makes the windowed count identical to the
       // all-time count - collapse to a single stat rather than print the
       // same number twice. Otherwise label the count with its span.
@@ -3051,7 +3051,7 @@
     }
     var ctx = getSpecCtx();
     if (!ctx) { fail('WebAudio not available'); return; }
-    fetch('./avian/api/recording.php?file=' + encodeURIComponent(file))
+    fetch(AV_API + '/api/recording?file=' + encodeURIComponent(file))
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.arrayBuffer();
@@ -3116,7 +3116,7 @@
       prow.classList.add('expanded');
       ensureSpectroImage(prow);
       var strip = prow.querySelector('.rec-spectro');
-      var audio = new Audio('./avian/api/recording.php?file=' + encodeURIComponent(pfile));
+      var audio = new Audio(AV_API + '/api/recording?file=' + encodeURIComponent(pfile));
       modalAudio = audio;
       audio.addEventListener('loadedmetadata', function () {
         strip.classList.add('armed');

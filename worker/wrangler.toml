@@ -19,6 +19,14 @@ database_id = "9145557b-fbe3-43f5-baf8-ff0bb14c1a3f"
 [browser]
 binding = "BROWSER"
 
+# R2: per-detection bird-call clips (~45 KB mp3 each). The Pi POSTs bytes to
+# /api/clip (secret-gated); the public site plays them via /api/recording.
+# A 7-day object-lifecycle rule (set on the bucket, NOT in this file) deletes
+# clips a week after upload → ~440 MB steady-state. See AUDIO-FIX-PLAN.md.
+[[r2_buckets]]
+binding = "CLIPS"
+bucket_name = "avian-clips"
+
 [vars]
 # Local-day offset (hours from UTC) for the "today"/daily buckets, e.g. "-4" for
 # US Eastern (EDT). Rolling windows (recent/last_hour/week) are computed in UTC

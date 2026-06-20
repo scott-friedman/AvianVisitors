@@ -4,6 +4,10 @@
  * Three responsibilities (see ../PLAN.md Phase 1, ../CLAUDE.md):
  *   POST /api/detection  — the Pi's BirdNET hook posts each detection
  *                          (secret-gated via X-Avian-Secret) → D1 insert.
+ *   POST /api/clip       — the Pi uploads that detection's mp3 (same secret)
+ *                          → R2 `avian-clips` (7-day object lifecycle).
+ *   GET  /api/recording  — streams a clip from R2 by ?file=<key> or ?sci=
+ *                          (newest), with Range/seek + CORS. 404 once expired.
  *   POST /api/heartbeat  — the Pi's 15-min liveness ping (same secret) → D1.
  *   GET  /api/status     — 200 (fresh) / 503 (Pi silent) for uptime monitors.
  *   GET  /api/recent     — species-collapsed recent detections. The public
@@ -11,10 +15,11 @@
  *   GET  /api/{stats,lifelist,timeseries,species,firstseen}  (or ?action=)
  *                        — reimplements avian/api/birdnet-api.php against D1.
  *
- * Storage: D1 `avian-detections`, table detections(id, sci, com, conf, ts),
- * ts = unix seconds (UTC). Audio playback (recording.php) is deferred to v2,
- * so `recent`/`species` return top_file/file = null. The Pi is outbound-only;
- * this Worker is its only public surface.
+ * Storage: D1 `avian-detections`, table detections(id, sci, com, conf, ts,
+ * file), ts = unix seconds (UTC). Audio clips live in R2 (`avian-clips`, 7-day
+ * TTL); `detections.file` is the clip's R2 key and persists after the object
+ * expires (→ /api/recording 404s, frontend shows "no audio"). The Pi is
+ * outbound-only; this Worker is its only public surface.
  *
  *   GET  /frame.png      — 800x480 PNG of the collage for the e-ink panel,
  *                          rendered off-Pi via Cloudflare Browser Rendering
@@ -70,6 +75,12 @@ export default {
       if (path === '/api/detection' && request.method === 'POST') {
         return await ingest(request, env);
       }
+      if (path === '/api/clip' && request.method === 'POST') {
+        return await clip(request, env, url);
+      }
+      if (path === '/api/recording' && request.method === 'GET') {
+        return await recording(request, env, url);
+      }
       if (path === '/api/heartbeat' && request.method === 'POST') {
         return await heartbeat(request, env);
       }
@@ -111,6 +122,9 @@ async function ingest(request, env) {
   const com = String(body.com ?? '').trim();
   const conf = Number(body.conf);
   const ts = body.ts == null ? Math.floor(Date.now() / 1000) : Math.floor(Number(body.ts));
+  // Optional R2 clip key (the mp3 basename). The Pi sends it here, then uploads
+  // the bytes to /api/clip. NULL if the Pi couldn't locate/read the clip.
+  const file = body.file == null ? null : (String(body.file).trim() || null);
 
   if (!sci || !com || !Number.isFinite(conf) || !Number.isFinite(ts)) {
     return json({ error: 'need {sci, com, conf, ts}' }, 400);
@@ -120,10 +134,106 @@ async function ingest(request, env) {
 
   // INSERT OR IGNORE against UNIQUE(sci, ts) dedupes Pi restarts/replays.
   await env.DB.prepare(
-    'INSERT OR IGNORE INTO detections (sci, com, conf, ts) VALUES (?, ?, ?, ?)'
-  ).bind(sci, com, c, ts).run();
+    'INSERT OR IGNORE INTO detections (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)'
+  ).bind(sci, com, c, ts, file).run();
 
   return new Response(null, { status: 204, headers: CORS });
+}
+
+// ---- clip upload + playback (R2) --------------------------------------------
+// The Pi POSTs each detection's mp3 to /api/clip?file=<basename> (secret-gated,
+// right after the detection POST); the public site plays it back via
+// /api/recording. Objects live under clips/<basename>; the bucket's 7-day
+// lifecycle rule expires them. See AUDIO-FIX-PLAN.md.
+
+// Validate a clip key = one mp3 basename; block path traversal / nesting. Keys
+// may contain ':' (the HH:MM:SS time) and Unicode letters (non-English common
+// names) — recording.php allowed the same set; only '/', '\', '..' are unsafe.
+function clipKey(raw) {
+  const k = (raw == null ? '' : String(raw)).trim();
+  if (!k || k.length > 255) return null;
+  if (k.includes('/') || k.includes('\\') || k.includes('..')) return null;
+  if (!/\.mp3$/i.test(k)) return null;
+  return k;
+}
+
+async function clip(request, env, url) {
+  const secret = request.headers.get('X-Avian-Secret') || '';
+  if (!env.AVIAN_INGEST_SECRET || secret !== env.AVIAN_INGEST_SECRET) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+  if (!env.CLIPS) return json({ error: 'no clip storage' }, 503);
+  const key = clipKey(url.searchParams.get('file'));
+  if (!key) return json({ error: 'bad or missing ?file' }, 400);
+
+  // Clips are tiny (~45 KB); buffer rather than stream so R2 gets an exact
+  // length and we can sanity-cap pathological uploads.
+  const bytes = await request.arrayBuffer();
+  if (!bytes || bytes.byteLength === 0) return json({ error: 'empty body' }, 400);
+  if (bytes.byteLength > 5_000_000) return json({ error: 'too large' }, 413);
+
+  await env.CLIPS.put('clips/' + key, bytes, {
+    httpMetadata: { contentType: 'audio/mpeg' },
+  });
+  return new Response(null, { status: 204, headers: CORS });
+}
+
+// GET /api/recording?file=<key>  → that exact clip.
+// GET /api/recording?sci=<name>  → newest clip for that species (≤7 days old).
+// Honors Range (the <audio> element seeks; the spectrogram does a full fetch).
+// Missing/expired object → 404, which the frontend degrades to "no audio".
+async function recording(request, env, url) {
+  if (!env.CLIPS) return new Response('no clip storage', { status: 404, headers: CORS });
+
+  let key = clipKey(url.searchParams.get('file'));
+  if (!key) {
+    const sci = (url.searchParams.get('sci') || '').trim();
+    if (!sci) return new Response('file or sci required', { status: 400, headers: CORS });
+    const row = await env.DB.prepare(
+      'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts DESC LIMIT 1'
+    ).bind(sci).first();
+    key = row && row.file ? clipKey(row.file) : null;
+    if (!key) return new Response('no recording', { status: 404, headers: CORS });
+  }
+
+  const rng = parseRange(request.headers.get('Range'));
+  const obj = await env.CLIPS.get('clips/' + key, rng ? { range: rng } : undefined);
+  if (!obj) return new Response('not found', { status: 404, headers: CORS });
+
+  const size = obj.size; // full object size, even on a ranged get
+  const headers = new Headers(CORS);
+  headers.set('Content-Type', 'audio/mpeg');
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set('Cache-Control', 'public, max-age=604800');
+  if (obj.httpEtag) headers.set('ETag', obj.httpEtag);
+
+  if (rng) {
+    let off, len;
+    if (rng.suffix != null) { len = Math.min(rng.suffix, size); off = size - len; }
+    else { off = rng.offset; len = rng.length == null ? size - off : Math.min(rng.length, size - off); }
+    if (off < 0 || off >= size || len <= 0) {
+      headers.set('Content-Range', `bytes */${size}`);
+      return new Response('range not satisfiable', { status: 416, headers });
+    }
+    headers.set('Content-Range', `bytes ${off}-${off + len - 1}/${size}`);
+    headers.set('Content-Length', String(len));
+    return new Response(obj.body, { status: 206, headers });
+  }
+  headers.set('Content-Length', String(size));
+  return new Response(obj.body, { status: 200, headers });
+}
+
+// "bytes=start-end" → {offset,length} | {offset} | {suffix}. Null if absent,
+// unparseable, or multi-range (single ranges are enough for <audio> seeking).
+function parseRange(header) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec((header || '').trim());
+  if (!m) return null;
+  const startS = m[1], endS = m[2];
+  if (startS === '' && endS === '') return null;
+  if (startS === '') return { suffix: parseInt(endS, 10) };       // last N bytes
+  const offset = parseInt(startS, 10);
+  if (endS === '') return { offset };                             // start → EOF
+  return { offset, length: parseInt(endS, 10) - offset + 1 };     // inclusive end
 }
 
 // ---- liveness (dead-man's switch) -------------------------------------------
@@ -309,7 +419,9 @@ async function recent(env, url, tz, now) {
       ORDER BY MAX(ts) DESC`
   ).bind(tz, since).all();
 
-  // top_file/top_at carried the audio clip in the PHP version; deferred to v2.
+  // top_file/top_at are vestigial — no frontend reads them (the atlas card
+  // plays via /api/recording?sci=, which resolves the newest clip itself).
+  // Kept null for response-shape stability.
   const list = (results || []).map((r) => ({
     sci: r.sci, com: r.com, n: r.n, best_conf: r.best_conf,
     last_seen: r.last_seen, top_file: null, top_at: r.last_seen,
@@ -463,7 +575,7 @@ async function species(env, url, tz) {
   if (!sci) return json({ error: 'sci= required' }, 400);
 
   const detections = (await env.DB.prepare(
-    `SELECT date(ts, 'unixepoch', ?) AS d, time(ts, 'unixepoch', ?) AS t, conf
+    `SELECT date(ts, 'unixepoch', ?) AS d, time(ts, 'unixepoch', ?) AS t, conf, file
        FROM detections WHERE sci = ? ORDER BY ts DESC LIMIT 500`
   ).bind(tz, tz, sci).all()).results || [];
 
