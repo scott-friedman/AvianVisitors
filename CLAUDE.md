@@ -45,6 +45,7 @@ Reuse foobos **patterns**, not its **resources**. Create bird's own, with new na
 | Pages project | `barrysbirds` (renamed from `avianvisitors` 2026-06-19) | `foobos` |
 | Worker | `avian-worker` | `foobos-worker` |
 | D1 database | `avian-detections` | `foobos-users` |
+| R2 bucket | `avian-clips` (bird-call mp3s, 7-day TTL) | — |
 | Host | `barrysbirds.pages.dev` (free) or own domain | `foobos.net` |
 
 - Start on the free `*.pages.dev` / `*.workers.dev` hostnames — fully isolated, not even a shared DNS zone. Add a custom domain later.
@@ -91,7 +92,7 @@ Authoritative upstream docs: `README.md`, `frame/README.md`, `avian/forwarding/R
 ## Cloudflare side (public site + render)
 
 - **Pages (`barrysbirds`, renamed from `avianvisitors` 2026-06-19)**: the static collage shell (adapted `avian/frontend/` + `avian/assets/`), built by `avian/build-site.sh` then `wrangler pages deploy _site --project-name barrysbirds --branch production` (run from `worker/` so the local wrangler resolves). Deploys only on design/code changes.
-- **Worker (`avian-worker`)**: owns `POST /api/detection` (hook ingest → D1 insert, secret-gated), `GET /api/recent` (+ stats/lifelist/timeseries — reimplement `avian/api/*.php` logic against **D1**), and `GET /frame.png` (Browser Rendering → screenshot the Pages collage → output **800×480 7-color** for the 7.3" panel).
+- **Worker (`avian-worker`)**: owns `POST /api/detection` (hook ingest → D1 insert, secret-gated), `GET /api/recent` (+ stats/lifelist/timeseries — reimplement `avian/api/*.php` logic against **D1**), `POST /api/clip` (secret-gated → R2 clip upload) + `GET /api/recording` (R2 clip playback, Range/CORS), and `GET /frame.png` (Browser Rendering → screenshot the Pages collage → output **800×480 7-color** for the 7.3" panel).
 - **D1 (`avian-detections`)**: detection rows. Use **D1, not KV** — KV's free tier is ~1k writes/day, too few for per-detection writes; D1's write limits are generous.
 
 ## Driving the e-ink display (`frame/`) — primary output
@@ -117,7 +118,7 @@ The Pi currently runs **inky-web** (separate Flask project at `/Users/scott/inky
 
 1. **Pi on-detection hook** → `POST /api/detection` (shared secret).
 2. **`avian-worker`** with `/api/detection`, `/api/recent`, `/frame.png`, backed by **D1 (`avian-detections`)**.
-3. **`apt.js` data-source swap**: from `./avian/api/*.php` → the Worker's `/api/*` (audio playback via `recording.php` is the one piece still needing the Pi — defer or publish clips).
+3. **`apt.js` data-source swap**: from `./avian/api/*.php` → the Worker's `/api/*`. (Audio: **DONE 2026-06-20** — the Pi uploads each detection's mp3 to **R2 `avian-clips`** (7-day TTL) and `apt.js` plays it via `GET /api/recording`; no Pi serving. See `AUDIO-FIX-PLAN.md`.)
 4. **Pages deploy workflow** (clone foobos `cf-deploy-pages.yml`, new `avianvisitors` project).
 5. **Frame port** to 800×480 7-color + the Worker render at that geometry.
 6. **`wrangler.toml`** with bird's own resource IDs; scoped CI token.
