@@ -10,9 +10,12 @@ Impression 7.3". ``--preview out.png`` writes the same 7-colour dither to a
 file instead, so the look can be checked on any machine without the panel.
 
 The heavy layout lives in the web /frame view, so this client stays thin: no
-local browser (a Zero 2 W can't run one) and no PIL matting — just fetch, fit,
-dither, push. (The 13.3" port that this replaces did its own screenshot
-cropping/matting; here the Worker renders frame-ready, so that is all gone.)
+local browser (a Zero 2 W can't run one) — just fetch, fit, dither, push. The
+one bit of local compositing is an optional ``border`` inset (a white margin)
+so a picture-frame bezel that overlaps the panel edge can't clip the artwork;
+it is off (0) by default. (The 13.3" port that this replaces did its own
+screenshot cropping/matting; here the Worker renders frame-ready, so that is
+otherwise gone.)
 """
 from __future__ import annotations
 
@@ -59,6 +62,7 @@ DEFAULTS = {
     "image": "",            # a local PNG written by a sibling process, or
     "image_url": "",        # the /frame.png URL (include ?k=FRAME_KEY)
     "rotate": 0,            # 0 or 180 to flip landscape; 90/270 for a portrait mount
+    "border": 0,            # inset the image this many px on every edge (white margin under a frame bezel)
     "saturation": 0.7,     # Inky colour saturation on hardware (0..1)
     "panel": "",            # force a driver module (e.g. "inky_ac073tc1") if auto() fails
     "quiet_start": 0, "quiet_end": 0,    # 0/0 = no quiet hours
@@ -114,17 +118,22 @@ def get_image(src, timeout, auth=None):
     return Image.open(os.path.expanduser(src)).convert("RGB")
 
 
-def fit_panel(img):
-    """Fit to 800x480 on a white field (letterbox), preserving aspect. /frame.png
-    already renders at 800x480, so this is usually a straight pass-through."""
-    if img.size == (PANEL_W, PANEL_H):
+def fit_panel(img, border=0):
+    """Fit onto the 800x480 panel buffer on a white field (letterbox),
+    preserving aspect. ``border`` insets the image by that many px on every edge
+    — a white margin so a picture-frame bezel that overlaps the panel edge can't
+    clip the artwork. With border=0 and an already-800x480 image (the usual case
+    — /frame.png renders frame-ready) this is a straight pass-through."""
+    if border <= 0 and img.size == (PANEL_W, PANEL_H):
         return img
+    box_w = max(1, PANEL_W - 2 * border)   # the inner rectangle the image fits into
+    box_h = max(1, PANEL_H - 2 * border)
     src = img.width / img.height
-    tgt = PANEL_W / PANEL_H
+    tgt = box_w / box_h
     if src > tgt:
-        nw, nh = PANEL_W, max(1, round(PANEL_W / src))
+        nw, nh = box_w, max(1, round(box_w / src))
     else:
-        nh, nw = PANEL_H, max(1, round(PANEL_H * src))
+        nh, nw = box_h, max(1, round(box_h * src))
     resized = img.resize((nw, nh), Image.LANCZOS)
     canvas = Image.new("RGB", (PANEL_W, PANEL_H), (255, 255, 255))
     canvas.paste(resized, ((PANEL_W - nw) // 2, (PANEL_H - nh) // 2))
@@ -220,7 +229,7 @@ def run(cfg, preview=None, force=False, use_signature=True):
         print("refresh:", "changed" if changed else "heal")
 
     try:
-        img = fit_panel(obtain_image(cfg))
+        img = fit_panel(obtain_image(cfg), cfg["border"])
     except Exception as e:
         print(f"could not get image: {e}", file=sys.stderr)  # keep the last panel image
         return
@@ -253,6 +262,7 @@ def main():
     ap.add_argument("--image-url")
     ap.add_argument("--preview", help="write a 7-colour preview PNG instead of pushing")
     ap.add_argument("--rotate", type=int)
+    ap.add_argument("--border", type=int, help="inset the image N px on every edge (bezel margin)")
     ap.add_argument("--force", action="store_true", help="refresh even if unchanged")
     ap.add_argument("--no-signature", action="store_true", help="skip change detection")
     args = ap.parse_args()
@@ -264,6 +274,8 @@ def main():
             cfg[key] = val
     if args.rotate is not None:
         cfg["rotate"] = args.rotate
+    if args.border is not None:
+        cfg["border"] = args.border
     run(cfg, preview=args.preview, force=args.force, use_signature=not args.no_signature)
 
 

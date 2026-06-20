@@ -18,6 +18,9 @@ image_url = "https://avian-worker.s-friedman.workers.dev/frame.png?k=YOUR_FRAME_
 
 # Panel.
 rotate = 0             # 0 = native landscape; 180 if the frame hangs upside down
+border = 0             # inset the image this many px on every edge: a white margin so a
+                       # picture-frame bezel that overlaps the panel edge can't clip the art.
+                       # 0 = full-bleed. ~20 (~4 mm) is a typical bezel; tune with --border.
 saturation = 0.7       # Inky colour saturation, 0 to 1
 # panel = "inky_ac073tc1"   # force the 7.3" driver module if inky.auto() ever fails
 
