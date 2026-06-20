@@ -31,6 +31,22 @@ directly). `--ebird-region` filters to species actually seen in your region
 (needs `EBIRD_API_KEY`). Re-render one bird with
 `--species "Calypte anna|Anna's Hummingbird" --force`.
 
+## macOS gotcha: `cutout.py` hangs — use `keycut.py`
+
+On this dev Mac (Xcode `/usr/bin/python3`), `rembg`'s `new_session()` **hangs in
+native onnxruntime code** at session init — for BiRefNet *and* u2net — so step 2
+never returns, and a Python-level timeout can't break a native hang. Workaround:
+**`keycut.py`** (this dir) — a deterministic flood-fill key-out of the flat cream
+ground: it removes only the cream *connected to the image border* (so interior
+white plumage is safe), drops disconnected specks under 2% of the bird's area,
+feathers the edge 1px, and crops with a 2% margin. On these flat grounds it's as
+clean as the ML matte, often cleaner. **Validate it on very pale birds** (white ≈
+cream). Sudbury deployment worklist + per-bird status: `SUDBURY-ART-TODO.md` (repo root).
+
+```bash
+python3 keycut.py /tmp/bird-art-preview/<slug>.png /tmp/bird-art-preview/<slug>-2.png
+```
+
 ## Why a cream ground
 
 The image model can't cut a clean transparent background on its own: it
