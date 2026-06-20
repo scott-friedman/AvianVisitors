@@ -84,8 +84,15 @@ export default {
       if (path === '/api/heartbeat' && request.method === 'POST') {
         return await heartbeat(request, env);
       }
-      if (path === '/api/status' && request.method === 'GET') {
-        return await status(env);
+      // UptimeRobot (and many uptime monitors) probe with HEAD, not GET. Accept
+      // both so the liveness check reaches status() instead of falling through to
+      // queryApi() and getting a 405. A HEAD reply carries the same 200/503 status
+      // and headers but no body (a HEAD response must not include one).
+      if (path === '/api/status' && (request.method === 'GET' || request.method === 'HEAD')) {
+        const res = await status(env);
+        return request.method === 'HEAD'
+          ? new Response(null, { status: res.status, headers: res.headers })
+          : res;
       }
       if (path === '/frame.png' && request.method === 'GET') {
         return await frame(request, env, url);
