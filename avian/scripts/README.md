@@ -40,12 +40,38 @@ never returns, and a Python-level timeout can't break a native hang. Workaround:
 ground: it removes only the cream *connected to the image border* (so interior
 white plumage is safe), drops disconnected specks under 2% of the bird's area,
 feathers the edge 1px, and crops with a 2% margin. On these flat grounds it's as
-clean as the ML matte, often cleaner. **Validate it on very pale birds** (white ≈
-cream). Sudbury deployment worklist + per-bird status: `SUDBURY-ART-TODO.md` (repo root).
+clean as the ML matte, often cleaner. Sudbury deployment worklist + per-bird
+status: `SUDBURY-ART-TODO.md` (repo root).
 
 ```bash
 python3 keycut.py /tmp/bird-art-preview/<slug>.png /tmp/bird-art-preview/<slug>-2.png
 ```
+
+**Pale-bellied birds need a lower `--tol`.** The default (`TOL=34`) treats a
+near-white belly as ground where the dark outline is thin, and the
+border-connected fill eats the lower-body outline (seen on Red-eyed Vireo +
+Black-capped Chickadee). Re-key from the raw with `--tol 18` — it spares the white
+belly while still removing the flat ground (≈13 is too low: the ground stops being
+removed). Eyeball the result on a contrasting (e.g. magenta) background, which
+exposes both eaten edges and leftover halo:
+
+```bash
+python3 keycut.py --tol 18 /tmp/bird-art-preview/<slug>.png /tmp/bird-art-preview/<slug>-2.png
+```
+
+**After keying, sweep for leftover bits on magenta** (it reveals what a light
+ground hides). Two kinds slip past the key-out:
+- *Disconnected specks* — a corner blob or edge smudge that lands just **over** the
+  2% island-drop threshold (2.4–2.8% seen) survives. Fix: keep only the largest
+  alpha connected component (drop the non-main island) — safe, since each bird keys
+  as one blob.
+- *A connected stray* — e.g. the faint perch/twig the model paints off a foot — is
+  part of the main island, so island-dropping can't reach it. Region-erase it (clear
+  alpha in a tight box), checking the natural toe/edge extent against the **raw** so
+  you trim only the stray, not real anatomy.
+
+Keep the raw cream-ground generations (e.g. `/tmp/bird-art-preview/raw/`) so every
+re-key (`--tol`) or speck/stray touch-up is **free** — no new Gemini calls.
 
 ## Why a cream ground
 

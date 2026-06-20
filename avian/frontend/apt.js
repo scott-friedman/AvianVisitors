@@ -2,7 +2,9 @@
   var PLACEHOLDER = [{"sci":"Calypte anna","com":"Anna's Hummingbird","featured":true},{"sci":"Passer domesticus","com":"House Sparrow"},{"sci":"Haemorhous mexicanus","com":"House Finch"},{"sci":"Turdus migratorius","com":"American Robin"},{"sci":"Zenaida macroura","com":"Mourning Dove"},{"sci":"Spinus psaltria","com":"Lesser Goldfinch"},{"sci":"Zonotrichia leucophrys","com":"White-crowned Sparrow"},{"sci":"Aphelocoma californica","com":"California Scrub-Jay"},{"sci":"Mimus polyglottos","com":"Northern Mockingbird"},{"sci":"Sayornis nigricans","com":"Black Phoebe"},{"sci":"Larus occidentalis","com":"Western Gull"},{"sci":"Corvus brachyrhynchos","com":"American Crow"}];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r11'; // r11: +Northern Cardinal (first Sudbury-gap bird).
+  var SKETCH_VERSION = 'r13'; // r13: +Blue Jay, Common Grackle, Tufted Titmouse, Ovenbird, E.Phoebe, E.Kingbird, RT Hummingbird, Red-bellied WP, E.Bluebird, Carolina Wren (Sudbury gap batch 2).
+                              // r12: +Gray Catbird, Red-eyed Vireo, Black-capped Chickadee (Sudbury gap).
+                              // r11: +Northern Cardinal (first Sudbury-gap bird).
                               // r10 was the full library restyle (perched + flight, clean cutouts).
   // Cache-bust for /api/img - bump whenever a bird gets re-rendered via
   // /api/regen or whenever you need every CF DC to drop its cached copy.
@@ -10,7 +12,9 @@
   // equivalent to a global cache purge for /api/img. (caches.default
   // .delete() in the worker only affects ONE colo at a time, so a
   // versioned URL is the only reliable way to invalidate everywhere.)
-  var IMG_VERSION = 'r11'; // r11: +Northern Cardinal (first Sudbury-gap bird).
+  var IMG_VERSION = 'r13'; // r13: +Blue Jay, Common Grackle, Tufted Titmouse, Ovenbird, E.Phoebe, E.Kingbird, RT Hummingbird, Red-bellied WP, E.Bluebird, Carolina Wren (Sudbury gap batch 2).
+                           // r12: +Gray Catbird, Red-eyed Vireo, Black-capped Chickadee (Sudbury gap).
+                           // r11: +Northern Cardinal (first Sudbury-gap bird).
                            // r10 was the full library restyle, clean cutouts.
 
   // ---- Sliding pill helper ----

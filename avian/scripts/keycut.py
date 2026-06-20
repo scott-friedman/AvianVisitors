@@ -56,7 +56,7 @@ def border_connected_bg(bgmask: np.ndarray) -> np.ndarray:
             ImageDraw.floodfill(work, (sx, sy), 128, thresh=10)
     return np.asarray(work) == 128
 
-def cut(path: Path) -> None:
+def cut(path: Path, tol: int = TOL) -> None:
     im = Image.open(path).convert("RGB")
     arr = np.asarray(im).astype(np.int16)
     frame = np.concatenate([
@@ -64,7 +64,7 @@ def cut(path: Path) -> None:
         arr[:, :4, :].reshape(-1, 3), arr[:, -4:, :].reshape(-1, 3)])
     cream = np.median(frame, axis=0)
     dist = np.sqrt(((arr - cream) ** 2).sum(axis=2))
-    bg = border_connected_bg(dist < TOL)
+    bg = border_connected_bg(dist < tol)
     fg = keep_large_islands(~bg)
     alpha = np.where(fg, 255, 0).astype("uint8")
     A = Image.fromarray(alpha, "L").filter(ImageFilter.GaussianBlur(FEATHER))
@@ -75,8 +75,19 @@ def cut(path: Path) -> None:
         out = out.crop((max(0, bbox[0] - pad), max(0, bbox[1] - pad),
                         min(out.width, bbox[2] + pad), min(out.height, bbox[3] + pad)))
     out.save(path)
-    print(f"  [key]  {path.name}  -> {out.width}x{out.height}  (scipy={HAVE_SCIPY})")
+    print(f"  [key]  {path.name}  -> {out.width}x{out.height}  (tol={tol} scipy={HAVE_SCIPY})")
 
 if __name__ == "__main__":
-    for p in sys.argv[1:]:
-        cut(Path(p))
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Deterministic cream-ground key-out (in place). "
+                    "Lower --tol for pale/white-bellied birds: at the default "
+                    "their underparts read as cream and the flood fill eats the "
+                    "lower outline (Vireo/Chickadee belly, gulls, doves).")
+    ap.add_argument("paths", nargs="+", type=Path, help="PNG(s) to key out in place")
+    ap.add_argument("--tol", type=int, default=TOL,
+                    help=f"color distance from cream counted as ground "
+                         f"(default {TOL}; use ~18 for pale birds)")
+    a = ap.parse_args()
+    for p in a.paths:
+        cut(p, tol=a.tol)
