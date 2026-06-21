@@ -2375,10 +2375,16 @@
       document.getElementById('modalRecordings').innerHTML = '<li class="rec-empty">Failed to load recordings.</li>';
     });
 
-    // Wikipedia summary (description + genus / family).
+    // Species description — the Worker proxies Wikipedia's REST summary at
+    // /api/wiki (the stock wiki.php can't run on static Pages). Sci name first
+    // (WP redirects it to the species article); pass the common name too so the
+    // Worker can fall back on the rare sci miss.
+    var descCom = ((DATA.recent && DATA.recent.species) || []).filter(function (x) { return x.sci === sci; })[0];
+    var descUrl = AV_API + '/api/wiki?sci=' + encodeURIComponent(sci)
+      + (descCom && descCom.com ? '&com=' + encodeURIComponent(descCom.com) : '');
     var loadWiki = WIKI_CACHE[sci]
       ? Promise.resolve(WIKI_CACHE[sci])
-      : fetchJson('./avian/api/wiki.php?sci=' + encodeURIComponent(sci)).then(function (j) {
+      : fetchJson(descUrl).then(function (j) {
           WIKI_CACHE[sci] = j; return j;
         });
     loadWiki.then(function (j) {

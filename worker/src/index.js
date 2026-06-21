@@ -97,6 +97,9 @@ export default {
       if (path === '/frame.png' && request.method === 'GET') {
         return await frame(request, env, url);
       }
+      if (path === '/api/wiki' && request.method === 'GET') {
+        return await wiki(url);
+      }
       if (path.startsWith('/api/')) {
         return await queryApi(request, env, url);
       }
@@ -386,6 +389,56 @@ async function renderFrame(env) {
   } finally {
     await browser.close();
   }
+}
+
+// ---- Wikipedia summary proxy (/api/wiki) ------------------------------------
+// The detail modal shows a one-paragraph species description. The stock
+// avian/api/wiki.php can't run on Pages (static hosting, no PHP), so the Worker
+// proxies Wikipedia's REST summary here instead. Wikipedia redirects a
+// scientific name to the species article, so a sci lookup resolves the
+// common-name page for ~every bird; ?com=<name> is an optional fallback for the
+// rare miss (recent splits / disambiguation). The {extract,title} shape matches
+// wiki.php, so the frontend is unchanged but for the URL. Cached 24 h
+// (descriptions don't change) at the browser, the CF edge, and the WP subrequest.
+const WIKI_UA = 'BarrysBirds/1.0 (+https://barrysbirds.pages.dev; avian-worker)';
+const WIKI_DAY = { 'Cache-Control': 'public, max-age=86400' };
+// "Genus species" (+ optional sub/trinomial) — the shape wiki.php enforced.
+const SCI_RE = /^[A-Za-z]{2,40}(?:[ ][a-z]{2,40}){1,3}$/;
+
+// Fetch one Wikipedia REST summary. Returns {extract,title}, or null on any
+// failure / non-article result (missing page, disambiguation, empty extract).
+async function wikiSummary(name) {
+  let res;
+  try {
+    res = await fetch(
+      'https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(name),
+      { headers: { 'User-Agent': WIKI_UA, Accept: 'application/json' },
+        cf: { cacheTtl: 86400, cacheEverything: true } }
+    );
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  let j;
+  try { j = await res.json(); } catch { return null; }
+  if (!j || j.type === 'disambiguation' || !j.extract) return null;
+  return { extract: j.extract, title: j.title || null };
+}
+
+async function wiki(url) {
+  const sci = (url.searchParams.get('sci') || '').trim();
+  if (!sci) return json({ error: 'sci required' }, 400, WIKI_DAY);
+  if (!SCI_RE.test(sci)) return json({ error: 'invalid sci' }, 400, WIKI_DAY);
+
+  // Scientific name first (WP redirects it to the species page); fall back to
+  // the common name on a miss. com is sanitized to a plain title (letters,
+  // space, '.', '-', '\''); it's encodeURIComponent'd before it reaches WP.
+  let hit = await wikiSummary(sci);
+  if (!hit) {
+    const com = (url.searchParams.get('com') || '').trim();
+    if (com && /^[\p{L}][\p{L} .'-]{1,58}$/u.test(com)) hit = await wikiSummary(com);
+  }
+  return json(hit || { extract: null, title: null }, 200, WIKI_DAY);
 }
 
 // ---- read API (reimplements avian/api/birdnet-api.php over D1) ---------------
