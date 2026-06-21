@@ -90,9 +90,9 @@
   var currentView = 0;                // collage shows first (no go() needed)
   function go(i) {
     i = Math.max(0, Math.min(2, i));
-    // Only a genuine view *switch* replays the entrance. go() also fires when
-    // a card is expanded (it sets the #sci= hash, which routes through go(2))
-    // while already on the atlas - that must not retrigger the load-in.
+    // Only a genuine view *switch* replays the entrance. Re-selecting the
+    // current view (tapping its nav button, or a same-bird re-highlight that
+    // calls go() while already there) must not retrigger the load-in.
     var switching = (i !== currentView);
     currentView = i;
     views.style.transform = 'translateX(-' + (i * 100) + '%)';
@@ -865,8 +865,10 @@
   collage.addEventListener('click', function (ev) {
     var hit = maskHitTest(ev.clientX, ev.clientY);
     if (!hit) return;
+    // Open the bird's modal over the CURRENT view (the collage). The hash
+    // router (syncRouter) opens it; we deliberately do NOT jump to the atlas,
+    // so closing returns you to the collage you were exploring.
     location.hash = '#sci=' + encodeURIComponent(hit.data.sci);
-    go(2);
   });
 
   // Debug hook - call __layout({ slugs, weights, n }) from devtools to
@@ -1079,6 +1081,19 @@
       el.addEventListener('click', show);
       el.addEventListener('mouseleave', function () { el.classList.remove('is-hover'); tip.hidden = true; });
     });
+    // Item 10 (MOBILE-TODO): touch fires no mouseleave, so a tapped petal's
+    // tooltip would linger. Wire ONE document handler (mirrors the menu's
+    // outside-click dismissal) that clears the dial tooltip + highlight on any
+    // tap landing outside a petal. Guarded so dial redraws don't stack it; it
+    // re-queries the live nodes, so it keeps working after each redraw.
+    if (!wireDialHover._outsideWired) {
+      wireDialHover._outsideWired = true;
+      document.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.dial-petal')) return;
+        document.querySelectorAll('.dial-petal.is-hover').forEach(function (x) { x.classList.remove('is-hover'); });
+        document.querySelectorAll('.dial-tip').forEach(function (t) { t.hidden = true; });
+      });
+    }
   }
 
   // Petals grow from the dial center, staggered clockwise from midnight.
@@ -2129,7 +2144,10 @@
       card.setAttribute('data-active', 'true');
       card.setAttribute('data-pulse', 'true');
       setTimeout(function () { card.removeAttribute('data-pulse'); }, 520);
-      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Only scroll the atlas into view when it's the visible view; opened
+      // from the collage/stats the atlas is translated off-screen, so scrolling
+      // it would be wasted (and invisible). The data-active highlight still set.
+      if (currentView === 2) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
     })();
   }
 
@@ -2891,9 +2909,10 @@
     });
   }
 
-  // Initial load: if URL has a sci hash, jump to atlas, highlight, and
-  // open the modal.
-  if (readHash()) { go(2); highlightAtlas(readHash()); openDetailModal(readHash()); }
+  // Initial load: if the URL has a sci hash (a shared deep-link), open the
+  // modal over the default collage view (highlighting the atlas card behind
+  // the scenes) rather than forcing a jump to the atlas - matches in-app nav.
+  if (readHash()) { highlightAtlas(readHash()); openDetailModal(readHash()); }
   // Admin overlay routing: #admin=system|logs|tools opens the admin
   // screen with that sub-tab. Clearing the hash closes it.
   function readAdminHash() {
@@ -2911,7 +2930,11 @@
     if (location.hash === '#about') openAbout(); else closeAbout();
     if (adm) { openAdmin(adm); return; }
     closeAdmin();
-    if (sci) { go(2); highlightAtlas(sci); openDetailModal(sci); }
+    // Open the modal over the CURRENT view (no forced go(2)) so opening a bird
+    // from the collage/stats no longer yanks you to the atlas; closing returns
+    // you where you were. The morph self-skips to a centered fade when the
+    // source atlas card is off-screen (see morphTransform).
+    if (sci) { highlightAtlas(sci); openDetailModal(sci); }
     else     { highlightAtlas(null); closeDetailModal(); }
   }
   if (readAdminHash()) openAdmin(readAdminHash());
