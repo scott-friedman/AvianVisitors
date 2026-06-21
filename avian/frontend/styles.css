@@ -1179,6 +1179,9 @@
     .modal-info h2 { font-size: 22px; }
     .modal-img { aspect-ratio: 1 / 1; padding: 10px; }
     .modal-grid { gap: 18px; }
+    /* NB: the .modal-lower single-column (mobile stacking) rule lives next to
+       its base definition further down - it must come AFTER it in source to
+       win the cascade tie. */
     .rec-row .when { font-size: 10.5px; }
     .rec-row .when small { font-size: 8.5px; }
   }
@@ -1314,6 +1317,35 @@
     transition: opacity 220ms ease;
   }
   .modal-img img.swapping { opacity: 0; }
+  /* Song-signature bloom lives in the lower row beside the recordings (see
+     .modal-lower); centered in its column against the recordings list. */
+  .voiceprint {
+    display: flex; flex-direction: column; align-items: center;
+    align-self: center;
+  }
+  .voiceprint[hidden] { display: none; }
+  /* Square canvas; theme palette is read at paint time in JS. touch-action
+     keeps a tap from being swallowed as a scroll gesture (click-to-replay). */
+  .voiceprint canvas {
+    width: 190px; height: 190px; max-width: 100%;
+    cursor: pointer; touch-action: manipulation;
+  }
+  .vp-cap {
+    font-size: 8.5px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--ink-soft); margin-top: 6px;
+  }
+  .vp-read {
+    font-size: 10px; color: var(--ink-2); margin-top: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .vp-read b { color: var(--ink); font-weight: 600; }
+  /* Reference-clip credit (required by the CC license of the xeno-canto song). */
+  .vp-attr {
+    font-size: 9px; color: var(--ink-soft); margin-top: 4px;
+    max-width: 200px; text-align: center; line-height: 1.4;
+  }
+  .vp-attr a { color: var(--ink-2); text-decoration: underline; }
+  .vp-attr:empty { display: none; }
   /* Pose toggle - bottom-left corner of the modal sketch, icon strip.
      Same recipe as the time-window slider: recessed paper-2 well, a
      white sliding pill behind the active button (via .seg-pill), and
@@ -1388,9 +1420,23 @@
   .modal-meta .k { letter-spacing: 0.12em; text-transform: uppercase; }
   .modal-meta .v { color: var(--ink); margin-left: 6px; }
   .modal-meta .v.rare { color: var(--accent-2); }
-  .modal-recordings {
+  /* Lower row: recordings (scrollable) beside the song signature. The top
+     hairline that used to sit on .modal-recordings now spans the whole row. */
+  .modal-lower {
     margin-top: 24px; padding-top: 16px;
     box-shadow: inset 0 1px 0 rgba(26,22,18,0.07);
+    display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 32px;
+    align-items: start;
+  }
+  /* Mobile: stack the signature ABOVE the recordings (the voiceprint is first
+     in source order), not side-by-side. MUST come after the base rule above or
+     it loses the equal-specificity cascade tie and the 2-column layout wins -
+     which is exactly the bug this fixes. */
+  @media (max-width: 700px) {
+    .modal-lower { grid-template-columns: 1fr; gap: 18px; }
+  }
+  .modal-recordings {
+    min-width: 0;   /* let the scrollable list shrink inside the grid cell */
   }
   .modal-recordings .rec-head {
     display: flex; align-items: baseline; justify-content: space-between;

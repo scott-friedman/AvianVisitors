@@ -144,6 +144,9 @@
     if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
     else document.documentElement.removeAttribute('data-theme');
     writeLS('bird:theme', t);
+    // Repaint the live canvas treatments (bloom + open recording strips)
+    // for the new palette. Safe no-op when no modal is open.
+    repaintSpectral();
   }
   function currentTheme() {
     return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
@@ -2159,6 +2162,16 @@
   var WIKI_CACHE = {};
   var modalAudio = null;
   var modalRecBtn = null;
+  // Song-signature bloom state (the canvas under the portrait). Holds the
+  // representative clip's analysis + animation mode: 'intro' (one-time
+  // bloom-in on open), 'idle' (static full rosette), 'play' (re-sweeping
+  // while that exact clip plays). modalMorphDone gates the first paint
+  // until the open-morph clears its scale transform (else the bloom paints
+  // at the wrong, scaled size). _reduceMotion skips the intro animation.
+  var modalVP = null;
+  var modalMorphDone = false;
+  var _reduceMotion = false;
+  try { _reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) {}
   function fmtRecTime(d, t) {
     // d="2026-05-15", t="20:25:29"
     if (!d) return '-';
@@ -2205,9 +2218,24 @@
         var strip = row.querySelector('.rec-spectro');
         var played = strip && strip.querySelector('.rec-spectro-played');
         var cursor = strip && strip.querySelector('.rec-spectro-cursor');
-        var pct = (modalAudio.currentTime / modalAudio.duration) * 100;
+        var frac = modalAudio.currentTime / modalAudio.duration;
+        var pct = frac * 100;
         if (played) played.style.width = pct.toFixed(3) + '%';
         if (cursor) cursor.style.left = pct.toFixed(3) + '%';
+        // Draw the pitch line in step with playback (it "draws itself"
+        // behind the DOM cursor); re-sweep the bloom too when the clip
+        // playing IS the representative one feeding it.
+        var file = row.dataset.file;
+        var a = file && _analysisCache[file];
+        if (a) {
+          var lcv = strip && strip.querySelector('canvas');
+          if (lcv) renderLine(lcv, a, frac, true);
+          if (modalVP && modalVP.file === file && modalVP.analysis && modalVP.canvas) {
+            if (modalVP.raf) { cancelAnimationFrame(modalVP.raf); modalVP.raf = null; }
+            modalVP.mode = 'play'; modalVP.prog = frac;
+            renderBloom(modalVP.canvas, modalVP.analysis, frac, true);
+          }
+        }
       }
       modalCursorRaf = requestAnimationFrame(tick);
     };
@@ -2225,8 +2253,13 @@
     stopCursorLoop();
     if (modalAudio) { try { modalAudio.pause(); } catch (e) {} }
     if (modalRecBtn) {
+      var prow = modalRecBtn.closest('.rec-row');
       modalRecBtn.removeAttribute('data-active');
       modalRecBtn.innerHTML = ICON_PLAY;
+      // Paused: restore the full pitch line (cursor + veil still mark where
+      // you stopped) and settle the bloom back to its complete rosette.
+      restRowLine(prow);
+      if (modalVP && prow && modalVP.file === prow.dataset.file) restBloom();
     }
   }
   // Hard-stop: pause + tear down the audio + clear cursor. Used when
@@ -2247,6 +2280,10 @@
           if (cur) cur.style.left = '0%';
         }
       }
+      // Restore the full pitch line + settle the bloom now that the cursor
+      // is back at the start.
+      restRowLine(prevRow);
+      if (modalVP && prevRow && modalVP.file === prevRow.dataset.file) restBloom();
       modalRecBtn.removeAttribute('data-active');
       modalRecBtn.innerHTML = ICON_PLAY;
       modalRecBtn = null;
@@ -2338,6 +2375,12 @@
     document.getElementById('modalDesc').classList.add('placeholder');
     document.getElementById('modalRecordings').innerHTML = '<li class="rec-empty">Loading recordings...</li>';
     document.getElementById('modalRecCount').textContent = '';
+    // Reset the song signature; setupVoiceprint (after detections load)
+    // re-shows it if the species has a still-stored clip.
+    if (modalVP && modalVP.raf) cancelAnimationFrame(modalVP.raf);
+    modalVP = null;
+    var _vpReset = document.getElementById('modalVoiceprint');
+    if (_vpReset) _vpReset.setAttribute('hidden', '');
     document.getElementById('modalWiki').href = wikiUrl(sci);
     document.getElementById('modalEbird').href = ebirdUrl(sci);
     // FLIP-style morph: scale + translate the modal-card from the
@@ -2353,6 +2396,11 @@
     modal.setAttribute('aria-hidden', 'false');
     document.body.style.overflow = 'hidden';
     morphModalOpen(modal.querySelector('.modal-card'), sourceCard);
+    // Gate the bloom's first paint until the open-morph clears its scale
+    // transform - a canvas painted mid-morph would size to the scaled box.
+    // Whichever finishes last (this timer or the clip analysis) starts it.
+    modalMorphDone = false;
+    setTimeout(function () { modalMorphDone = true; maybeStartBloom(); }, 340);
 
     // Species detail (lifelist row + every detection).
     var loadSpecies = SPECIES_CACHE[sci]
@@ -2381,7 +2429,7 @@
               + '<span class="when">' + fmtRecTime(d.d, d.t) + '<small>' + fmtDateLine(d.d, d.t) + '</small></span>'
               + '<span class="conf">' + ((+d.conf || 0) * 100).toFixed(0) + '%</span>'
               + '<div class="rec-spectro" aria-hidden="true">'
-              +   '<div class="rec-spectro-loading">loading spectrogram...</div>'
+              +   '<div class="rec-spectro-loading">rendering...</div>'
               +   '<div class="rec-spectro-played"></div>'
               +   '<div class="rec-spectro-cursor"></div>'
               +   '<div class="rec-spectro-scrub" role="slider" aria-label="scrub" tabindex="0"></div>'
@@ -2389,6 +2437,8 @@
               + '</li>';
           }).join('')
         : '<li class="rec-empty">No recordings yet.</li>';
+      // Build the song-signature bloom from the representative clip.
+      setupVoiceprint(sci, dets);
     }).catch(function () {
       document.getElementById('modalRecordings').innerHTML = '<li class="rec-empty">Failed to load recordings.</li>';
     });
@@ -2418,6 +2468,9 @@
   function closeDetailModal() {
     var modal = document.getElementById('detail-modal');
     stopModalAudio();
+    // Tear down the bloom animation so it doesn't keep an rAF alive.
+    if (modalVP && modalVP.raf) cancelAnimationFrame(modalVP.raf);
+    modalVP = null;
     // Reverse-morph back into the source atlas card so the modal
     // appears to *retract* to where it came from. Look the card up
     // fresh - the user may have switched the time window or sort
@@ -2561,6 +2614,19 @@
   // from outside the IIFE if needed.
   window.__openDetailModal = openDetailModal;
   window.__closeDetailModal = closeDetailModal;
+
+  // Tap the bloom to HEAR the bird: it plays the canonical reference clip and
+  // sweeps the rosette in time with it (tap again to stop). Falls back to a
+  // silent visual replay only if a signature somehow lacks a bundled clip.
+  (function () {
+    var bloomCv = document.getElementById('modalBloom');
+    if (!bloomCv) return;
+    bloomCv.addEventListener('click', function () {
+      if (!modalVP || !modalVP.analysis) return;
+      if (modalVP.clip) { toggleBloomAudio(); return; }
+      if (modalVP.mode !== 'play' && !_reduceMotion) { modalVP._introStarted = true; startBloomIntro(); }
+    });
+  })();
 
   // ===== Admin overlay (settings / system / logs / tools) =====
   // Lives in the same shell as the rest of the app - the menu button
@@ -2987,43 +3053,188 @@
   // Cache decoded AudioBuffers per file so repeated expand/collapse on
   // the same row doesn't re-fetch + re-decode the mp3.
   var _decodedCache = {};
+  // Cache the STFT analysis per file (shared by the bloom + line, and
+  // reused across re-expands / theme repaints) so each clip is analyzed
+  // exactly once.
+  var _analysisCache = {};
 
-  // Minimal in-place Cooley-Tukey radix-2 FFT (n must be a power of 2).
-  // Operates on parallel real/imag Float32Array buffers. ~30 lines and
-  // fast enough for our ~1024-sample windows of 3-second clips.
-  function _fft(real, imag) {
-    var n = real.length;
-    var j = 0;
-    for (var i = 0; i < n - 1; i++) {
-      if (i < j) {
-        var tr = real[i]; real[i] = real[j]; real[j] = tr;
-        var ti = imag[i]; imag[i] = imag[j]; imag[j] = ti;
-      }
-      var k = n >> 1;
-      while (k <= j) { j -= k; k >>= 1; }
-      j += k;
+  // The STFT analysis + FFT live in spectral-core.js (loaded before this
+  // file in index.html) so the browser and the build-time signature
+  // generator (avian/scripts/build-signatures.mjs) share ONE implementation
+  // and can never drift. Alias the pieces this file calls unqualified.
+  var AvianSpectral = (typeof window !== 'undefined' && window.AvianSpectral) || {};
+  var _fft = AvianSpectral._fft;
+  var specNormLog = AvianSpectral.specNormLog;
+  var analyzeBuffer = AvianSpectral.analyzeBuffer;
+
+  // Canonical species "song signatures": precomputed at build time from a
+  // clean xeno-canto reference recording (avian/scripts/build-signatures.mjs)
+  // and shipped as a static JSON, keyed by scientific name. The bloom renders
+  // THIS - a stable, species-true fingerprint - instead of analyzing our own
+  // noisy field clips (which vary per detection and smear for raspy calls).
+  // Clicking the bloom plays the bundled reference recording. The per-row
+  // pitch LINES still come from each actual recording (that's the point of
+  // overlaying them on a recording). Loaded once at startup.
+  var SIGNATURES = {};
+  var _sigLoad = (function () {
+    try {
+      return fetch('assets/signatures.json', { cache: 'force-cache' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { SIGNATURES = (j && j.species) || {}; })
+        .catch(function () {});
+    } catch (e) { return Promise.resolve(); }
+  })();
+  // Inflate a stored signature into the analysis shape renderBloom expects.
+  function sigToAnalysis(sig) {
+    return {
+      energy: Float32Array.from(sig.energy || []),
+      peakSmooth: Float32Array.from(sig.peakSmooth || []),
+      voiced: Uint8Array.from(sig.voiced || []),
+      cols: sig.cols || (sig.energy ? sig.energy.length : 0),
+      peakHz: sig.peakHz, loHz: sig.loHz, hiHz: sig.hiHz, dur: sig.dur
+    };
+  }
+
+  // Theme-aware palette for the canvas treatments (read live so dark mode
+  // just works); mirrors paintSpectrogram's BG/FG choices.
+  function specPal() {
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    return dark
+      ? { bg: [23, 24, 28], fg: [236, 232, 225], ink: 'rgba(236,232,225,' }
+      : { bg: [245, 240, 230], fg: [26, 22, 18], ink: 'rgba(26,22,18,' };
+  }
+  // Offscreen heatmap (the faint broadband "ground" under the line so raspy
+  // calls keep their texture). Cached on the analysis + tagged with the
+  // theme it was tinted for, so a theme toggle rebuilds it lazily.
+  function buildHeatmap(a) {
+    var p = specPal(), W = 480, H = 160, COLS = a.cols;
+    var off = document.createElement('canvas'); off.width = W; off.height = H;
+    var o = off.getContext('2d');
+    var img = o.createImageData(W, H), d = img.data;
+    for (var i = 0; i < d.length; i += 4) { d[i] = p.bg[0]; d[i + 1] = p.bg[1]; d[i + 2] = p.bg[2]; d[i + 3] = 255; }
+    var r2b = new Int32Array(H);
+    for (var row = 0; row < H; row++) {
+      var t = 1 - row / (H - 1);
+      var b = Math.round(a.binLo + (a.binHi - a.binLo) * Math.pow(t, 1.55));
+      r2b[row] = b < a.binLo ? a.binLo : (b > a.binHi ? a.binHi : b);
     }
-    for (var stage = 2; stage <= n; stage *= 2) {
-      var half = stage >> 1;
-      var ang = -2 * Math.PI / stage;
-      var wR = Math.cos(ang), wI = Math.sin(ang);
-      for (var sBase = 0; sBase < n; sBase += stage) {
-        var cR = 1, cI = 0;
-        for (var sb = 0; sb < half; sb++) {
-          var a = sBase + sb;
-          var b = a + half;
-          var trA = real[b] * cR - imag[b] * cI;
-          var tiA = real[b] * cI + imag[b] * cR;
-          real[b] = real[a] - trA;
-          imag[b] = imag[a] - tiA;
-          real[a] = real[a] + trA;
-          imag[a] = imag[a] + tiA;
-          var nR = cR * wR - cI * wI;
-          cI = cR * wI + cI * wR;
-          cR = nR;
-        }
+    for (var col = 0; col < W; col++) {
+      var gc = a.grid[Math.min(COLS - 1, Math.floor((col / W) * COLS))];
+      for (row = 0; row < H; row++) {
+        var v = gc[r2b[row]] || 0, e = v * v * (3 - 2 * v), px = (row * W + col) * 4;
+        d[px] = p.bg[0] + (((p.fg[0] - p.bg[0]) * e) | 0);
+        d[px + 1] = p.bg[1] + (((p.fg[1] - p.bg[1]) * e) | 0);
+        d[px + 2] = p.bg[2] + (((p.fg[2] - p.bg[2]) * e) | 0);
+        d[px + 3] = 255;
       }
     }
+    o.putImageData(img, 0, 0);
+    a._heat = off; a._heatTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    return off;
+  }
+  function heatFor(a) {
+    var theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+    if (!a._heat || a._heatTheme !== theme) buildHeatmap(a);
+    return a._heat;
+  }
+  // Size a canvas to its CSS box at device resolution. Returns null when
+  // the box is still ~0 (collapsing strip / mid-morph card) so callers can
+  // retry a frame later - same race paintSpectrogram guards against.
+  function specHiDPI(cv) {
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    var r = cv.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return null;
+    cv.width = Math.max(1, Math.round(r.width * dpr));
+    cv.height = Math.max(1, Math.round(r.height * dpr));
+    var ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx: ctx, W: r.width, H: r.height };
+  }
+
+  // Radial bloom: time = angle (12 o'clock, clockwise), pitch = radius,
+  // energy = spoke length + ink. `sweeping` draws only up to `prog`
+  // (petal-by-petal) with a leading bud; at rest it draws the full,
+  // closed, filled rosette. Returns false if the canvas wasn't sized yet.
+  function renderBloom(cv, a, prog, sweeping) {
+    var s = specHiDPI(cv); if (!s) return false;
+    var ctx = s.ctx, W = s.W, H = s.H, p = specPal(), COLS = a.cols;
+    ctx.clearRect(0, 0, W, H);
+    var cx = W / 2, cy = H / 2, r0 = Math.min(W, H) * 0.11, R = Math.min(W, H) * 0.45;
+    var sweep = sweeping ? prog : 1;
+    for (var c = 0; c < COLS; c++) {
+      var fr = c / COLS; if (fr > sweep) continue;
+      var ang = -Math.PI / 2 + fr * 2 * Math.PI;
+      var e = a.energy[c], len = r0 + (R - r0) * (0.25 + 0.75 * e);
+      ctx.strokeStyle = p.ink + (0.06 + 0.30 * e) + ')'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(ang) * r0, cy + Math.sin(ang) * r0);
+      ctx.lineTo(cx + Math.cos(ang) * len, cy + Math.sin(ang) * len);
+      ctx.stroke();
+    }
+    var pts = [];
+    for (c = 0; c < COLS; c++) {
+      var f2 = c / COLS; if (f2 > sweep + 0.001) continue;
+      var a2 = -Math.PI / 2 + f2 * 2 * Math.PI;
+      var rad = r0 + (R - r0) * (0.30 + 0.70 * specNormLog(a.peakSmooth[c]));
+      pts.push([cx + Math.cos(a2) * rad, cy + Math.sin(a2) * rad]);
+    }
+    if (pts.length > 2) {
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+      for (var i = 1; i < pts.length; i++) {
+        var pr = pts[i - 1], cu = pts[i];
+        ctx.quadraticCurveTo(pr[0], pr[1], (pr[0] + cu[0]) / 2, (pr[1] + cu[1]) / 2);
+      }
+      if (sweep >= 1) { ctx.closePath(); ctx.fillStyle = p.ink + '0.10)'; ctx.fill(); }
+      ctx.strokeStyle = p.ink + '0.85)'; ctx.lineWidth = 1.6; ctx.stroke();
+    }
+    ctx.fillStyle = p.ink + '0.55)'; ctx.beginPath(); ctx.arc(cx, cy, 2.4, 0, 7); ctx.fill();
+    if (sweeping && pts.length) {
+      var L = pts[pts.length - 1];
+      ctx.fillStyle = p.fg[0] > 120 ? 'rgba(236,232,225,0.95)' : 'rgba(26,22,18,0.9)';
+      ctx.beginPath(); ctx.arc(L[0], L[1], 3.2, 0, 7); ctx.fill();
+    }
+    return true;
+  }
+
+  // Per-row pitch-trace line on a faint heatmap ground. `sweeping` draws
+  // the trace only up to `prog` (it "draws itself" behind the DOM cursor);
+  // at rest it draws the whole contour. The played-veil + cursor + scrub
+  // stay as DOM overlays, so this only paints the heatmap + line.
+  function renderLine(cv, a, prog, sweeping) {
+    var s = specHiDPI(cv); if (!s) return false;
+    var ctx = s.ctx, W = s.W, H = s.H, p = specPal(), COLS = a.cols;
+    ctx.clearRect(0, 0, W, H);
+    ctx.save(); ctx.globalAlpha = 0.30; ctx.drawImage(heatFor(a), 0, 0, W, H); ctx.restore();
+    var padT = 10, padB = 10, gh = H - padT - padB;
+    function X(c) { return (c / (COLS - 1)) * W; }
+    function Y(f) { return padT + (1 - specNormLog(f)) * gh; }
+    var vd = a.voiced;
+    function vox(c) { return vd ? !!vd[c] : a.energy[c] >= 0.06; }
+    // Faint full guide - broken into segments so silent gaps show NO line
+    // (a flat line across silence is exactly what read as "meaningless").
+    ctx.strokeStyle = p.ink + '0.14)'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    var pen = false;
+    for (var c = 0; c < COLS; c++) {
+      if (!vox(c)) { pen = false; continue; }
+      var x = X(c), y = Y(a.peakSmooth[c]);
+      if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+    }
+    ctx.stroke();
+    // Bright trace up to the playback cursor; only across voiced spans.
+    var rev = sweeping ? Math.floor(prog * (COLS - 1)) : COLS - 1;
+    for (c = 1; c <= rev; c++) {
+      if (!vox(c) || !vox(c - 1)) continue;
+      ctx.strokeStyle = p.ink + (0.55 + 0.4 * a.energy[c]) + ')';
+      ctx.lineWidth = 1 + 2.2 * a.energy[c];
+      ctx.beginPath(); ctx.moveTo(X(c - 1), Y(a.peakSmooth[c - 1])); ctx.lineTo(X(c), Y(a.peakSmooth[c])); ctx.stroke();
+    }
+    if (sweeping && rev >= 0 && vox(rev)) {
+      var xt = X(rev), yt = Y(a.peakSmooth[rev]);
+      ctx.fillStyle = p.fg[0] > 120 ? 'rgba(236,232,225,0.95)' : 'rgba(26,22,18,0.9)';
+      ctx.beginPath(); ctx.arc(xt, yt, 2.6, 0, 7); ctx.fill();
+    }
+    return true;
   }
 
   // Paint an STFT spectrogram onto the strip's canvas. y-axis is the
@@ -3153,7 +3364,7 @@
     }
     if (loadingEl) {
       loadingEl.style.display = '';
-      loadingEl.textContent = 'rendering spectrogram...';
+      loadingEl.textContent = 'rendering...';
     }
 
     function done() {
@@ -3166,8 +3377,14 @@
       }
     }
 
+    if (_analysisCache[file]) {
+      paintRowLine(row, _analysisCache[file], 1, false);
+      done();
+      return;
+    }
     if (_decodedCache[file]) {
-      paintSpectrogram(canvas, _decodedCache[file]);
+      _analysisCache[file] = analyzeBuffer(_decodedCache[file]);
+      paintRowLine(row, _analysisCache[file], 1, false);
       done();
       return;
     }
@@ -3181,12 +3398,227 @@
       .then(function (buf) { return ctx.decodeAudioData(buf); })
       .then(function (audioBuffer) {
         _decodedCache[file] = audioBuffer;
-        paintSpectrogram(canvas, audioBuffer);
+        _analysisCache[file] = analyzeBuffer(audioBuffer);
+        paintRowLine(row, _analysisCache[file], 1, false);
         done();
       })
       .catch(function (e) {
-        fail('spectrogram failed: ' + (e && e.message ? e.message : ''));
+        fail('render failed: ' + (e && e.message ? e.message : ''));
       });
+  }
+
+  // Paint (or repaint) a recording row's pitch-line at the given progress,
+  // retrying across frames while the strip animates open from height 0
+  // (the same size race paintSpectrogram guards against). Capped so a row
+  // collapsed mid-open doesn't spin forever. Used only for the static
+  // (non-sweeping) paint; the cursor loop calls renderLine directly while
+  // playing.
+  function paintRowLine(row, a, prog, sweeping) {
+    var strip = row && row.querySelector('.rec-spectro');
+    var canvas = strip && strip.querySelector('canvas');
+    if (!canvas || !a) return;
+    var tries = 0;
+    (function attempt() {
+      requestAnimationFrame(function () {
+        if (!document.contains(canvas)) return;
+        if (renderLine(canvas, a, prog, sweeping)) {
+          canvas.classList.add('ready');
+          // Repaint once more after the open transition settles so the
+          // final paint lands at the strip's full height, not a mid-frame.
+          if (!canvas._settled) {
+            canvas._settled = true;
+            setTimeout(function () {
+              if (document.contains(canvas)) renderLine(canvas, a, prog, sweeping);
+            }, 280);
+          }
+          return;
+        }
+        if (++tries < 90) attempt();
+      });
+    })();
+  }
+
+  // Redraw a row's pitch line as the full, static contour (used whenever
+  // playback stops/pauses/ends - the line is only progressive while
+  // actively playing). No-op for collapsed rows or clips not yet analyzed.
+  function restRowLine(row) {
+    if (!row || !row.classList.contains('expanded')) return;
+    var file = row.dataset.file, a = file && _analysisCache[file];
+    var canvas = row.querySelector('.rec-spectro canvas');
+    if (a && canvas) renderLine(canvas, a, 1, false);
+  }
+
+  // Settle the bloom back to its full rosette at rest (cancels any in-
+  // flight intro/play sweep).
+  function restBloom() {
+    if (!modalVP || !modalVP.analysis || !modalVP.canvas) return;
+    if (modalVP.raf) { cancelAnimationFrame(modalVP.raf); modalVP.raf = null; }
+    modalVP.mode = 'idle'; modalVP.prog = 1;
+    renderBloom(modalVP.canvas, modalVP.analysis, 1, false);
+  }
+
+  function bloomReadHtml(a) {
+    function kHz(f) { return (f / 1000).toFixed(f < 1000 ? 2 : 1); }
+    return 'peak <b>' + kHz(a.peakHz) + ' kHz</b> · ' + kHz(a.loHz) + '–' + kHz(a.hiHz) + ' kHz · ' + a.dur.toFixed(1) + 's';
+  }
+
+  // ---- Bloom playback: clicking the signature plays the canonical reference
+  // recording and sweeps the rosette in time with it. Routes through the
+  // shared audioClaim arbiter so it stops any row / live / card audio first.
+  var bloomAudio = null, bloomRaf = null;
+  function stopBloomAudio() {
+    if (bloomRaf) { cancelAnimationFrame(bloomRaf); bloomRaf = null; }
+    if (bloomAudio) { try { bloomAudio.pause(); } catch (e) {} bloomAudio = null; }
+    audioRelease(stopBloomAudio);
+    if (modalVP && modalVP.analysis && modalVP.canvas) {
+      modalVP.mode = 'idle'; modalVP.prog = 1;
+      renderBloom(modalVP.canvas, modalVP.analysis, 1, false);
+    }
+  }
+  function toggleBloomAudio() {
+    if (bloomAudio && !bloomAudio.paused) { stopBloomAudio(); return; }
+    playBloomAudio();
+  }
+  function playBloomAudio() {
+    if (!modalVP || !modalVP.clip) return;
+    stopBloomAudio();
+    audioClaim(stopBloomAudio);
+    var au = new Audio(modalVP.clip), vp = modalVP;
+    bloomAudio = au;
+    au.addEventListener('playing', function () {
+      if (bloomRaf) cancelAnimationFrame(bloomRaf);
+      var tick = function () {
+        if (bloomAudio !== au || vp !== modalVP) { bloomRaf = null; return; }
+        if (au.duration) {
+          vp.mode = 'play'; vp.prog = au.currentTime / au.duration;
+          renderBloom(vp.canvas, vp.analysis, vp.prog, true);
+        }
+        bloomRaf = requestAnimationFrame(tick);
+      };
+      bloomRaf = requestAnimationFrame(tick);
+    });
+    au.addEventListener('ended', stopBloomAudio);
+    au.addEventListener('error', stopBloomAudio);
+    au.play().catch(stopBloomAudio);
+  }
+
+  // Attribution line under the bloom (REQUIRED by the reference clip's CC
+  // license): recordist + a link to the xeno-canto page + the license.
+  function licShort(u) {
+    if (!u) return '';
+    if (/publicdomain\/zero/.test(u)) return 'CC0';
+    var m = /licenses\/([a-z-]+)\/([0-9.]+)/.exec(u) || /^([a-z-]+)\/([0-9.]+)$/.exec(u);
+    return m ? 'CC ' + m[1].toUpperCase() + ' ' + m[2] : '';
+  }
+  function setBloomAttr(attr) {
+    var el = document.getElementById('modalBloomAttr');
+    if (!el) return;
+    if (!attr) { el.innerHTML = ''; return; }
+    var lic = licShort(attr.lic);
+    var url = (attr.url || '').replace(/"/g, '%22');
+    el.innerHTML = 'song: ' + adminEsc(attr.rec || 'unknown') +
+      (url ? ' · <a href="' + url + '" target="_blank" rel="noopener">xeno-canto</a>' : ' · xeno-canto') +
+      (lic ? ' · ' + lic : '');
+  }
+
+  // Build the song-signature bloom for a freshly-opened modal from the
+  // CANONICAL species signature (precomputed at build time from a clean
+  // reference clip - stable + species-true). Hidden when we don't have a
+  // signature for this species yet (better an empty slot than a misleading
+  // bloom extracted from a noisy field clip). `dets` is no longer used (the
+  // bloom is species-level, not tied to any one recording).
+  var _vpToken = 0;
+  function setupVoiceprint(sci) {
+    var vpWrap = document.getElementById('modalVoiceprint');
+    var canvas = document.getElementById('modalBloom');
+    var readEl = document.getElementById('modalBloomRead');
+    if (!vpWrap || !canvas) return;
+    if (modalVP && modalVP.raf) cancelAnimationFrame(modalVP.raf);
+    stopBloomAudio();
+    modalVP = null;
+    var cctx = canvas.getContext('2d');
+    if (cctx) cctx.clearRect(0, 0, canvas.width, canvas.height);
+    var tok = ++_vpToken;
+    function show(sig) {
+      if (tok !== _vpToken) return;        // modal already moved to another bird
+      if (!sig) { vpWrap.setAttribute('hidden', ''); setBloomAttr(null); return; }
+      vpWrap.removeAttribute('hidden');
+      var a = sigToAnalysis(sig);
+      modalVP = { sci: sci, file: null, canonical: true, canvas: canvas,
+                  mode: 'idle', prog: 1, raf: null, analysis: a,
+                  clip: sig.clip, attr: sig.attr };
+      if (readEl) readEl.innerHTML = bloomReadHtml(a);
+      setBloomAttr(sig.attr);
+      maybeStartBloom();
+    }
+    if (SIGNATURES[sci]) { show(SIGNATURES[sci]); return; }
+    // Signatures may still be loading on the very first modal open.
+    vpWrap.setAttribute('hidden', '');
+    _sigLoad.then(function () { if (tok === _vpToken) show(SIGNATURES[sci]); });
+  }
+
+  // Start the bloom-in only once BOTH the analysis is ready AND the open-
+  // morph has settled (so the canvas paints at its true, unscaled size).
+  // Whichever finishes last triggers it.
+  function maybeStartBloom() {
+    if (!modalMorphDone || !modalVP || !modalVP.analysis || modalVP.mode === 'play') return;
+    if (modalVP._introStarted) return;
+    modalVP._introStarted = true;
+    startBloomIntro();
+  }
+
+  // One-time radial "bloom-in" of the rosette over ~the clip's duration
+  // (capped). Skipped under prefers-reduced-motion (paint the full rosette
+  // at once). Holds at prog 0 until the canvas reports a real size, so a
+  // not-yet-laid-out canvas doesn't burn the intro invisibly.
+  function startBloomIntro() {
+    if (!modalVP || !modalVP.analysis || !modalVP.canvas) return;
+    if (modalVP.raf) { cancelAnimationFrame(modalVP.raf); modalVP.raf = null; }
+    if (_reduceMotion) {
+      modalVP.mode = 'idle'; modalVP.prog = 1;
+      renderBloom(modalVP.canvas, modalVP.analysis, 1, false);
+      return;
+    }
+    modalVP.mode = 'intro'; modalVP.prog = 0;
+    var file = modalVP.file;
+    var introMs = Math.min(modalVP.analysis.dur || 1.5, 2.0) * 1000;
+    var t0 = null;
+    var step = function (ts) {
+      if (!modalVP || modalVP.file !== file || modalVP.mode !== 'intro') return;
+      // Hold until the canvas is laid out (modal may still be morphing).
+      if (!renderBloom(modalVP.canvas, modalVP.analysis, modalVP.prog, true)) {
+        modalVP.raf = requestAnimationFrame(step); return;
+      }
+      if (t0 == null) t0 = ts;
+      var prog = (ts - t0) / introMs;
+      if (prog >= 1) {
+        modalVP.prog = 1; modalVP.mode = 'idle'; modalVP.raf = null;
+        renderBloom(modalVP.canvas, modalVP.analysis, 1, false);
+        return;
+      }
+      modalVP.prog = prog;
+      modalVP.raf = requestAnimationFrame(step);
+    };
+    modalVP.raf = requestAnimationFrame(step);
+  }
+
+  // Repaint the live canvas treatments for the current theme: the bloom +
+  // every expanded recording strip in an open modal. Heatmaps re-tint
+  // lazily via heatFor(). Called from applyTheme().
+  function repaintSpectral() {
+    if (modalVP && modalVP.analysis && modalVP.canvas && modalVP.mode !== 'intro' && modalVP.mode !== 'play') {
+      renderBloom(modalVP.canvas, modalVP.analysis, modalVP.prog, false);
+    }
+    var modal = document.getElementById('detail-modal');
+    if (!modal || modal.getAttribute('aria-hidden') !== 'false') return;
+    [].forEach.call(modal.querySelectorAll('.rec-row.expanded'), function (row) {
+      var file = row.dataset.file, a = file && _analysisCache[file];
+      var canvas = row.querySelector('.rec-spectro canvas');
+      if (!a || !canvas) return;
+      var playingHere = modalRecBtn && modalRecBtn.closest('.rec-row') === row && modalAudio && !modalAudio.paused && modalAudio.duration;
+      if (playingHere) renderLine(canvas, a, modalAudio.currentTime / modalAudio.duration, true);
+      else renderLine(canvas, a, 1, false);
+    });
   }
 
   // Per-recording row interactions in the modal:
@@ -3257,6 +3689,10 @@
           modalRecBtn.removeAttribute('data-active');
           modalRecBtn.innerHTML = ICON_PLAY;
         }
+        // Rewound: redraw the whole pitch line + settle the bloom.
+        var endedRow = strip.closest('.rec-row');
+        restRowLine(endedRow);
+        if (modalVP && endedRow && modalVP.file === endedRow.dataset.file) restBloom();
       });
       audio.addEventListener('error', function () {
         stopModalAudio();

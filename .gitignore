@@ -61,3 +61,5 @@ avian/assets/_legacy/
 /_site/
 # Stray Miniflare/node cruft if wrangler is ever run from the repo root
 /node_modules/
+# Wrangler local state/cache (created by `wrangler pages deploy` etc.)
+.wrangler/

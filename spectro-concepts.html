@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>barry's birds · spectral concepts</title>
+<style>
+  :root{
+    color-scheme:light;
+    --paper:#fcfcfb; --paper-2:#f3f2ee; --paper-3:#e8e6df;
+    --ink:#1a1612; --ink-2:#4a3f31; --ink-soft:#908576;
+    --hairline:rgba(26,22,18,0.14);
+    --edge:inset 0 0 0 1px rgba(255,255,255,0.55),0 0 0 1px rgba(26,22,18,0.04);
+    --edge-lg:inset 0 0 0 1px rgba(255,255,255,0.6),0 0 0 1px rgba(26,22,18,0.06),0 8px 28px rgba(26,22,18,0.06);
+    --recess:inset 0 1px 2px rgba(26,22,18,0.06),inset 0 0 0 1px rgba(26,22,18,0.04);
+    --raised:inset 0 0 0 1px rgba(255,255,255,0.8),0 0 0 1px rgba(26,22,18,0.05),0 1px 2px rgba(26,22,18,0.07);
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --paper:#17181c; --paper-2:#212329; --paper-3:#2c2f36;
+    --ink:#ece8e1; --ink-2:#b7afa2; --ink-soft:#837c70;
+    --hairline:rgba(236,232,225,0.20);
+    --edge:inset 0 0 0 1px rgba(255,255,255,0.05),0 0 0 1px rgba(0,0,0,0.4);
+    --edge-lg:inset 0 0 0 1px rgba(255,255,255,0.06),0 0 0 1px rgba(0,0,0,0.5),0 10px 30px rgba(0,0,0,0.5);
+    --recess:inset 0 1px 2px rgba(0,0,0,0.5),inset 0 0 0 1px rgba(255,255,255,0.04);
+    --raised:inset 0 0 0 1px rgba(255,255,255,0.07),0 0 0 1px rgba(0,0,0,0.4),0 1px 2px rgba(0,0,0,0.5);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);}
+  body{
+    font-family:ui-serif,"Iowan Old Style","Apple Garamond",Georgia,serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100%;
+    transition:background 200ms ease,color 200ms ease;
+  }
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.02em;}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 24px 80px;}
+  header.top{text-align:center;position:relative;margin-bottom:8px;}
+  .eyebrow{font-style:italic;color:var(--ink-2);letter-spacing:.06em;font-size:15px;}
+  h1{margin:6px 0 4px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+     font-size:clamp(22px,3vw,34px);}
+  .sub{color:var(--ink-soft);font-size:14px;max-width:620px;margin:8px auto 0;line-height:1.5;}
+  .theme-btn{
+    position:absolute;top:0;right:0;
+    background:var(--paper-2);border:0;color:var(--ink);
+    box-shadow:var(--raised);border-radius:999px;
+    padding:8px 14px;font-size:12px;cursor:pointer;
+  }
+  .controls{
+    display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;
+    margin:24px 0 6px;
+  }
+  .controls .lbl{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft);margin-right:4px;}
+  .chip{
+    background:var(--paper-2);border:0;color:var(--ink);
+    box-shadow:var(--raised);border-radius:999px;
+    padding:8px 14px;font-size:13px;cursor:pointer;
+    transition:transform 120ms ease;
+    font-family:ui-serif,Georgia,serif;
+  }
+  .chip:hover{transform:translateY(-1px);}
+  .chip[data-on="true"]{background:var(--ink);color:var(--paper);}
+  .chip small{display:block;font-size:9px;letter-spacing:.1em;color:inherit;opacity:.6;text-transform:uppercase;margin-top:1px;}
+  .playall{margin-top:10px;}
+  .grid{
+    display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:26px;
+  }
+  @media (max-width:760px){.grid{grid-template-columns:1fr;}}
+  .card{
+    background:var(--paper);border-radius:16px;box-shadow:var(--edge-lg);
+    padding:18px 18px 16px;display:flex;flex-direction:column;
+  }
+  .card .concept{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-soft);}
+  .card h2{margin:3px 0 2px;font-size:18px;letter-spacing:.02em;font-weight:700;}
+  .card .lift{font-size:10px;letter-spacing:.08em;color:var(--ink-soft);text-transform:uppercase;}
+  .stage{
+    margin:14px 0 10px;border-radius:10px;background:var(--paper-2);
+    box-shadow:var(--recess);position:relative;overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;
+  }
+  .stage.tall{aspect-ratio:1/1;}
+  .stage.wide{aspect-ratio:16/7;}
+  canvas{display:block;width:100%;height:100%;}
+  .card .cap{font-size:12.5px;line-height:1.5;color:var(--ink-2);margin:2px 0 12px;}
+  .card .cap b{color:var(--ink);font-weight:600;}
+  .row{display:flex;align-items:center;gap:10px;margin-top:auto;}
+  .play{
+    background:var(--ink);color:var(--paper);border:0;
+    border-radius:999px;width:34px;height:34px;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
+    box-shadow:var(--raised);
+  }
+  .play svg{width:11px;height:11px;}
+  .readout{font-size:11px;color:var(--ink-soft);}
+  .readout b{color:var(--ink);font-weight:600;}
+  footer{margin-top:34px;text-align:center;color:var(--ink-soft);font-size:12px;line-height:1.6;}
+  footer code{font-family:ui-monospace,Menlo,monospace;font-size:11px;background:var(--paper-2);padding:1px 5px;border-radius:4px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <button class="theme-btn mono" id="themeBtn">dark mode</button>
+    <div class="eyebrow">barry's birds</div>
+    <h1>Spectral Concepts</h1>
+    <p class="sub">Four ways to show a bird's call as a picture, inside the info card. All four are driven by the
+      <b>same FFT the live site already computes</b> from each recording — so any of them is a re-skin, not new plumbing.
+      Calls here are synthesized so the page runs offline; on the real site the actual clip slots in unchanged.
+      Pick a bird, then hit play on any tile (or <b>play all</b>).</p>
+  </header>
+
+  <div class="controls" id="presetRow">
+    <span class="lbl mono">Call</span>
+  </div>
+  <div style="text-align:center">
+    <button class="chip playall" id="playAll" data-on="false">▶ play all</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer>
+    Rendered live in your browser: each synthetic call → 1024-pt Hann-windowed STFT (the exact pipeline in
+    <code>apt.js → paintSpectrogram</code>) → these four treatments. Toggle light/dark to see the palette follow the theme.
+    <br>This is a throwaway concept page (<code>spectro-concepts.html</code>), not wired into the app.
+  </footer>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ *  Synthetic bird calls — enough structure that the spectrograms,
+ *  blooms and lines look genuinely different per species.
+ * ------------------------------------------------------------------ */
+var SR = 44100;
+function clamp(x,a,b){return x<a?a:x>b?b:x;}
+
+// addTone: writes a swept/harmonic/trilled/noisy tone into buf.
+function addTone(buf, t0, dur, fS, fE, amp, harm, am, amDepth, noise){
+  harm = harm || [1];
+  am = am || 0; amDepth = amDepth || 0; noise = noise || 0;
+  var s0 = Math.floor(t0*SR), n = Math.floor(dur*SR);
+  var phase = 0;
+  for(var i=0;i<n;i++){
+    var idx = s0+i; if(idx<0||idx>=buf.length) continue;
+    var p = i/n;                                   // 0..1 within tone
+    var env = Math.pow(Math.sin(Math.PI*p), 0.7);  // smooth attack/decay
+    if(am>0){ var tSec=i/SR; env *= (1-amDepth) + amDepth*0.5*(1+Math.sin(2*Math.PI*am*tSec)); }
+    var f = fS + (fE-fS)*p;
+    phase += 2*Math.PI*f/SR;
+    var samp=0;
+    for(var k=0;k<harm.length;k++){ samp += harm[k]*Math.sin((k+1)*phase); }
+    if(noise>0){ samp += noise*(Math.random()*2-1)*1.4; }
+    buf[idx] += amp*env*samp;
+  }
+}
+
+var PRESETS = [
+  { id:'robin', name:'Robin', sub:'warble', dur:1.95, build:function(b){
+      var seg=[[0.05,.16,2500,2100],[0.28,.15,2300,2750],[0.50,.18,2700,2200],
+               [0.74,.14,2200,2600],[0.95,.20,2600,2050],[1.22,.15,2150,2520],[1.46,.18,2560,2150]];
+      seg.forEach(function(s){addTone(b,s[0],s[1],s[2],s[3],.9,[1,.35,.12],0,0,.015);});
+  }},
+  { id:'chickadee', name:'Chickadee', sub:'fee-bee', dur:1.7, build:function(b){
+      addTone(b,0.30,0.45,4100,4000,.95,[1,.22],0,0,.01);
+      addTone(b,0.95,0.50,3250,3150,.95,[1,.22],0,0,.01);
+  }},
+  { id:'chippy', name:'Chipping Sparrow', sub:'trill', dur:2.25, build:function(b){
+      addTone(b,0.18,1.95,5200,5000,.8,[1,.28,.09],30,0.95,.02);
+  }},
+  { id:'jay', name:'Blue Jay', sub:'jeer', dur:2.1, build:function(b){
+      addTone(b,0.20,0.50,4200,2600,.9,[1,.6,.4,.25],16,0.8,.22);
+      addTone(b,0.85,0.50,4000,2400,.9,[1,.6,.4,.25],15,0.8,.24);
+      addTone(b,1.50,0.46,3800,2300,.85,[1,.55,.38,.22],15,0.8,.26);
+  }},
+  { id:'hawk', name:'Red-tailed Hawk', sub:'scream', dur:1.7, build:function(b){
+      addTone(b,0.20,1.32,3600,1700,.9,[1,.7,.5,.35,.2],6,0.18,.20);
+  }}
+];
+
+/* ------------------------------------------------------------------ *
+ *  Radix-2 FFT (same as apt.js) + STFT analysis.
+ * ------------------------------------------------------------------ */
+function fft(re,im){
+  var n=re.length,j=0,i,k;
+  for(i=0;i<n-1;i++){
+    if(i<j){var tr=re[i];re[i]=re[j];re[j]=tr;var ti=im[i];im[i]=im[j];im[j]=ti;}
+    k=n>>1; while(k<=j){j-=k;k>>=1;} j+=k;
+  }
+  for(var st=2;st<=n;st*=2){
+    var half=st>>1, ang=-2*Math.PI/st, wR=Math.cos(ang), wI=Math.sin(ang);
+    for(var sb=0;sb<n;sb+=st){
+      var cR=1,cI=0;
+      for(var s=0;s<half;s++){
+        var a=sb+s,b=a+half;
+        var trA=re[b]*cR-im[b]*cI, tiA=re[b]*cI+im[b]*cR;
+        re[b]=re[a]-trA; im[b]=im[a]-tiA; re[a]=re[a]+trA; im[a]=im[a]+tiA;
+        var nR=cR*wR-cI*wI; cI=cR*wI+cI*wR; cR=nR;
+      }
+    }
+  }
+}
+var FFT_SIZE=1024, BINS=512, COLS=240, NYQ=SR/2;
+var F_LO=200, F_HI=12000;
+var binLo=Math.max(1,Math.floor(F_LO/NYQ*BINS));
+var binHi=Math.min(BINS-1,Math.ceil(F_HI/NYQ*BINS));
+
+function analyze(preset){
+  var buf=new Float32Array(Math.floor(preset.dur*SR));
+  preset.build(buf);
+  var mx=1e-6; for(var i=0;i<buf.length;i++){var a=Math.abs(buf[i]); if(a>mx)mx=a;}
+  for(i=0;i<buf.length;i++) buf[i]=buf[i]/mx*0.6;
+
+  var win=new Float32Array(FFT_SIZE);
+  for(i=0;i<FFT_SIZE;i++) win[i]=0.5-0.5*Math.cos(2*Math.PI*i/(FFT_SIZE-1));
+  var hop=Math.max(1,Math.floor((buf.length-FFT_SIZE)/(COLS-1)));
+  var grid=[], peakF=new Float32Array(COLS), energy=new Float32Array(COLS);
+  var binEnergy=new Float32Array(BINS);
+  var re=new Float32Array(FFT_SIZE), im=new Float32Array(FFT_SIZE);
+  var gPeak=0, gPeakF=1000;
+  for(var c=0;c<COLS;c++){
+    var start=c*hop;
+    for(var s=0;s<FFT_SIZE;s++){ re[s]=(start+s<buf.length?buf[start+s]:0)*win[s]; im[s]=0; }
+    fft(re,im);
+    var col=new Float32Array(BINS), e=0, pk=0, pkBin=binLo;
+    for(var bn=binLo;bn<=binHi;bn++){
+      var mag=Math.sqrt(re[bn]*re[bn]+im[bn]*im[bn]);
+      var db=20*Math.log10(mag+1e-9);
+      var v=clamp((db+75)/65,0,1);
+      col[bn]=v; e+=v; binEnergy[bn]+=v;
+      if(v>pk){pk=v;pkBin=bn;}
+      if(v>gPeak){gPeak=v;gPeakF=bn/BINS*NYQ;}
+    }
+    grid.push(col); energy[c]=e; peakF[c]=pkBin/BINS*NYQ;
+  }
+  // normalize energy 0..1
+  var emax=1e-6; for(c=0;c<COLS;c++) if(energy[c]>emax)emax=energy[c];
+  for(c=0;c<COLS;c++) energy[c]/=emax;
+  // smooth peak track
+  var sm=new Float32Array(COLS);
+  for(c=0;c<COLS;c++){
+    var acc=0,w=0;
+    for(var d=-3;d<=3;d++){var cc=c+d; if(cc<0||cc>=COLS)continue; var wt=energy[cc]+0.05; acc+=peakF[cc]*wt; w+=wt;}
+    sm[c]=w>0?acc/w:peakF[c];
+  }
+  // frequency range = 10th..90th pct of accumulated bin energy
+  var tot=0; for(bn=binLo;bn<=binHi;bn++) tot+=binEnergy[bn];
+  var cum=0, fLoR=gPeakF, fHiR=gPeakF, got10=false;
+  for(bn=binLo;bn<=binHi;bn++){
+    cum+=binEnergy[bn];
+    if(!got10 && cum>=tot*0.12){fLoR=bn/BINS*NYQ;got10=true;}
+    if(cum>=tot*0.88){fHiR=bn/BINS*NYQ;break;}
+  }
+  return {grid:grid,energy:energy,peakF:peakF,peakSmooth:sm,dur:preset.dur,
+          peakHz:gPeakF,loHz:fLoR,hiHz:fHiR};
+}
+
+/* ------------------------------------------------------------------ *
+ *  Palette helpers (read live so dark mode just works).
+ * ------------------------------------------------------------------ */
+function pal(){
+  var dark=document.documentElement.getAttribute('data-theme')==='dark';
+  return dark
+    ? {bg:[23,24,28],  fg:[236,232,225], soft:'rgba(236,232,225,0.42)', ink:'rgba(236,232,225,', faint:'rgba(236,232,225,0.10)'}
+    : {bg:[245,240,230],fg:[26,22,18],   soft:'rgba(26,22,18,0.42)',    ink:'rgba(26,22,18,',    faint:'rgba(26,22,18,0.08)'};
+}
+function fNormLog(f){ f=clamp(f,F_LO,F_HI); return Math.log(f/F_LO)/Math.log(F_HI/F_LO); }
+// warp matching paintSpectrogram (row->bin pow 1.55), inverted to freq->row fraction
+function rowFracOfFreq(f){
+  var bf=clamp(f,F_LO,F_HI)/NYQ*BINS;
+  var t=Math.pow((bf-binLo)/(binHi-binLo),1/1.55);  // 0..1 (0=bottom)
+  return 1-t;                                        // 0=top,1=bottom
+}
+
+function setHiDPI(cv){
+  var dpr=Math.min(2,window.devicePixelRatio||1);
+  var r=cv.getBoundingClientRect();
+  cv.width=Math.max(1,Math.round(r.width*dpr));
+  cv.height=Math.max(1,Math.round(r.height*dpr));
+  var ctx=cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {ctx:ctx,W:r.width,H:r.height};
+}
+
+/* ------------------------------------------------------------------ *
+ *  Pre-render the spectrogram heatmap to an offscreen canvas
+ *  (device pixels) so the ink-wash panel can reveal it cheaply.
+ * ------------------------------------------------------------------ */
+function buildHeatmap(data){
+  var p=pal(), W=480, H=190;
+  var off=document.createElement('canvas'); off.width=W; off.height=H;
+  var octx=off.getContext('2d');
+  var img=octx.createImageData(W,H), d=img.data;
+  for(var i=0;i<d.length;i+=4){d[i]=p.bg[0];d[i+1]=p.bg[1];d[i+2]=p.bg[2];d[i+3]=255;}
+  var rowToBin=new Int32Array(H);
+  for(var row=0;row<H;row++){
+    var t=1-row/(H-1);
+    rowToBin[row]=clamp(Math.round(binLo+(binHi-binLo)*Math.pow(t,1.55)),binLo,binHi);
+  }
+  for(var col=0;col<W;col++){
+    var gc=data.grid[Math.min(COLS-1,Math.floor(col/W*COLS))];
+    for(row=0;row<H;row++){
+      var v=gc[rowToBin[row]]||0;
+      var e=v*v*(3-2*v);
+      var px=(row*W+col)*4;
+      d[px]  =p.bg[0]+((p.fg[0]-p.bg[0])*e)|0;
+      d[px+1]=p.bg[1]+((p.fg[1]-p.bg[1])*e)|0;
+      d[px+2]=p.bg[2]+((p.fg[2]-p.bg[2])*e)|0;
+      d[px+3]=255;
+    }
+  }
+  octx.putImageData(img,0,0);
+  return off;
+}
+
+/* ------------------------------------------------------------------ *
+ *  The four renderers. Each: render(cv, data, prog, playing)
+ *  prog 0..1 = playhead; playing flips on idle ambient motion.
+ * ------------------------------------------------------------------ */
+function kHz(f){return (f/1000).toFixed(f<1000?2:1);}
+
+function renderInk(cv,data,prog,playing){
+  var s=setHiDPI(cv), ctx=s.ctx, W=s.W, H=s.H, p=pal();
+  var padL=30, padB=16, gx=padL, gw=W-padL-6, gy=4, gh=H-padB-4;
+  // faint full, then revealed slice
+  ctx.clearRect(0,0,W,H);
+  ctx.save(); ctx.beginPath(); ctx.rect(gx,gy,gw,gh); ctx.clip();
+  ctx.globalAlpha=0.16; ctx.drawImage(data._heat,gx,gy,gw,gh);
+  var rev = playing? prog : 1;
+  ctx.globalAlpha=1;
+  var sw=Math.max(1,data._heat.width*rev);
+  ctx.drawImage(data._heat, 0,0, sw, data._heat.height, gx,gy, Math.max(0.5,gw*rev), gh);
+  ctx.restore();
+  // freq axis (kHz)
+  ctx.font='9px ui-monospace,Menlo,monospace'; ctx.fillStyle=p.soft; ctx.textBaseline='middle';
+  [1,2,4,8,12].forEach(function(f){
+    var y=gy+rowFracOfFreq(f*1000)*gh;
+    ctx.fillText(f+'k', 4, y);
+    ctx.strokeStyle=p.faint; ctx.beginPath(); ctx.moveTo(gx,y); ctx.lineTo(gx+gw,y); ctx.stroke();
+  });
+  // time axis
+  ctx.textBaseline='alphabetic'; ctx.textAlign='center';
+  [0,0.5,1].forEach(function(t){
+    ctx.fillText((data.dur*t).toFixed(1)+'s', gx+gw*t, H-4);
+  });
+  ctx.textAlign='left';
+  // playhead
+  if(playing){
+    var px=gx+gw*prog;
+    ctx.fillStyle=p.ink+'0.10)'; ctx.fillRect(gx,gy,gw*prog,gh);
+    ctx.strokeStyle=p.fg[0]>120?'rgba(236,232,225,0.9)':'rgba(26,22,18,0.85)';
+    ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(px,gy); ctx.lineTo(px,gy+gh); ctx.stroke();
+  }
+}
+
+function renderBloom(cv,data,prog,playing,clock){
+  var s=setHiDPI(cv), ctx=s.ctx, W=s.W, H=s.H, p=pal();
+  ctx.clearRect(0,0,W,H);
+  var cx=W/2, cy=H/2, r0=Math.min(W,H)*0.10, R=Math.min(W,H)*0.46;
+  var rot = playing? 0 : (clock*0.10);             // gentle idle spin
+  var sweep = playing? prog : 1;
+  var lastA = -Math.PI/2 + sweep*2*Math.PI;
+  // energy spokes (texture)
+  for(var c=0;c<COLS;c++){
+    var frac=c/COLS;
+    var a=-Math.PI/2 + frac*2*Math.PI + rot;
+    if(frac>sweep) continue;
+    var e=data.energy[c];
+    var len=r0 + (R-r0)*(0.25+0.75*e);
+    ctx.strokeStyle=p.ink+(0.06+0.30*e)+')';
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(cx+Math.cos(a)*r0, cy+Math.sin(a)*r0);
+    ctx.lineTo(cx+Math.cos(a)*len, cy+Math.sin(a)*len);
+    ctx.stroke();
+  }
+  // petal outline = peak frequency mapped to radius, smoothed, closed
+  var pts=[];
+  for(c=0;c<COLS;c++){
+    var fr=c/COLS; if(fr>sweep+0.001) continue;
+    var a2=-Math.PI/2 + fr*2*Math.PI + rot;
+    var rad=r0 + (R-r0)*(0.30+0.70*fNormLog(data.peakSmooth[c]));
+    pts.push([cx+Math.cos(a2)*rad, cy+Math.sin(a2)*rad]);
+  }
+  if(pts.length>2){
+    ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+    for(var i=1;i<pts.length;i++){
+      var prev=pts[i-1], cur=pts[i];
+      ctx.quadraticCurveTo(prev[0],prev[1],(prev[0]+cur[0])/2,(prev[1]+cur[1])/2);
+    }
+    if(sweep>=1){ ctx.closePath(); ctx.fillStyle=p.ink+'0.10)'; ctx.fill(); }
+    ctx.strokeStyle=p.ink+'0.85)'; ctx.lineWidth=1.6; ctx.stroke();
+  }
+  // hub
+  ctx.fillStyle=p.ink+'0.55)'; ctx.beginPath(); ctx.arc(cx,cy,2.2,0,7); ctx.fill();
+  // leading bud while blooming
+  if(playing && pts.length){
+    var L=pts[pts.length-1];
+    ctx.fillStyle=p.fg[0]>120?'rgba(236,232,225,0.95)':'rgba(26,22,18,0.9)';
+    ctx.beginPath(); ctx.arc(L[0],L[1],3,0,7); ctx.fill();
+  }
+}
+
+function renderLine(cv,data,prog,playing,clock){
+  var s=setHiDPI(cv), ctx=s.ctx, W=s.W, H=s.H, p=pal();
+  ctx.clearRect(0,0,W,H);
+  var padL=8,padR=8,padT=14,padB=14, gw=W-padL-padR, gh=H-padT-padB;
+  function X(c){return padL + c/(COLS-1)*gw;}
+  function Y(f){return padT + (1-fNormLog(f))*gh;}
+  // ghost of full path
+  ctx.strokeStyle=p.ink+'0.12)'; ctx.lineWidth=1.5; ctx.lineJoin='round'; ctx.lineCap='round';
+  ctx.beginPath();
+  for(var c=0;c<COLS;c++){ var x=X(c),y=Y(data.peakSmooth[c]); c?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+  ctx.stroke();
+  // revealed portion, width modulated by energy
+  var rev = playing? Math.floor(prog*(COLS-1)) : COLS-1;
+  for(c=1;c<=rev;c++){
+    if(data.energy[c]<0.04) continue;            // skip silent gaps -> dashed feel
+    ctx.strokeStyle=p.ink+(0.5+0.45*data.energy[c])+')';
+    ctx.lineWidth=1+2.4*data.energy[c];
+    ctx.beginPath(); ctx.moveTo(X(c-1),Y(data.peakSmooth[c-1])); ctx.lineTo(X(c),Y(data.peakSmooth[c])); ctx.stroke();
+  }
+  // leading tip
+  if(playing){
+    var xt=X(rev),yt=Y(data.peakSmooth[rev]);
+    ctx.fillStyle=p.fg[0]>120?'rgba(236,232,225,0.95)':'rgba(26,22,18,0.9)';
+    ctx.beginPath(); ctx.arc(xt,yt,3+1.5*Math.sin(clock*8),0,7); ctx.fill();
+  }
+}
+
+var BIRD_PATH="M3.5 6.5 C 4 4, 6 3, 8 4 C 10 3.6, 11.6 4.6, 12 6.5 L 11.5 8 C 11 9.6, 9.4 10.4, 8 10.4 C 6.4 10.4, 4.8 9.6, 4.2 8 Z";
+function renderHalo(cv,data,prog,playing,clock,state){
+  var s=setHiDPI(cv), ctx=s.ctx, W=s.W, H=s.H, p=pal();
+  ctx.clearRect(0,0,W,H);
+  var cx=W/2, cy=H/2, base=Math.min(W,H)*0.16;
+  state.ripples = state.ripples || [];
+  // spawn ripples on syllable onsets while playing; slow breath when idle
+  if(playing){
+    var col=Math.min(COLS-1,Math.floor(prog*COLS));
+    var e=data.energy[col], pe=state._pe||0;
+    if(e>0.45 && e>pe+0.04){ state.ripples.push({r:base+4, a:0.45, w:1+2*e}); }
+    state._pe=e;
+  } else {
+    state._breath=(state._breath||0)+0.016;
+    if(state._breath>1.6){ state._breath=0; state.ripples.push({r:base+4,a:0.18,w:1}); }
+  }
+  // advance + draw ripples
+  for(var i=state.ripples.length-1;i>=0;i--){
+    var rp=state.ripples[i]; rp.r+=1.7; rp.a*=0.965;
+    if(rp.a<0.02){ state.ripples.splice(i,1); continue; }
+    ctx.strokeStyle=p.ink+rp.a.toFixed(3)+')'; ctx.lineWidth=rp.w;
+    ctx.beginPath(); ctx.arc(cx,cy,rp.r,0,7); ctx.stroke();
+  }
+  // steady ring sized by current energy
+  var cur = playing? data.energy[Math.min(COLS-1,Math.floor(prog*COLS))] : 0.18+0.04*Math.sin(clock*1.5);
+  ctx.strokeStyle=p.ink+(0.25+0.4*cur)+')'; ctx.lineWidth=1.4;
+  ctx.beginPath(); ctx.arc(cx,cy,base+6+10*cur,0,7); ctx.stroke();
+  // portrait disc
+  ctx.fillStyle=p.bg[0]>120?'rgba(255,255,255,0.7)':'rgba(255,255,255,0.06)';
+  ctx.beginPath(); ctx.arc(cx,cy,base,0,7); ctx.fill();
+  ctx.strokeStyle=p.ink+'0.5)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.arc(cx,cy,base,0,7); ctx.stroke();
+  // bird glyph
+  ctx.save();
+  var sc=base/9; ctx.translate(cx-8*sc, cy-7*sc); ctx.scale(sc,sc);
+  ctx.strokeStyle=p.ink+'0.9)'; ctx.lineWidth=1.3/sc; ctx.lineJoin='round'; ctx.lineCap='round';
+  try{ ctx.stroke(new Path2D(BIRD_PATH)); }catch(e){}
+  ctx.restore();
+}
+
+/* ------------------------------------------------------------------ *
+ *  Panels / cards.
+ * ------------------------------------------------------------------ */
+var ICON_PLAY='<svg viewBox="0 0 12 12" fill="currentColor"><path d="M2 1.5 L10.5 6 L2 10.5 Z"/></svg>';
+var ICON_STOP='<svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1.2"/></svg>';
+
+var PANELS=[
+  {key:'ink', concept:'concept 01', title:'Ink wash (labeled)', shape:'wide', lift:'lift: low',
+   cap:'The literal spectrogram you already have — restyled on paper, now with a <b>kHz axis</b>, <b>peak/range readout</b>, and a caption. <b>Animation:</b> the song paints in left-to-right behind a playhead as the clip plays.',
+   render:renderInk, readout:function(d){return 'peak <b>'+kHz(d.peakHz)+' kHz</b> · range '+kHz(d.loHz)+'–'+kHz(d.hiHz)+' kHz · '+d.dur.toFixed(1)+'s';}},
+  {key:'bloom', concept:'concept 02', title:'Song bloom (radial)', shape:'tall', lift:'lift: medium',
+   cap:'Time wraps around a circle, pitch = distance from center, energy = ink. Every call becomes a unique <b>rosette</b> — a per-bird signature. <b>Animation:</b> the bloom opens petal-by-petal as it plays; drifts slowly at rest.',
+   render:renderBloom, readout:function(d){return 'a unique bloom per call · peak <b>'+kHz(d.peakHz)+' kHz</b>';}},
+  {key:'line', concept:'concept 03', title:'Line signature', shape:'wide', lift:'lift: medium',
+   cap:'Just the call’s dominant pitch traced as one flowing line (matches the line-art icons already in the card). <b>Animation:</b> the line <b>draws itself</b> behind a glowing tip; thickness swells with loudness.',
+   render:renderLine, readout:function(d){return 'pitch contour · '+kHz(d.loHz)+'–'+kHz(d.hiHz)+' kHz';}},
+  {key:'halo', concept:'concept 04', title:'Living halo', shape:'tall', lift:'lift: med-high',
+   cap:'The bird’s portrait, ringed by an aura. <b>Animation:</b> each syllable sends a <b>ripple</b> radiating outward; a steady ring breathes with loudness. Sound literally emanates from the illustration.',
+   render:renderHalo, readout:function(d){return 'ripples on each syllable · peak <b>'+kHz(d.peakHz)+' kHz</b>';}}
+];
+
+var grid=document.getElementById('grid');
+var cards={};
+PANELS.forEach(function(P){
+  var el=document.createElement('div'); el.className='card';
+  el.innerHTML=
+    '<div class="concept mono">'+P.concept+'</div>'+
+    '<h2>'+P.title+'</h2>'+
+    '<div class="lift mono">'+P.lift+'</div>'+
+    '<div class="stage '+P.shape+'"><canvas></canvas></div>'+
+    '<div class="cap">'+P.cap+'</div>'+
+    '<div class="row"><button class="play" aria-label="play">'+ICON_PLAY+'</button>'+
+    '<span class="readout mono"></span></div>';
+  grid.appendChild(el);
+  var cv=el.querySelector('canvas'), btn=el.querySelector('.play'), ro=el.querySelector('.readout');
+  var st={playing:false, prog:0, ripples:[], state:{}};
+  cards[P.key]={P:P, cv:cv, btn:btn, ro:ro, st:st};
+  function toggle(){ st.playing=!st.playing; st.prog=0; st.ripples=[]; st.state={}; btn.innerHTML=st.playing?ICON_STOP:ICON_PLAY; }
+  btn.addEventListener('click', toggle);
+  el.querySelector('.stage').addEventListener('click', toggle);
+});
+
+/* preset chips */
+var DATA=null, presetIdx=0;
+var prow=document.getElementById('presetRow');
+PRESETS.forEach(function(pr,i){
+  var b=document.createElement('button'); b.className='chip'; b.dataset.on=(i===0);
+  b.innerHTML=pr.name+'<small>'+pr.sub+'</small>';
+  b.addEventListener('click',function(){ presetIdx=i; selectPreset(); });
+  prow.appendChild(b);
+});
+function selectPreset(){
+  Array.prototype.forEach.call(prow.querySelectorAll('.chip'),function(b,i){b.dataset.on=(i===presetIdx);});
+  DATA=analyze(PRESETS[presetIdx]);
+  DATA._heat=buildHeatmap(DATA);
+  Object.keys(cards).forEach(function(k){var c=cards[k]; c.st.prog=0; c.st.ripples=[]; c.st.state={}; c.ro.innerHTML=c.P.readout(DATA);});
+}
+
+/* play all */
+var playAllBtn=document.getElementById('playAll');
+playAllBtn.addEventListener('click',function(){
+  var anyPlaying=Object.keys(cards).some(function(k){return cards[k].st.playing;});
+  var turnOn=!anyPlaying;
+  Object.keys(cards).forEach(function(k){
+    var c=cards[k]; c.st.playing=turnOn; c.st.prog=0; c.st.ripples=[]; c.st.state={};
+    c.btn.innerHTML=turnOn?ICON_STOP:ICON_PLAY;
+  });
+  playAllBtn.textContent=turnOn?'■ stop all':'▶ play all';
+});
+
+/* theme */
+document.getElementById('themeBtn').addEventListener('click',function(){
+  var dark=document.documentElement.getAttribute('data-theme')==='dark';
+  document.documentElement.setAttribute('data-theme',dark?'light':'dark');
+  this.textContent=dark?'dark mode':'light mode';
+  DATA._heat=buildHeatmap(DATA);   // re-tint the heatmap for the new theme
+});
+
+/* animation loop */
+var t0=performance.now();
+function frame(now){
+  var clock=(now-t0)/1000;
+  Object.keys(cards).forEach(function(k){
+    var c=cards[k];
+    if(c.st.playing){
+      c.st.prog += (1/60)/DATA.dur;
+      if(c.st.prog>=1){ c.st.prog=1; c.st.playing=false; c.btn.innerHTML=ICON_PLAY; }
+    }
+    c.P.render(c.cv, DATA, c.st.prog, c.st.playing, clock, c.st.state);
+  });
+  // keep play-all label in sync
+  var anyPlaying=Object.keys(cards).some(function(k){return cards[k].st.playing;});
+  if(!anyPlaying && playAllBtn.textContent.indexOf('stop')>-1) playAllBtn.textContent='▶ play all';
+  requestAnimationFrame(frame);
+}
+selectPreset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

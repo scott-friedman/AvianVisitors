@@ -217,14 +217,33 @@
         </div>
       </div>
     </div>
-    <div class="modal-recordings">
-      <div class="rec-head">
-        <h3>Recordings</h3>
-        <span class="rec-count" id="modalRecCount"></span>
+    <!-- Lower row: recordings (scrollable) beside the song signature. On
+         mobile this collapses to one column with the signature on top
+         (CSS `order`). -->
+    <div class="modal-lower">
+      <!-- Song signature: a radial "bloom" of the species' CANONICAL song,
+           precomputed at build time from a clean xeno-canto reference clip
+           (stable + species-true, not extracted from our noisy field clips).
+           Tap it to HEAR that reference recording - the rosette sweeps in time.
+           One-time bloom-in on open. Comes FIRST in source so it sits on the
+           LEFT on desktop and, on mobile (single column), directly below the
+           description - never squished in a split box. Attribution under it is
+           required by the clip's CC license. See SPECTRO-CONCEPTS-PLAN.md. -->
+      <div class="voiceprint" id="modalVoiceprint" hidden>
+        <canvas id="modalBloom" aria-hidden="true" title="Tap to hear this bird's song"></canvas>
+        <div class="vp-cap mono">song signature · tap to play</div>
+        <div class="vp-read mono" id="modalBloomRead"></div>
+        <div class="vp-attr mono" id="modalBloomAttr"></div>
       </div>
-      <ol id="modalRecordings">
-        <li class="rec-empty">Loading recordings...</li>
-      </ol>
+      <div class="modal-recordings">
+        <div class="rec-head">
+          <h3>Recordings</h3>
+          <span class="rec-count" id="modalRecCount"></span>
+        </div>
+        <ol id="modalRecordings">
+          <li class="rec-empty">Loading recordings...</li>
+        </ol>
+      </div>
     </div>
     <div class="modal-actions">
       <a id="modalWiki" class="chip ext" target="_blank" rel="noopener">wiki</a>
@@ -264,6 +283,7 @@
 </section>
 
 <script src="./config.js"></script>
+<script src="./spectral-core.js"></script>
 <script src="./apt.js"></script>
 </body>
 </html>
