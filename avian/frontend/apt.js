@@ -203,13 +203,33 @@
     });
   });
 
+  // Stats side toggle (Field Notes vs. numeric summary) - mirrors the left
+  // chart toggle exactly. Default 'notes'; choice persists in bird:statsSide
+  // and is read at render time via window.__statsSide (see drawActiveSidePanel).
+  var statsSideEl = document.getElementById('statsSideToggle');
+  var statsSideBtns = statsSideEl ? [].slice.call(statsSideEl.querySelectorAll('button')) : [];
+  window.__statsSide = readLS('bird:statsSide', 'notes');   // Field Notes is the default view
+  statsSideBtns.forEach(function (b) {
+    b.setAttribute('aria-current', (b.dataset.side === window.__statsSide) ? 'true' : 'false');
+  });
+  statsSideBtns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      statsSideBtns.forEach(function (x) { x.setAttribute('aria-current', x === b ? 'true' : 'false'); });
+      window.__statsSide = b.dataset.side;
+      writeLS('bird:statsSide', window.__statsSide);
+      syncPill(statsSideEl);
+      drawActiveSidePanel(true);   // swap panels, replaying the new panel's entrance
+    });
+  });
+
   // Open-space click advances these segmented toggles to the next option.
   wireToggleAdvance(slider);
   wireToggleAdvance(winPick);
   wireToggleAdvance(atlasSortEl);
   wireToggleAdvance(statsChartEl);
+  wireToggleAdvance(statsSideEl);
   wireToggleAdvance(document.getElementById('modalPoseToggle'));
-  function syncAllPills() { syncPill(slider); syncPill(winPick); if (atlasSortEl) syncPill(atlasSortEl); if (statsChartEl) syncPill(statsChartEl); }
+  function syncAllPills() { syncPill(slider); syncPill(winPick); if (atlasSortEl) syncPill(atlasSortEl); if (statsChartEl) syncPill(statsChartEl); if (statsSideEl) syncPill(statsSideEl); }
   // The buttons size from text content; wait for fonts so width is correct.
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(syncAllPills);
@@ -706,7 +726,9 @@
   // lead, then rows populate top-to-bottom over the same window as the chart.
   function playStatsSideEntrance(lead) {
     lead = lead || 0;
-    var side = document.querySelector('.stats-side');
+    // Scope to the numeric-summary wrapper so we never animate the hidden Field
+    // Notes <li>s (the facts sheet has its own playFactsEntrance).
+    var side = document.getElementById('statsLists');
     if (!side) return;
     var SPREAD = 460;
     var items = [];
@@ -750,7 +772,8 @@
   function playActiveStatsEntrance(lead) {
     if ((window.__statsChart || 'dial') === 'dial') playDialEntrance(document.getElementById('statsDial'), lead);
     else playStatsTimelineEntrance(lead);
-    playStatsSideEntrance(lead);
+    if (window.__statsSide === 'lists') playStatsSideEntrance(lead);   // default (notes) -> Field Notes entrance
+    else playFactsEntrance(document.getElementById('statsFacts'), lead);
   }
 
   // Render whichever stats chart is selected (persisted in bird:statsChart),
@@ -765,6 +788,21 @@
     if (!dial || !tl) return;
     if (mode === 'dial') { tl.hidden = true; dial.hidden = false; drawDayDial(animate); }
     else                 { dial.hidden = true; tl.hidden = false; drawHistograms(animate); }
+  }
+
+  // Render whichever right-cell panel is selected (persisted in bird:statsSide),
+  // toggling #statsLists vs #statsFacts. Mirrors drawActiveStatsChart for the
+  // left cell: each branch renders its body and fires its OWN entrance when
+  // animate is set, so flipping the side toggle re-animates only the right cell.
+  function drawActiveSidePanel(animate) {
+    var mode = (window.__statsSide === 'lists') ? 'lists' : 'notes';   // default + any other value -> notes
+    var lists = document.getElementById('statsLists');
+    var facts = document.getElementById('statsFacts');
+    if (!lists || !facts) return;
+    lists.hidden = (mode !== 'lists');
+    facts.hidden = (mode !== 'notes');
+    if (mode === 'lists') { renderStatsLists(); if (animate) playStatsSideEntrance(); }
+    else { drawFactsSheet(animate); }   // drawFactsSheet fires playFactsEntrance when animate
   }
 
   // ---- Alpha-mask hover/click hit-testing ----
@@ -913,6 +951,7 @@
     firstseen: null,    // ./avian/api/birdnet-api.php?action=firstseen (newest lifelist additions)
     recent: null,       // ./avian/api/birdnet-api.php?action=recent&hours=N (refetched on picker change)
     hourly: null,       // ?action=hourly&hours=N - per-clock-hour bins for the Day Dial (refetched on picker change)
+    facts: null,        // ?action=facts - ordered Field Notes for the right cell (refetched on poll)
   };
 
   // Derived chart arrays, backfilled so 30 buckets always exist.
@@ -1051,6 +1090,60 @@
     void host.offsetWidth;
     petals.forEach(function (el) { el.classList.add('entering'); });
     setTimeout(function () { petals.forEach(function (el) { el.classList.remove('entering'); el.style.animationDelay = ''; }); }, lead + 420 + 420);
+  }
+
+  // ---- Field Notes: auto-generated observations about the data (right cell) ----
+  // Server (/api/facts) computes the ordered, deduped fact list; this is a generic
+  // renderer. Notes are <li data-sci> so they inherit click-to-bird (the global
+  // li[data-sci] delegate), hover, and the shared entrance. The sheet refreshes
+  // silently on the 30 s poll; a note whose text changed since the last render
+  // gets a small "is-new" dot (only on silent updates, never the entrance).
+  var FACTS_MAX = 6;          // notes shown on desktop; mobile scrolls all
+  var _lastFactKeys = '';     // join of kind:text from the previous render, for diffing
+  function drawFactsSheet(animate) {
+    var host = document.getElementById('statsFacts');
+    if (!host) return;
+    var FX = (DATA.facts && DATA.facts.facts) || [];
+    if (!FX.length) {
+      host.innerHTML = '<div class="stats-tl-empty">no field notes yet</div>';
+      _lastFactKeys = '';
+      return;
+    }
+    var isMobile = (window.innerWidth || 800) <= 700;
+    var shown = isMobile ? FX : FX.slice(0, FACTS_MAX);
+
+    // Diff against the last render so a freshly-changed note can pulse - but only
+    // on a silent update (animate falsy); the entrance animates everything anyway.
+    var prev = _lastFactKeys ? _lastFactKeys.split('|') : [];
+    function key(f) { return f.kind + ':' + f.text; }
+    function fresh(f) { return !animate && _lastFactKeys && prev.indexOf(key(f)) === -1; }
+
+    var rows = shown.map(function (f) {
+      var sci = f.sci ? ' data-sci="' + String(f.sci).replace(/"/g, '&quot;') + '"' : '';
+      return '<li class="fact' + (fresh(f) ? ' is-new' : '') + '"' + sci + '>'
+        +   '<span class="fact-tag">' + (f.tag || '·') + '</span>'
+        +   '<span class="fact-text">' + f.text + '</span>'
+        + '</li>';
+    }).join('');
+
+    host.innerHTML =
+      '<div class="facts-head"><h3>Field Notes</h3><small>today’s observations</small></div>'
+      + '<ul class="facts-sheet">' + rows + '</ul>';
+
+    _lastFactKeys = shown.map(key).join('|');
+    if (animate) playFactsEntrance(host);
+  }
+
+  // Header leads, then notes stagger top-to-bottom (same feel as the side list).
+  function playFactsEntrance(host, lead) {
+    if (!host) return;
+    lead = lead || 0;
+    var items = [].slice.call(host.querySelectorAll('.facts-head h3, .facts-head small, .fact'));
+    if (!items.length) return;
+    items.forEach(function (el, i) { el.classList.remove('entering'); el.style.animationDelay = Math.round(lead + i * 70) + 'ms'; });
+    void host.offsetWidth;
+    items.forEach(function (el) { el.classList.add('entering'); });
+    setTimeout(function () { items.forEach(function (el) { el.classList.remove('entering'); el.style.animationDelay = ''; }); }, lead + items.length * 70 + 400);
   }
 
   // Editorial detection timeline. One evenly-spaced column per species,
@@ -1497,21 +1590,17 @@
   }
 
   function renderWindowDependent(animate) {
-    // renderStatsLists runs BEFORE the chart so the side-panel entrance can
-    // stagger the rows that were just built, in tandem with the chart. The
-    // chart owns its own entrance (inside drawActiveStatsChart); the side
-    // entrance is fired here so it runs regardless of dial vs. timeline.
+    // The left chart owns its own entrance (inside drawActiveStatsChart); the
+    // right cell renders + fires its own entrance via drawActiveSidePanel
+    // (numeric summary OR Field Notes), so each toggle re-animates only its half.
     renderCollageFromData(animate);
-    renderStatsLists();
     drawActiveStatsChart(animate);
-    if (animate) playStatsSideEntrance();
+    drawActiveSidePanel(animate);
     renderAtlas(animate);
   }
   function renderTimeIndependent(animate) {
-    // Lists first, then the chart (see renderWindowDependent).
-    renderStatsLists();
     drawActiveStatsChart(animate);
-    if (animate) playStatsSideEntrance();
+    drawActiveSidePanel(animate);
     renderAtlas(animate);
   }
 
@@ -1542,6 +1631,7 @@
       fetchJson(AV_API + '/api/birdnet-api.php?action=firstseen&limit=10').catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=recent&hours=' + forHours).catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=hourly&hours=' + forHours).catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=facts').catch(function () { return null; }),
     ]).then(function (parts) {
       DATA.stats = parts[0];
       DATA.lifelist = parts[1];
@@ -1551,6 +1641,9 @@
       // since this poll started - otherwise keep what's there.
       if (forHours === currentHours && parts[4]) DATA.recent = parts[4];
       if (forHours === currentHours && parts[5]) DATA.hourly = parts[5];
+      // Facts are today/all-time scoped (not window-dependent), so accept
+      // regardless of the window; a failed fetch keeps the last good sheet.
+      if (parts[6]) DATA.facts = parts[6];
       recomputeDerived();
       renderTimeIndependent(animate);
       renderCollageFromData(animate);

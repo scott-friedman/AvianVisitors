@@ -395,7 +395,7 @@ async function queryApi(request, env, url) {
 
   // action from ?action=, else inferred from the path's last segment, so both
   // /api/recent and /api/birdnet-api.php?action=recent resolve the same.
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'facts'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   const action = url.searchParams.get('action') || (known.includes(seg) ? seg : 'recent');
 
@@ -405,6 +405,7 @@ async function queryApi(request, env, url) {
   switch (action) {
     case 'recent': return recent(env, url, tz, now);
     case 'stats': return stats(env, tz, now);
+    case 'facts': return facts(env, tz, now);
     case 'lifelist': return lifelist(env, tz);
     case 'timeseries': return timeseries(env, url, tz, now);
     case 'hourly': return hourly(env, url, tz, now);
@@ -459,6 +460,146 @@ async function stats(env, tz, now) {
     started: started ? started.d : null,
     as_of: new Date().toISOString(),
   });
+}
+
+// ---- Field Notes (/api/facts): ordered plain-English observations ------------
+// Today/all-time scoped (NOT window-scoped). Server owns all "what's interesting"
+// logic; the client is a generic {kind,tag,text,sci} renderer. Times/days are
+// Sudbury-local via tz/localDayStart/sunArc (never the viewer's clock).
+async function facts(env, tz, now) {
+  const todayStart = localDayStart(env, now);
+  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const first = (sql, ...b) => env.DB.prepare(sql).bind(...b).first();
+  const all = async (sql, ...b) => (await env.DB.prepare(sql).bind(...b).all()).results || [];
+
+  const out = [];
+  const push = (kind, tag, text, sci) => out.push({ kind, tag, text, sci: sci || null });
+
+  // ---- formatting helpers ----
+  const hm12 = (h, m) => {                       // (4,2)->"4:02am"  (13,0)->"1pm"
+    const ap = h < 12 ? 'am' : 'pm', hr = (h % 12) || 12;
+    return m ? `${hr}:${String(m).padStart(2, '0')}${ap}` : `${hr}${ap}`;
+  };
+  const ordinal = (n) => {
+    const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  };
+  const fmt = (n) => (n >= 10000 ? (n / 1000).toFixed(1) + 'k' : Number(n).toLocaleString('en-US'));
+  const calls = (n) => `${fmt(n)} call${n === 1 ? '' : 's'}`;
+
+  // ---- today totals (drives most conditions) ----
+  const td = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections WHERE ts >= ?', todayStart);
+  const todayN = td ? td.n : 0, todaySpec = td ? td.s : 0;
+
+  if (!todayN) {                                 // empty-day path — never blank
+    const last = await first('SELECT com, sci FROM detections ORDER BY ts DESC LIMIT 1');
+    if (last && last.com) push('quiet', 'QUIET', `No calls yet today. Last heard: ${last.com}.`, last.sci);
+    else push('quiet', 'QUIET', 'No birds detected yet — the mic is listening.');
+    return json({ facts: out, today: { detections: 0, species: 0 }, as_of: new Date().toISOString() });
+  }
+
+  // 1) NEW — species whose first-ever detection is today (lifers today)
+  const newToday = await all(
+    'SELECT sci, com, MIN(ts) AS f FROM detections GROUP BY sci HAVING f >= ? ORDER BY f ASC', todayStart);
+  const newSet = new Set(newToday.map((r) => r.sci));
+  if (newToday.length === 1) {
+    push('new', 'NEW', `New today: ${newToday[0].com} — first time at this yard.`, newToday[0].sci);
+  } else if (newToday.length > 1) {
+    const names = newToday.slice(0, 3).map((r) => r.com);
+    const extra = newToday.length - names.length;
+    push('new', 'NEW', `${newToday.length} new species today: ${names.join(', ')}${extra ? `, +${extra} more` : ''}.`);
+  }
+
+  // 2) DAWN — first call today (+ minutes before/after sunrise)
+  const fc = await first(
+    `SELECT com, sci,
+            CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS h,
+            CAST(strftime('%M', ts, 'unixepoch', ?) AS INT) AS m
+       FROM detections WHERE ts >= ? ORDER BY ts ASC LIMIT 1`, tz, tz, todayStart);
+  if (fc) {
+    const sun = sunArc(env, new Date((now + offH * 3600) * 1000), offH);
+    let tail = '.';
+    if (sun && sun.sunrise != null) {
+      const mins = Math.round((sun.sunrise - (fc.h + fc.m / 60)) * 60);
+      if (mins >= 5) tail = ` — ${mins} min before sunrise.`;
+      else if (mins <= -5) tail = ` — ${-mins} min after sunrise.`;
+    }
+    push('dawn', 'DAWN', `First call today: ${fc.com} at ${hm12(fc.h, fc.m)}${tail}`, fc.sci);
+  }
+
+  // by-hour today (drives PEAK + QUIET)
+  const byHour = await all(
+    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS h, COUNT(*) AS n
+       FROM detections WHERE ts >= ? GROUP BY h`, tz, todayStart);
+
+  // 3) PEAK — busiest local hour today
+  if (byHour.length) {
+    let pk = byHour[0];
+    for (const r of byHour) if (r.n > pk.n) pk = r;
+    push('peak', 'PEAK', `Busiest hour: ${hm12(pk.h, 0)} — ${calls(pk.n)}.`);
+  }
+
+  // 4) TOP — most-heard species today (+ share)
+  const top = await first(
+    'SELECT com, sci, COUNT(*) AS n FROM detections WHERE ts >= ? GROUP BY sci ORDER BY n DESC LIMIT 1', todayStart);
+  if (top) {
+    const pct = Math.round((top.n / todayN) * 100);
+    push('top', 'TOP', `Most heard today: ${top.com} — ${calls(top.n)} (${pct}% of today).`, top.sci);
+  }
+
+  // 5) RARE — rarest (lowest all-time) species heard today, if scarce & not already NEW
+  const rare = await first(
+    `SELECT sci, com, COUNT(*) AS total, MAX(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS today
+       FROM detections GROUP BY sci HAVING today = 1 ORDER BY total ASC LIMIT 1`, todayStart);
+  if (rare && rare.total <= 5 && !newSet.has(rare.sci)) {
+    push('rare', 'RARE', `Seldom heard: ${rare.com} — only its ${ordinal(rare.total)} time ever.`, rare.sci);
+  }
+
+  // 6) RETURN — heard today after a ≥3-day absence (activates as the dataset ages)
+  const back = await first(
+    `SELECT d.sci, d.com, MIN(d.ts) AS firstToday, p.prev AS prev
+       FROM detections d
+       JOIN (SELECT sci, MAX(ts) AS prev FROM detections WHERE ts < ? GROUP BY sci) p ON p.sci = d.sci
+      WHERE d.ts >= ?
+      GROUP BY d.sci
+      ORDER BY (MIN(d.ts) - p.prev) DESC LIMIT 1`, todayStart, todayStart);
+  if (back && back.prev != null) {
+    const days = Math.floor((back.firstToday - back.prev) / 86400);
+    if (days >= 3) push('return', 'RETURN', `${back.com} is back — first time in ${days} days.`, back.sci);
+  }
+
+  // 7) NOW — last hour
+  const lh = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections WHERE ts >= ?', now - 3600);
+  if (lh && lh.n > 0) push('now', 'NOW', `Last hour: ${calls(lh.n)} from ${lh.s} species.`);
+
+  // 8) QUIET — longest silent run of clock-hours today (cyclic, wraps midnight)
+  {
+    const bins = new Array(24).fill(0);
+    for (const r of byHour) bins[r.h] = r.n;
+    let best = 0, bestStart = -1, cur = 0, curStart = -1;
+    for (let i = 0; i < 48; i++) {                // 2× pass handles the wrap
+      const h = i % 24;
+      if (bins[h] === 0) { if (cur === 0) curStart = h; cur++; if (cur > best && cur <= 24) { best = cur; bestStart = curStart; } }
+      else cur = 0;
+    }
+    if (best >= 3 && best < 24) {
+      const endH = (bestStart + best) % 24;        // exclusive end = first active hour
+      push('quiet', 'QUIET', `Quietest stretch: ${hm12(bestStart, 0)}–${hm12(endH, 0)}.`);
+    }
+  }
+
+  // 9) TALLY — variety today
+  push('tally', 'TALLY', `${todaySpec} species today across ${calls(todayN)}.`);
+
+  // 10) MILE — days listening (always-true fallback)
+  const span = await first('SELECT MIN(ts) AS first FROM detections');
+  const allN = (await first('SELECT COUNT(*) AS n FROM detections')).n;
+  if (span && span.first != null) {
+    const dayNo = Math.floor((now - span.first) / 86400) + 1;
+    push('mile', 'MILE', `Day ${dayNo} of listening — ${calls(allN)} logged in all.`);
+  }
+
+  return json({ facts: out, today: { detections: todayN, species: todaySpec }, as_of: new Date().toISOString() });
 }
 
 async function lifelist(env, tz) {

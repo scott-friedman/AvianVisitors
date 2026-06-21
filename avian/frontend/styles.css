@@ -526,13 +526,15 @@
   @keyframes stats-fade-in { from { opacity: 0; } to { opacity: 1; } }
   .stats-tl-col.entering, .stats-tl-gridline.entering,
   .stats-tl-xtick.entering, .stats-tl-yaxis.entering,
-  .stats-side h3.entering, .stats-side small.entering, .stats-side li.entering {
+  .stats-side h3.entering, .stats-side small.entering, .stats-side li.entering,
+  .fact.entering, .facts-head h3.entering, .facts-head small.entering {
     animation: stats-fade-in 340ms ease backwards;
   }
   @media (prefers-reduced-motion: reduce) {
     .bird-card.entering, .stats-tl-col.entering, .stats-tl-gridline.entering,
     .stats-tl-xtick.entering, .stats-tl-yaxis.entering,
-    .stats-side h3.entering, .stats-side small.entering, .stats-side li.entering { animation: none; }
+    .stats-side h3.entering, .stats-side small.entering, .stats-side li.entering,
+    .fact.entering, .facts-head h3.entering, .facts-head small.entering { animation: none; }
   }
   .gtile {
     position: absolute;
@@ -749,11 +751,14 @@
   /* (Old chart-card / .stats-charts CSS removed - replaced by the
      editorial .stats-timeline above.) */
 
+  /* Right cell is a column: the notes|summary toggle pinned at the top, then a
+     body that fills the rest and centres its content (as the lists did alone). */
   .stats-side {
-    display: flex; flex-direction: column; justify-content: center;
+    display: flex; flex-direction: column; gap: 14px; justify-content: flex-start;
     align-self: stretch; max-height: 100%;
     padding: 6px 0;
   }
+  .stats-side-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
   .stats-side h3 {
     font: 700 10px ui-monospace, Menlo, monospace; color: var(--ink);
     letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 1px;
@@ -1672,3 +1677,56 @@ body.av-local #dd-items  { display: block; }
     .stats-dial { min-height: clamp(280px, 48vh, 420px); }
   }
   @media (prefers-reduced-motion: reduce) { .dial-petal.entering { animation: none; } }
+
+  /* ===== Stats right cell: notes | summary toggle + Field Notes =====
+     The right cell's segmented toggle (clone of .stats-chart-toggle) flips the
+     body between #statsLists (numeric summary) and #statsFacts (Field Notes,
+     default). The sheet reuses .stats-side li type, laid out for prose. The
+     Field Notes rules are scoped under .stats-side so they outrank the existing
+     `.stats-side li` summary-row rule (more specific than a bare `.fact`). */
+
+  /* Toggle - clone of .stats-chart-toggle (text buttons, sliding seg-pill). */
+  .stats-side-toggle {
+    align-self: flex-start; display: inline-flex; padding: 4px; position: relative;
+    background: var(--paper-2); border-radius: 999px; box-shadow: var(--recess);
+  }
+  .stats-side-toggle button {
+    background: transparent; border: 0; color: var(--ink-soft);
+    font: 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.18em; text-transform: uppercase;
+    padding: 8px 14px; border-radius: 999px; cursor: pointer; position: relative; z-index: 1;
+    transition: color 200ms ease;
+  }
+  .stats-side-toggle button:hover,
+  .stats-side-toggle button[aria-current="true"] { color: var(--ink); }
+
+  /* Field Notes sheet */
+  .stats-side .facts-head { margin: 0 0 8px; }
+  .stats-side .facts-head h3 {
+    font: 700 10px ui-monospace, Menlo, monospace; color: var(--ink);
+    letter-spacing: 0.18em; text-transform: uppercase; margin: 0 0 1px;
+    border-left: 2px solid var(--accent); padding-left: 10px;
+  }
+  .stats-side .facts-head small { display: block; font: 9px ui-monospace, Menlo, monospace; color: var(--ink-soft); letter-spacing: 0.06em; margin-left: 12px; }
+  .stats-side .facts-sheet { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
+  .stats-side .fact {
+    display: grid; grid-template-columns: 48px 1fr; gap: 12px; align-items: baseline;
+    padding: 10px 4px; box-shadow: inset 0 -1px 0 var(--hairline);
+    transition: background 140ms ease;
+  }
+  .stats-side .fact:last-child { box-shadow: none; }
+  .stats-side .fact[data-sci] { cursor: pointer; }
+  .stats-side .fact[data-sci]:hover { background: var(--paper-2); }
+  .stats-side .fact-tag  { font: 9.5px ui-monospace, Menlo, monospace; letter-spacing: 0.12em; color: var(--accent-2); text-transform: uppercase; padding-top: 2px; }
+  .stats-side .fact-text { font: 14px/1.45 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink); }
+  /* "newly true since the last poll" - a quiet dot after the tag */
+  .stats-side .fact.is-new .fact-tag::after {
+    content: ''; display: inline-block; width: 4px; height: 4px; margin-left: 5px;
+    border-radius: 50%; background: var(--accent); vertical-align: middle;
+  }
+
+  /* Mobile: right cell already scrolls inside the grid (<=900px). Let the sheet
+     claim height there rather than squishing. */
+  @media (max-width: 900px) {
+    .stats-side-body { justify-content: flex-start; }
+    .stats-side .facts-sheet { overflow-y: visible; }
+  }

@@ -103,20 +103,37 @@
           <div class="stats-timeline" id="statsTimeline" hidden></div>
         </div>
         <aside class="stats-side">
-          <div class="grp">
-            <h3>By Period</h3>
-            <small>detections, grouped by recency</small>
-            <ol id="statsByPeriod"></ol>
+          <!-- Right-cell toggle (clone of #statsChartToggle): flip the right column
+               between the Field Notes sheet (default) and the numeric summary.
+               Choice persists in localStorage bird:statsSide. -->
+          <div class="stats-side-toggle" id="statsSideToggle" role="tablist" aria-label="panel type">
+            <i class="seg-pill" aria-hidden="true"></i>
+            <button type="button" data-side="notes" aria-current="true">notes</button>
+            <button type="button" data-side="lists">summary</button>
           </div>
-          <div class="grp">
-            <h3>Top Species</h3>
-            <small id="statsTopSpecCap">most-heard, current window</small>
-            <ol id="statsTopSpec"></ol>
-          </div>
-          <div class="grp">
-            <h3>First Detections</h3>
-            <small>newest additions to the life list</small>
-            <ol id="statsFirstSeen"></ol>
+          <div class="stats-side-body">
+            <!-- Field Notes (DEFAULT): auto-generated observations (/api/facts).
+                 Rendered by drawFactsSheet(). Notes are <li data-sci> -> click-to-bird
+                 for free. -->
+            <div id="statsFacts"></div>
+            <!-- Numeric summary (hidden until toggled). Rendered by renderStatsLists(). -->
+            <div id="statsLists" hidden>
+              <div class="grp">
+                <h3>By Period</h3>
+                <small>detections, grouped by recency</small>
+                <ol id="statsByPeriod"></ol>
+              </div>
+              <div class="grp">
+                <h3>Top Species</h3>
+                <small id="statsTopSpecCap">most-heard, current window</small>
+                <ol id="statsTopSpec"></ol>
+              </div>
+              <div class="grp">
+                <h3>First Detections</h3>
+                <small>newest additions to the life list</small>
+                <ol id="statsFirstSeen"></ol>
+              </div>
+            </div>
           </div>
         </aside>
       </div>
