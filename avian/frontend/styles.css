@@ -233,6 +233,39 @@
   .built-by a:hover { color: var(--ink); }
   .about-card .built-by { margin-top: 18px; }
 
+  /* Picture-frame window control — the one always-visible, working menu item.
+     A segmented picker reusing the global .seg-pill, scoped to the drawer and
+     sized full-width (unlike the compact top-bar #winPick). See
+     FRAME-WINDOW-TOGGLE-PLAN.md. */
+  #frameCtl { margin: 0 0 8px; }
+  .frame-ctl-title {
+    margin: 2px 4px 3px; color: var(--ink);
+    font: 11px/1.2 ui-monospace, Menlo, monospace;
+    letter-spacing: 0.16em; text-transform: uppercase;
+  }
+  .frame-ctl-sub {
+    margin: 0 4px 8px; color: var(--ink-soft);
+    font: 10px ui-monospace, Menlo, monospace; letter-spacing: 0.03em;
+  }
+  #menu-dd .window-pick {
+    display: flex; gap: 0; padding: 4px;
+    background: var(--paper-2); border-radius: 999px;
+    box-shadow: var(--recess); position: relative;
+  }
+  #menu-dd .window-pick button {
+    flex: 1 1 0; background: transparent; border: 0; color: var(--ink-soft);
+    font: 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.12em;
+    padding: 9px 0; border-radius: 999px; cursor: pointer; text-transform: uppercase;
+    transition: color 200ms ease; position: relative; z-index: 1;
+  }
+  #menu-dd .window-pick button:hover { color: var(--ink); }
+  #menu-dd .window-pick button[aria-current="true"] { color: var(--ink); }
+  .frame-ctl-note {
+    margin: 8px 4px 0; min-height: 12px;
+    font: 10px ui-monospace, Menlo, monospace;
+    color: var(--ink-soft); letter-spacing: 0.04em;
+  }
+
   .menu-items { padding: 4px 4px; display: none; }
   .menu-items.show { display: block; }
   .menu-items h3 {

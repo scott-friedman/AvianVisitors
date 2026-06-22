@@ -55,6 +55,22 @@
 </header>
 
 <aside id="menu-dd" aria-hidden="true">
+  <!-- Shared control for the PHYSICAL e-ink frame's time window. Always visible:
+       NOT behind the dead #dd-locked unlock, NOT in #dd-items (which only fills
+       after that unlock succeeds). See FRAME-WINDOW-TOGGLE-PLAN.md. -->
+  <div id="frameCtl">
+    <h3 class="frame-ctl-title">picture frame</h3>
+    <p class="frame-ctl-sub">window shown on the panel · shared by everyone</p>
+    <div class="window-pick frame-pick" id="framePick" role="tablist" aria-label="picture frame time window">
+      <i class="seg-pill" aria-hidden="true"></i>
+      <button data-h="1"   type="button">1H</button>
+      <button data-h="12"  type="button">12H</button>
+      <button data-h="24"  type="button" aria-current="true">24H</button>
+      <button data-h="168" type="button">7D</button>
+      <button data-h="1000000" type="button">ALL</button>
+    </div>
+    <p class="frame-ctl-note" id="frameNote" aria-live="polite"></p>
+  </div>
   <div id="dd-locked">
     <form class="lock-row" id="unlockForm">
       <input id="lockPass" type="password" placeholder="password" autocomplete="current-password">

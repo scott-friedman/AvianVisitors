@@ -84,6 +84,9 @@ export default {
       if (path === '/api/heartbeat' && request.method === 'POST') {
         return await heartbeat(request, env);
       }
+      if (path === '/api/frame-config' && request.method === 'POST') {
+        return await setFrameConfig(request, env);
+      }
       // UptimeRobot (and many uptime monitors) probe with HEAD, not GET. Accept
       // both so the liveness check reaches status() instead of falling through to
       // queryApi() and getting a 405. A HEAD reply carries the same 200/503 status
@@ -292,6 +295,33 @@ async function status(env) {
 
 // ---- e-ink frame (Browser Rendering → 800x480 PNG, signature-cached) ---------
 
+// Allowed frame windows, in hours (mirrors the top-bar picker: 1H/12H/24H/7D/ALL).
+// Both /api/frame-config writes and getFrameWindow() validate against this list.
+const FRAME_WINDOWS = [1, 12, 24, 168, 1000000];
+
+// The shared, server-side window the PHYSICAL frame shows (settings singleton).
+// Defaults to 24h if the row/value is missing or somehow out of range, so the
+// frame never breaks on a bad setting. See FRAME-WINDOW-TOGGLE-PLAN.md.
+async function getFrameWindow(env) {
+  const row = await env.DB.prepare('SELECT frame_window_hours AS h FROM settings WHERE id = 1').first();
+  const h = row && Number(row.h);
+  return FRAME_WINDOWS.includes(h) ? h : 24;
+}
+
+// POST /api/frame-config {window_hours:N} — set the shared frame window. OPEN
+// (no auth) by design: it only writes one validated number and cannot trigger
+// the metered render (that stays FRAME_KEY-gated on /frame.png). json() carries
+// CORS. See FRAME-WINDOW-TOGGLE-PLAN.md "Optional hardening" to gate this later.
+async function setFrameConfig(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const h = Number(body.window_hours);
+  if (!FRAME_WINDOWS.includes(h)) return json({ error: 'bad window_hours' }, 400);
+  await env.DB.prepare(
+    'INSERT OR REPLACE INTO settings (id, frame_window_hours) VALUES (1, ?)'
+  ).bind(h).run();
+  return json({ window_hours: h });
+}
+
 // Mirror the Pi's change detection (frame/display.py): the frame content is the
 // set of recent species sized by a coarse count bracket, so this signature moves
 // exactly when the rendered collage would. The Worker and Pi hashes need not be
@@ -304,11 +334,13 @@ function frameBucket(n) {
   for (let i = 0; i < edges.length; i++) if (n <= edges[i]) return i;
   return 8;
 }
-async function frameSignature(rows) {
+async function frameSignature(rows, windowHours) {
   const items = rows
     .map((r) => [frameSlug(r.sci), frameBucket(Number(r.n) || 1)])
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
-  const data = new TextEncoder().encode(JSON.stringify(items));
+  // Fold the window in so switching windows always busts frame_cache, even if
+  // two windows happen to hold the identical species/count set.
+  const data = new TextEncoder().encode(JSON.stringify({ w: windowHours, items }));
   const digest = await crypto.subtle.digest('SHA-256', data);
   return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -340,11 +372,12 @@ async function frame(request, env, url) {
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const since = now - 24 * 3600; // 24H window — matches the collage's default
+  const windowHours = await getFrameWindow(env); // shared, set via /api/frame-config
+  const since = now - windowHours * 3600;
   const rows = (await env.DB.prepare(
     'SELECT sci, COUNT(*) AS n FROM detections WHERE ts >= ? GROUP BY sci'
   ).bind(since).all()).results || [];
-  const sig = await frameSignature(rows);
+  const sig = await frameSignature(rows, windowHours);
 
   // Cache hit: this exact frame was already rendered → serve it, no browser.
   const hit = await env.DB.prepare('SELECT png FROM frame_cache WHERE id = 1 AND sig = ?').bind(sig).first();
@@ -354,7 +387,7 @@ async function frame(request, env, url) {
   // panel keeps showing something (display.py likewise keeps its last image).
   let png;
   try {
-    png = await renderFrame(env);
+    png = await renderFrame(env, windowHours);
   } catch (err) {
     const stale = await env.DB.prepare('SELECT png, sig FROM frame_cache WHERE id = 1').first();
     if (stale && stale.png) return pngResponse(stale.png, stale.sig, 'stale');
@@ -367,12 +400,16 @@ async function frame(request, env, url) {
   return pngResponse(png, sig, 'miss');
 }
 
-async function renderFrame(env) {
+async function renderFrame(env, windowHours) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 800, height: 480, deviceScaleFactor: 1 });
-    await page.goto(env.FRAME_URL, { waitUntil: 'load', timeout: 30000 });
+    // FRAME_URL already carries ?frame=1; add the chosen window so the page's JS
+    // (apt.js urlWindow()) draws that window instead of its localStorage default.
+    const target = new URL(env.FRAME_URL);
+    target.searchParams.set('window', String(windowHours));
+    await page.goto(target.toString(), { waitUntil: 'load', timeout: 30000 });
     // The collage polls /api/recent on a timer, so networkidle never settles;
     // wait for tiles to mount, then for their images to decode.
     await page.waitForSelector('#collage .gtile', { timeout: 15000 }).catch(() => {});
@@ -448,7 +485,7 @@ async function queryApi(request, env, url) {
 
   // action from ?action=, else inferred from the path's last segment, so both
   // /api/recent and /api/birdnet-api.php?action=recent resolve the same.
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   const action = url.searchParams.get('action') || (known.includes(seg) ? seg : 'recent');
 
@@ -465,6 +502,7 @@ async function queryApi(request, env, url) {
     case 'rhythm': return rhythm(env, url, tz, now);
     case 'species': return species(env, url, tz);
     case 'firstseen': return firstseen(env, url, tz);
+    case 'frame-config': return json({ window_hours: await getFrameWindow(env) });
     default: return json({ error: 'unknown action' }, 404);
   }
 }

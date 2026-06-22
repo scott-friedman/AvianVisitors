@@ -106,6 +106,23 @@ def fetch_recent(base, hours, timeout, auth=None):
         return json.loads(r.read(2_000_000)).get("species", [])
 
 
+def fetch_frame_window(base, timeout, auth=None):
+    """GET the shared frame window (hours) the website set, so the change-detector
+    hashes the SAME window the rendered /frame.png shows. Returns int hours, or
+    None on any failure (caller falls back to cfg["hours"]). MUST send a
+    User-Agent — the worker 403s the default urllib UA (project gotcha)."""
+    url = f"{base.rstrip('/')}/api/frame-config"
+    req = urllib.request.Request(url, headers={"User-Agent": "AvianVisitors-frame/1.0"})
+    if auth:
+        req.add_header("Authorization", auth)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            w = json.loads(r.read(10_000)).get("window_hours")
+            return int(w) if w is not None else None
+    except Exception:
+        return None
+
+
 def signature(species):
     items = sorted((slugify(s["sci"]), _bucket(int(s.get("n") or 1))) for s in species)
     return hashlib.sha256(json.dumps(items).encode()).hexdigest()[:16]
@@ -257,7 +274,12 @@ def run(cfg, preview=None, force=False, use_signature=True):
     sig = None
     if use_signature:
         try:
-            sig = signature(fetch_recent(cfg["base_url"], cfg["hours"], cfg["timeout"], _auth(cfg)))
+            # Track the SAME window the website set for the frame (falls back to the
+            # configured hours if /api/frame-config is unreachable). The ":win" suffix
+            # makes a window change always bust the signature even if the species set
+            # is identical — mirrors the worker folding the window into its own sig.
+            win = fetch_frame_window(cfg["base_url"], cfg["timeout"], _auth(cfg)) or cfg["hours"]
+            sig = signature(fetch_recent(cfg["base_url"], win, cfg["timeout"], _auth(cfg))) + ":" + str(win)
         except Exception as e:
             print(f"signature fetch failed: {e}", file=sys.stderr)  # treat as no change
     heal_due = now - state.get("last_refresh", 0) >= cfg["heal_hours"] * 3600
