@@ -32,7 +32,7 @@ import time
 import urllib.request
 from datetime import datetime
 
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageChops, ImageEnhance
 
 try:
     import tomllib
@@ -62,7 +62,11 @@ DEFAULTS = {
     "image": "",            # a local PNG written by a sibling process, or
     "image_url": "",        # the /frame.png URL (include ?k=FRAME_KEY)
     "rotate": 0,            # 0 or 180 to flip landscape; 90/270 for a portrait mount
-    "border": 0,            # inset the image this many px on every edge (white margin under a frame bezel)
+    "tilt": 0.0,            # fine rotation (deg, e.g. -0.5) to level content in a slightly cocked frame; +CCW
+    "border": 0,            # symmetric inset on every edge (white margin under a frame bezel)
+    "inset": [],            # per-edge [left, top, right, bottom]; overrides border for an uneven mat
+    "fill": False,          # crop surrounding whitespace so the collage fills the visible window
+    "fill_pad": 16,         # px of breathing room kept around the content when fill is on
     "saturation": 0.7,     # Inky colour saturation on hardware (0..1)
     "panel": "",            # force a driver module (e.g. "inky_ac073tc1") if auto() fails
     "quiet_start": 0, "quiet_end": 0,    # 0/0 = no quiet hours
@@ -118,6 +122,24 @@ def get_image(src, timeout, auth=None):
     return Image.open(os.path.expanduser(src)).convert("RGB")
 
 
+def autocrop(img, thresh=12, pad=16):
+    """Crop away the surrounding background so the collage fills the panel instead
+    of floating in whitespace (the off-Pi /frame.png centres a small cluster on a
+    big white field). The background colour is sampled from the top-left corner;
+    pixels differing from it by more than ``thresh`` count as content. ``pad`` px of
+    breathing room is kept around the content (also giving the tilt room before any
+    bird reaches the mat). Returns the original if the image is effectively blank."""
+    rgb = img.convert("RGB")
+    bg = Image.new("RGB", rgb.size, rgb.getpixel((0, 0)))
+    mask = ImageChops.difference(rgb, bg).convert("L").point(lambda p: 255 if p > thresh else 0)
+    bbox = mask.getbbox()
+    if not bbox:
+        return img
+    l, t, r, b = bbox
+    return img.crop((max(0, l - pad), max(0, t - pad),
+                     min(rgb.width, r + pad), min(rgb.height, b + pad)))
+
+
 def fit_panel(img, border=0):
     """Fit onto the 800x480 panel buffer on a white field (letterbox),
     preserving aspect. ``border`` insets the image by that many px on every edge
@@ -137,6 +159,27 @@ def fit_panel(img, border=0):
     resized = img.resize((nw, nh), Image.LANCZOS)
     canvas = Image.new("RGB", (PANEL_W, PANEL_H), (255, 255, 255))
     canvas.paste(resized, ((PANEL_W - nw) // 2, (PANEL_H - nh) // 2))
+    return canvas
+
+
+def fit_window(img, left=0, top=0, right=0, bottom=0):
+    """Like fit_panel but with independent per-edge insets, for a frame whose mat
+    overlaps the panel unevenly (measured with frame/calibrate.py). Letterboxes the
+    image into the visible window (panel minus per-edge insets) on a white field,
+    centred within that window. With all insets 0 this is fit_panel(img, 0)."""
+    if left <= 0 and top <= 0 and right <= 0 and bottom <= 0:
+        return fit_panel(img, 0)
+    box_w = max(1, PANEL_W - left - right)
+    box_h = max(1, PANEL_H - top - bottom)
+    src = img.width / img.height
+    tgt = box_w / box_h
+    if src > tgt:
+        nw, nh = box_w, max(1, round(box_w / src))
+    else:
+        nh, nw = box_h, max(1, round(box_h * src))
+    resized = img.resize((nw, nh), Image.LANCZOS)
+    canvas = Image.new("RGB", (PANEL_W, PANEL_H), (255, 255, 255))
+    canvas.paste(resized, (left + (box_w - nw) // 2, top + (box_h - nh) // 2))
     return canvas
 
 
@@ -229,10 +272,23 @@ def run(cfg, preview=None, force=False, use_signature=True):
         print("refresh:", "changed" if changed else "heal")
 
     try:
-        img = fit_panel(obtain_image(cfg), cfg["border"])
+        raw = obtain_image(cfg)
+        if cfg.get("fill"):
+            raw = autocrop(raw, pad=int(cfg.get("fill_pad") or 16))
+        inset = cfg.get("inset") or []
+        if len(inset) == 4 and any(int(v) > 0 for v in inset):
+            img = fit_window(raw, *(int(v) for v in inset))
+        else:
+            img = fit_panel(raw, cfg["border"])
     except Exception as e:
         print(f"could not get image: {e}", file=sys.stderr)  # keep the last panel image
         return
+    tilt = float(cfg.get("tilt") or 0)
+    if tilt:
+        # fine rotation to counter a panel sitting slightly cocked in its frame;
+        # expand=False keeps the 800x480 buffer, white fills the exposed corners
+        # (which land under the mat). +tilt = CCW, so a CCW-mounted panel wants -tilt.
+        img = img.rotate(tilt, resample=Image.BICUBIC, expand=False, fillcolor=(255, 255, 255))
     if preview:
         quantize_inky7(img, PREVIEW_SATURATION).save(preview)
         print(f"wrote preview {preview}")
@@ -262,7 +318,11 @@ def main():
     ap.add_argument("--image-url")
     ap.add_argument("--preview", help="write a 7-colour preview PNG instead of pushing")
     ap.add_argument("--rotate", type=int)
+    ap.add_argument("--tilt", type=float, help="fine level correction in degrees (+CCW, e.g. -0.5)")
+    ap.add_argument("--fill", action=argparse.BooleanOptionalAction, help="crop whitespace so the collage fills the panel")
+    ap.add_argument("--fill-pad", type=int, help="px of breathing room around content when --fill is on")
     ap.add_argument("--border", type=int, help="inset the image N px on every edge (bezel margin)")
+    ap.add_argument("--inset", help="per-edge insets L,T,R,B (overrides border for an uneven mat)")
     ap.add_argument("--force", action="store_true", help="refresh even if unchanged")
     ap.add_argument("--no-signature", action="store_true", help="skip change detection")
     args = ap.parse_args()
@@ -274,8 +334,16 @@ def main():
             cfg[key] = val
     if args.rotate is not None:
         cfg["rotate"] = args.rotate
+    if args.tilt is not None:
+        cfg["tilt"] = args.tilt
+    if args.fill is not None:
+        cfg["fill"] = args.fill
+    if args.fill_pad is not None:
+        cfg["fill_pad"] = args.fill_pad
     if args.border is not None:
         cfg["border"] = args.border
+    if args.inset:
+        cfg["inset"] = [int(v) for v in args.inset.split(",")]
     run(cfg, preview=args.preview, force=args.force, use_signature=not args.no_signature)
 
 
