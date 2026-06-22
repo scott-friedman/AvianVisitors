@@ -4,7 +4,7 @@
 artwork**, so they're invisible on the e-ink frame and the website (the
 "detected ≠ shown" gotcha — see `CLAUDE.md`). This file tracks which still need
 illustrations drawn. Work the **land** list top-down (it's ranked by how often
-each is actually detected at Sudbury). Progress: **24 / 46 land birds done.**
+each is actually detected at Sudbury). Progress: **34 / 46 land birds done.**
 
 ## How this list was derived (don't redo unless the location changes)
 - BirdNET range/meta model @ Sudbury **42.3834, -71.4162**, threshold **0.03**
@@ -89,17 +89,17 @@ each is actually detected at Sudbury). Progress: **24 / 46 land birds done.**
 - [x] **Blue-headed Vireo** — `Vireo solitarius` · freq 0.14  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 14` (white spectacles + belly eaten at 18; caught proactively in the QA pass)
 - [x] **Eastern Bluebird** — `Sialia sialis` · freq 0.14  ✅ DEPLOYED LIVE 2026-06-20 (r13) — detected n=11; keyed `--tol 18`. **Flight pose regenerated once** (first gen drifted to a bordered vintage ornithological plate — wrong style, unkeyable); re-roll is proper kachō-e + matches the perched sibling
 - [x] **White-throated Sparrow** — `Zonotrichia albicollis` · freq 0.13  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18` (palest of the batch, but the white throat keys clean at 18 — no lower tol needed)
-- [ ] **Rose-breasted Grosbeak** — `Pheucticus ludovicianus` · freq 0.13
-- [ ] **Northern Parula** — `Setophaga americana` · freq 0.13
-- [ ] **Pine Warbler** — `Setophaga pinus` · freq 0.13
-- [ ] **Chestnut-sided Warbler** — `Setophaga pensylvanica` · freq 0.12
-- [ ] **Chimney Swift** — `Chaetura pelagica` · freq 0.12
+- [x] **Rose-breasted Grosbeak** — `Pheucticus ludovicianus` · freq 0.13  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18` (clean white belly intact); textbook male (black hood, rose breast, big pale bill)
+- [x] **Northern Parula** — `Setophaga americana` · freq 0.13  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`; yellow throat + chestnut/blue breast band + white belly
+- [x] **Pine Warbler** — `Setophaga pinus` · freq 0.13  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`; de-strayed (a 2.6% island survived the 2% drop → keep-largest-component)
+- [x] **Chestnut-sided Warbler** — `Setophaga pensylvanica` · freq 0.12  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`; yellow crown + chestnut sides + black eyeline
+- [x] **Chimney Swift** — `Chaetura pelagica` · freq 0.12  ✅ DEPLOYED LIVE 2026-06-22 (r15) — DETECTED at Sudbury (Scott confirmed); keyed `--tol 34` (all-sooty, no pale belly to protect). Needed a NEW `species-notes.json` entry to stop the documented swift→swallow drift (no `styles/` dir or anti-ref photos on this Mac, so the note is the ONLY guard). Minor: flight-pose belly came out paler than a true uniformly-sooty swift, but shape/ID is unmistakably swift (no fork/rufous/blue) — re-roll that one pose if a darker belly is wanted
 - [x] **Carolina Wren** — `Thryothorus ludovicianus` · freq 0.10  ✅ DEPLOYED LIVE 2026-06-20 (r13) — detected n=3 (was rendering as nothing); keyed `--tol 18`; white brow + cocked tail + decurved bill all read
-- [ ] **Field Sparrow** — `Spizella pusilla` · freq 0.08
-- [ ] **Winter Wren** — `Troglodytes hiemalis` · freq 0.08
-- [ ] **Bobolink** — `Dolichonyx oryzivorus` · freq 0.08
-- [ ] **Black-throated Blue Warbler** — `Setophaga caerulescens` · freq 0.08
-- [ ] **Least Flycatcher** — `Empidonax minimus` · freq 0.07
+- [x] **Field Sparrow** — `Spizella pusilla` · freq 0.08  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`; rusty cap, plain face, pink bill
+- [x] **Winter Wren** — `Troglodytes hiemalis` · freq 0.08  ✅ DEPLOYED LIVE 2026-06-22 (r15) — good bird, but drifted to a **bordered-plate background** (a darker frame band → unkeyable by border-sampling, same failure as the E.Bluebird flight). Salvaged WITHOUT a re-roll: center-crop 12% to drop the frame, then re-key `--tol 30` + keep-largest. Cocked tail + barring read
+- [x] **Bobolink** — `Dolichonyx oryzivorus` · freq 0.08  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`. First gen invented a **rufous wing patch** (wrong — Bobolinks have none) → added a `species-notes.json` note (tuxedo-backwards: solid-black body, buff nape, white scapulars/rump, NO rufous) + re-rolled the perched pose. Now correct
+- [x] **Black-throated Blue Warbler** — `Setophaga caerulescens` · freq 0.08  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`. First gen was a **plain blue bird missing the diagnostic black face/throat/flanks** → added a `species-notes.json` note (black throat continues down the flanks as a side-stripe vs white belly; white wing "handkerchief") + re-rolled the perched pose. Now correct
+- [x] **Least Flycatcher** — `Empidonax minimus` · freq 0.07  ✅ DEPLOYED LIVE 2026-06-22 (r15) — keyed `--tol 18`; olive-gray, bold eyering, wingbars, pale belly (a generic *Empidonax* — precise in-genus ID isn't achievable and isn't needed for the collage)
 - [ ] **Blackburnian Warbler** — `Setophaga fusca` · freq 0.06
 - [ ] **Brown Thrasher** — `Toxostoma rufum` · freq 0.06
 - [ ] **Fish Crow** — `Corvus ossifragus` · freq 0.06
