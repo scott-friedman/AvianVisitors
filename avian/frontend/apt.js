@@ -189,12 +189,15 @@
     });
   });
 
-  // Stats chart toggle (Day Dial vs. species timeline) - mirrors the atlas-sort
+  // Stats chart toggle (Day Dial vs. Day Rhythm) - mirrors the atlas-sort
   // segmented control. Default 'dial'; choice persists in bird:statsChart and is
   // read at render time via window.__statsChart (see drawActiveStatsChart).
   var statsChartEl = document.getElementById('statsChartToggle');
   var statsChartBtns = statsChartEl ? [].slice.call(statsChartEl.querySelectorAll('button')) : [];
-  window.__statsChart = readLS('bird:statsChart', 'dial');
+  // Migrate the discarded 'timeline' slot to 'rhythm' (the button is data-chart="rhythm").
+  var __sc = readLS('bird:statsChart', 'dial');
+  window.__statsChart = (__sc === 'timeline') ? 'rhythm' : __sc;
+  if (__sc === 'timeline') writeLS('bird:statsChart', 'rhythm');
   statsChartBtns.forEach(function (b) {
     b.setAttribute('aria-current', (b.dataset.chart === window.__statsChart) ? 'true' : 'false');
   });
@@ -725,7 +728,7 @@
   // chart entrance, while the side panel cascade fires regardless of which chart
   // is up. lead: see playAtlasEntrance. On a view switch the content is held
   // until the slide settles; in-place re-renders (window change) pass no lead.
-  var sideEntranceT = null, tlEntranceT = null;
+  var sideEntranceT = null;
 
   // Side panel (By Period / Top Species / First Detections): headers + captions
   // lead, then rows populate top-to-bottom over the same window as the chart.
@@ -750,33 +753,12 @@
     }, lead + SPREAD + 560);
   }
 
-  // Editorial timeline: columns, gridlines and x-ticks stagger left-to-right by
-  // their x%; the y-axis leads (delay 0). (Was the chart half of playStatsEntrance.)
-  function playStatsTimelineEntrance(lead) {
-    lead = lead || 0;
-    var plot = document.querySelector('.stats-tl-plot');
-    if (!plot) return;
-    var SPREAD = 460;
-    var items = [].slice.call(plot.querySelectorAll('.stats-tl-col, .stats-tl-gridline, .stats-tl-xtick'))
-      .map(function (el) { return { el: el, d: ((parseFloat(el.style.left) || 0) / 100) * SPREAD }; });
-    var yaxis = document.querySelector('.stats-tl-yaxis');
-    if (yaxis) items.push({ el: yaxis, d: 0 });
-    if (!items.length) return;
-    items.forEach(function (o) { o.el.classList.remove('entering'); o.el.style.animationDelay = Math.round(lead + o.d) + 'ms'; });
-    void plot.offsetWidth;
-    items.forEach(function (o) { o.el.classList.add('entering'); });
-    clearTimeout(tlEntranceT);
-    tlEntranceT = setTimeout(function () {
-      items.forEach(function (o) { o.el.classList.remove('entering'); o.el.style.animationDelay = ''; });
-    }, lead + SPREAD + 560);
-  }
-
   // Replay the active chart's entrance + the side panel WITHOUT re-rendering
   // (used on view-switch into stats - the DOM is already built from the last
   // data render, so we just re-trigger the cascade with the slide lead).
   function playActiveStatsEntrance(lead) {
     if ((window.__statsChart || 'dial') === 'dial') playDialEntrance(document.getElementById('statsDial'), lead);
-    else playStatsTimelineEntrance(lead);
+    else playRhythmEntrance(document.getElementById('statsRhythm'), lead);
     if (window.__statsSide === 'lists') playStatsSideEntrance(lead);   // default (notes) -> Field Notes entrance
     else playFactsEntrance(document.getElementById('statsFacts'), lead);
   }
@@ -789,10 +771,10 @@
   function drawActiveStatsChart(animate) {
     var mode = window.__statsChart || 'dial';
     var dial = document.getElementById('statsDial');
-    var tl = document.getElementById('statsTimeline');
-    if (!dial || !tl) return;
-    if (mode === 'dial') { tl.hidden = true; dial.hidden = false; drawDayDial(animate); }
-    else                 { dial.hidden = true; tl.hidden = false; drawHistograms(animate); }
+    var ry = document.getElementById('statsRhythm');
+    if (!dial || !ry) return;
+    if (mode === 'dial') { ry.hidden = true; dial.hidden = false; drawDayDial(animate); }
+    else                 { dial.hidden = true; ry.hidden = false; drawDayRhythm(animate); }
   }
 
   // Render whichever right-cell panel is selected (persisted in bird:statsSide),
@@ -912,7 +894,7 @@
     clearTimeout(rTimer);
     rTimer = setTimeout(function () {
       renderCollageFromData();
-      drawHistograms();
+      drawActiveStatsChart();
     }, 120);
   });
 
@@ -959,6 +941,7 @@
     recent: null,       // ./avian/api/birdnet-api.php?action=recent&hours=N (refetched on picker change)
     hourly: null,       // ?action=hourly&hours=N - per-clock-hour bins for the Day Dial (refetched on picker change)
     facts: null,        // ?action=facts - ordered Field Notes for the right cell (refetched on poll)
+    rhythm: null,       // ?action=rhythm&days=N - per-species 24h bins for the Day Rhythm (FIXED lookback, NOT the picker)
   };
 
   // Derived chart arrays, backfilled so 30 buckets always exist.
@@ -1166,113 +1149,157 @@
     setTimeout(function () { items.forEach(function (el) { el.classList.remove('entering'); el.style.animationDelay = ''; }); }, lead + items.length * 70 + 400);
   }
 
-  // Editorial detection timeline. One evenly-spaced column per species,
-  // ordered oldest -> newest by last detection (x = time). Each species
-  // owns a cell, so the black squares never overlap and a square fills
-  // its column width - neighbours touch at the shared gridline. The
-  // square's height up the column encodes detection count; a small
-  // rotated label (common + scientific name) sits at the column's
-  // bottom, and each column carries its own timestamp on the x-axis.
-  function drawHistograms(animate) {
-    var tl = document.getElementById('statsTimeline');
-    if (!tl) return;
-    var all = ((DATA.recent && DATA.recent.species) || []).slice();
-    if (!all.length) {
-      tl.innerHTML = '<div class="stats-tl-empty">no detections in this window</div>';
-      return;
-    }
+  // ---- Day Rhythm: per-species ridgeline of activity by clock hour ----
+  // Each species is a horizontal lane; the filled curve is that species'
+  // detections across the 24h "typical day" (DATA.rhythm - a FIXED multi-day
+  // lookback, NOT the window picker). Curves are normalized per-species (own
+  // peak = full lane height) so every bird's rhythm reads regardless of volume;
+  // the row label carries the absolute total. Lanes arrive pre-sorted by peak
+  // hour (server-side) so dawn singers sit on top and the ridges cascade down
+  // the day. A daylight band + "now" line echo the Day Dial; a hover/drag
+  // scrubber reads the cross-section ("8-9am: Robin 12, Cardinal 8, ...").
+  function drawDayRhythm(animate) {
+    var host = document.getElementById('statsRhythm');
+    if (!host) return;
+    var RY = DATA.rhythm || {};
+    var sp = RY.species || [];
+    if (!sp.length) { host.innerHTML = '<div class="stats-tl-empty">no detections yet</div>'; return; }
 
-    // Discrete columns. On a phone the columns are fixed-width and wider
-    // (legible squares + labels for touch) and the plot grows past the
-    // viewport to scroll horizontally - so we show ALL species rather than
-    // trimming. On desktop, cap to whatever fits the available width.
     var isMobile = (window.innerWidth || 800) <= 700;
-    var containerW = Math.max(140, (tl.clientWidth || window.innerWidth || 800) - 34);
-    var MIN_COL = isMobile ? 52 : 22;
-    var cap = isMobile ? all.length : Math.max(3, Math.floor(containerW / MIN_COL));
-    var trimmed = all.length > cap;
-    var species = all.slice();
-    if (trimmed) {
-      species.sort(function (a, b) { return (+b.n || 0) - (+a.n || 0); });
-      species = species.slice(0, cap);
+    var N = sp.length;
+
+    var W = 320, padL = 12, padR = 12, padT = 12, padB = 18;
+    var plotL = padL, plotW = (W - padR) - padL;
+    var laneH = isMobile ? 30 : 26;      // baseline-to-baseline spacing
+    var amp   = laneH * 0.85;            // max ridge height (<laneH so a full peak stays in its own lane - no crashing through the names above)
+    var H = padT + N * laneH + padB;
+
+    function xForH(h) { return plotL + (h / 24) * plotW; }
+    function f(x) { return x.toFixed(2); }
+
+    // Catmull-Rom -> cubic Bezier through pts [[x,y],...] (tension 1/6).
+    function smoothPath(pts) {
+      if (pts.length < 2) return '';
+      var d = 'M' + f(pts[0][0]) + ' ' + f(pts[0][1]);
+      for (var i = 0; i < pts.length - 1; i++) {
+        var p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+        var c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+        var c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+        d += 'C' + f(c1x) + ' ' + f(c1y) + ' ' + f(c2x) + ' ' + f(c2y) + ' ' + f(p2[0]) + ' ' + f(p2[1]);
+      }
+      return d;
     }
-    // X-axis is time: order the chosen columns oldest -> newest.
-    function parseTs(s) { return s ? Date.parse(s.replace(' ', 'T')) : NaN; }
-    species.sort(function (a, b) {
-      var ta = parseTs(a.last_seen), tb = parseTs(b.last_seen);
-      if (isNaN(ta)) return 1;
-      if (isNaN(tb)) return -1;
-      return ta - tb;
+
+    var s = ['<svg class="rhythm-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="When each species is heard across the day">'];
+
+    // daylight band
+    var sun = RY.sun;
+    if (sun && sun.sunrise != null && sun.sunset != null) {
+      var dx = xForH(sun.sunrise), dw = xForH(sun.sunset) - xForH(sun.sunrise);
+      s.push('<rect class="rhythm-daylight" x="' + f(dx) + '" y="' + padT + '" width="' + f(dw) + '" height="' + (H - padT - padB) + '"/>');
+    }
+    // hour gridlines
+    [0, 6, 12, 18, 24].forEach(function (h) {
+      s.push('<line class="rhythm-grid" x1="' + f(xForH(h)) + '" y1="' + padT + '" x2="' + f(xForH(h)) + '" y2="' + (H - padB) + '"/>');
     });
 
-    var C = species.length;
-    var maxN = species.reduce(function (m, s) { return Math.max(m, +s.n || 0); }, 1);
-    // Mobile: fixed wide columns -> plot can exceed the viewport and scroll.
-    // Desktop: columns split the available width evenly.
-    var colW = isMobile ? MIN_COL : (containerW / C);
-    var plotW = isMobile ? Math.max(containerW, C * colW) : containerW;
-    // Square fills its column so adjacent squares touch at the shared
-    // gridline; capped so a few species don't render as giant blocks.
-    var sq = Math.max(6, Math.min(colW, isMobile ? 60 : 48));
-    var LABEL_GAP = 6;       // px between a square's top and its label
-    var SPAN = 0.55;         // squares occupy the bottom this fraction of
-                             // the plot by count (y = quantity); the
-                             // rotated label floats just above each square.
-
-    // Y-axis quantity ticks: 0..maxN, with maxN pinned on the top tick.
-    var ticks = [];
-    if (maxN <= 8) {
-      for (var v = 0; v <= maxN; v++) ticks.push(v);
-    } else {
-      var divs = 4;
-      for (var di = 0; di <= divs; di++) ticks.push(Math.round(maxN * di / divs));
-      ticks[ticks.length - 1] = maxN;
-    }
-    var yaxis = ticks.map(function (v) {
-      return '<span class="stats-tl-ytick" style="bottom:' + ((v / maxN) * SPAN * 100).toFixed(1) + '%">' + v + '</span>';
-    }).join('');
-
-    // One timestamp under each column - format follows the window length.
-    function fmtTs(ms) {
-      if (isNaN(ms)) return '';
-      var d = new Date(ms);
-      var p2 = function (n) { return n < 10 ? '0' + n : '' + n; };
-      if (currentHours <= 36) return p2(d.getHours()) + ':' + p2(d.getMinutes());
-      if (currentHours <= 75 * 24) return (d.getMonth() + 1) + '/' + d.getDate();
-      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    }
-
-    // Faint gridlines at every column boundary. Start at gi=1: the gi=0
-    // line would sit on top of the y-axis rule (double line), so skip it.
-    var gridlines = '';
-    for (var gi = 1; gi <= C; gi++) {
-      gridlines += '<i class="stats-tl-gridline" style="left:' + (gi / C * 100).toFixed(3) + '%"></i>';
-    }
-
-    var cols = '', xaxis = '';
-    species.forEach(function (s, i) {
-      var centerPct = (i + 0.5) / C * 100;
-      var n = +s.n || 0;
-      var bottomPct = (n / maxN) * SPAN * 100;   // square height = quantity
-      cols += ''
-        + '<div class="stats-tl-col" data-sci="' + s.sci + '" style="left:' + centerPct.toFixed(3) + '%;width:' + colW.toFixed(2) + 'px">'
-        +   '<div class="stats-tl-square" style="bottom:' + bottomPct.toFixed(1) + '%;width:' + sq.toFixed(1) + 'px;height:' + sq.toFixed(1) + 'px"></div>'
-        +   '<div class="stats-tl-label" style="bottom:calc(' + bottomPct.toFixed(1) + '% + ' + (sq + LABEL_GAP) + 'px)"><span class="com">' + (s.com || s.sci) + '</span><span class="sci">' + s.sci + '</span></div>'
-        + '</div>';
-      var lab = fmtTs(parseTs(s.last_seen));
-      if (lab) xaxis += '<span class="stats-tl-xtick" style="left:' + centerPct.toFixed(3) + '%">' + lab + '</span>';
+    // ridges, top (earliest peak) -> bottom
+    sp.forEach(function (row, i) {
+      var base = padT + (i + 1) * laneH;
+      var bins = row.bins || [];
+      var mx = bins.reduce(function (m, v) { return Math.max(m, v); }, 0) || 1;
+      var pts = [[xForH(0), base]];
+      for (var h = 0; h < 24; h++) pts.push([xForH(h + 0.5), base - (bins[h] / mx) * amp]);
+      pts.push([xForH(24), base]);
+      var crest = smoothPath(pts);
+      var area = crest + 'L' + f(xForH(24)) + ' ' + f(base) + 'L' + f(xForH(0)) + ' ' + f(base) + 'Z';
+      var esc = String(row.sci).replace(/"/g, '&quot;');
+      s.push('<g class="rhythm-lane" data-sci="' + esc + '" data-i="' + i + '">');
+      s.push('<path class="rhythm-area" d="' + area + '"/>');
+      s.push('<path class="rhythm-crest" d="' + crest + '"/>');
+      s.push('<text class="rhythm-name" x="' + (plotL + 2) + '" y="' + f(base - 3) + '">'
+        + (row.com || row.sci) + '<tspan class="rhythm-total" dx="5">' + fmtNK(row.total) + '</tspan></text>');
+      s.push('</g>');
     });
 
-    var note = trimmed
-      ? '<div class="stats-tl-cap">' + C + ' most-heard of ' + all.length + '</div>'
-      : '';
-    tl.innerHTML =
-      '<div class="stats-tl-yaxis">' + yaxis + '</div>'
-      + '<div class="stats-tl-plot"' + (isMobile ? ' style="width:' + Math.round(plotW) + 'px"' : '') + '>'
-      +   gridlines + cols + xaxis
-      + '</div>'
-      + note;
-    if (animate) playStatsTimelineEntrance();
+    // hour axis labels
+    [[0, '12a'], [6, '6a'], [12, '12p'], [18, '6p'], [24, '12a']].forEach(function (l) {
+      s.push('<text class="rhythm-hlabel" x="' + f(xForH(l[0])) + '" y="' + (H - 6) + '" text-anchor="middle">' + l[1] + '</text>');
+    });
+
+    // "now" line + (hidden) scrubber
+    if (RY.now_local) {
+      var nf = RY.now_local.frac != null ? RY.now_local.frac : RY.now_local.hour;
+      var nx = xForH(nf);
+      s.push('<line class="rhythm-now" x1="' + f(nx) + '" y1="' + padT + '" x2="' + f(nx) + '" y2="' + (H - padB) + '"/>');
+    }
+    s.push('<line class="rhythm-scrub" x1="0" y1="' + padT + '" x2="0" y2="' + (H - padB) + '" hidden/>');
+    s.push('</svg>');
+    host.innerHTML = s.join('');
+
+    // caption (own .rhythm-cap class; the old timeline .stats-tl-cap is gone)
+    var dc = RY.days_covered || RY.days || 0;
+    host.insertAdjacentHTML('beforeend',
+      '<div class="rhythm-cap">typical day · last ' + dc + ' day' + (dc === 1 ? '' : 's') + ' · ' + N + ' species</div>');
+
+    wireRhythmScrub(host, sp, { W: W, plotL: plotL, plotW: plotW });
+    if (animate) playRhythmEntrance(host);
+  }
+
+  // Hover (desktop) / drag (touch) a vertical scrubber; the readout ranks the
+  // species heard in that clock hour by ABSOLUTE count (ridges are normalized,
+  // so this is where "who's most common at 8am" is answered). Mirrors
+  // wireDialHover's one-time outside-tap dismissal.
+  function wireRhythmScrub(host, species, geo) {
+    var svg = host.querySelector('.rhythm-svg');
+    var scrub = host.querySelector('.rhythm-scrub');
+    if (!svg || !scrub) return;
+    var tip = document.createElement('div'); tip.className = 'rhythm-readout'; tip.hidden = true; host.appendChild(tip);
+    function lab(h) { var ap = h < 12 ? 'a' : 'p', hr = (h % 12) || 12; return hr + ap; }
+
+    function showAt(clientX) {
+      var box = svg.getBoundingClientRect();
+      var vbX = ((clientX - box.left) / box.width) * geo.W;
+      var h = Math.floor(((vbX - geo.plotL) / geo.plotW) * 24);
+      h = Math.max(0, Math.min(23, h));
+      var sx = geo.plotL + ((h + 0.5) / 24) * geo.plotW;
+      scrub.setAttribute('x1', sx); scrub.setAttribute('x2', sx); scrub.hidden = false;
+      var ranked = species.map(function (s) { return { com: s.com || s.sci, n: (s.bins || [])[h] || 0 }; })
+        .filter(function (r) { return r.n > 0; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 4);
+      var rows = ranked.length
+        ? ranked.map(function (r) { return '<span class="t"><span class="c">' + r.com + '</span><span class="n">' + r.n + '</span></span>'; }).join('')
+        : '<span class="t">—</span>';
+      tip.innerHTML = '<span class="hd">' + lab(h) + '–' + lab((h + 1) % 24) + '</span>' + rows;
+      tip.hidden = false;
+      var hb = host.getBoundingClientRect();
+      tip.style.left = Math.max(4, Math.min(hb.width - 4, clientX - hb.left)) + 'px';
+    }
+    function hide() { scrub.hidden = true; tip.hidden = true; }
+
+    svg.addEventListener('mousemove', function (e) { showAt(e.clientX); });
+    svg.addEventListener('mouseleave', hide);
+    svg.addEventListener('touchstart', function (e) { if (e.touches[0]) showAt(e.touches[0].clientX); }, { passive: true });
+    svg.addEventListener('touchmove',  function (e) { if (e.touches[0]) showAt(e.touches[0].clientX); }, { passive: true });
+    if (!wireRhythmScrub._outsideWired) {
+      wireRhythmScrub._outsideWired = true;
+      document.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.rhythm-svg')) return;
+        document.querySelectorAll('.rhythm-readout').forEach(function (t) { t.hidden = true; });
+        document.querySelectorAll('.rhythm-scrub').forEach(function (l) { l.hidden = true; });
+      });
+    }
+  }
+
+  // Lanes fade + rise, staggered top->bottom (the dawn->dusk cascade reveal).
+  function playRhythmEntrance(host, lead) {
+    if (!host) return;
+    lead = lead || 0;
+    var lanes = [].slice.call(host.querySelectorAll('.rhythm-lane'));
+    if (!lanes.length) return;
+    lanes.forEach(function (el, i) { el.classList.remove('entering'); el.style.animationDelay = Math.round(lead + i * 55) + 'ms'; });
+    void host.offsetWidth;
+    lanes.forEach(function (el) { el.classList.add('entering'); });
+    setTimeout(function () { lanes.forEach(function (el) { el.classList.remove('entering'); el.style.animationDelay = ''; }); }, lead + lanes.length * 55 + 480);
   }
 
   // Cross-highlight between the timeline squares and the right-side
@@ -1284,7 +1311,7 @@
     function setHi(sci, on) {
       if (!sci) return;
       var esc = sci.replace(/"/g, '\"');
-      v1.querySelectorAll('.stats-tl-col[data-sci="' + esc + '"], .stats-side li[data-sci="' + esc + '"]')
+      v1.querySelectorAll('.rhythm-lane[data-sci="' + esc + '"], .stats-side li[data-sci="' + esc + '"]')
         .forEach(function (el) { el.classList.toggle('sync-hi', on); });
     }
     v1.addEventListener('mouseover', function (ev) {
@@ -1652,6 +1679,7 @@
       fetchJson(AV_API + '/api/birdnet-api.php?action=recent&hours=' + forHours).catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=hourly&hours=' + forHours).catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=facts').catch(function () { return null; }),
+      fetchJson(AV_API + '/api/birdnet-api.php?action=rhythm&days=14').catch(function () { return null; }),
     ]).then(function (parts) {
       DATA.stats = parts[0];
       DATA.lifelist = parts[1];
@@ -1664,6 +1692,8 @@
       // Facts are today/all-time scoped (not window-dependent), so accept
       // regardless of the window; a failed fetch keeps the last good sheet.
       if (parts[6]) DATA.facts = parts[6];
+      // Rhythm is a FIXED multi-day lookback (D3) - also window-independent.
+      if (parts[7]) DATA.rhythm = parts[7];
       recomputeDerived();
       renderTimeIndependent(animate);
       renderCollageFromData(animate);
@@ -3793,8 +3823,8 @@
     }
     var row = ev.target.closest('li[data-sci]');
     if (row) return jumpToSci(row.dataset.sci);
-    var tlCol = ev.target.closest('.stats-tl-col[data-sci]');
-    if (tlCol) return jumpToSci(tlCol.dataset.sci);
+    var lane = ev.target.closest('.rhythm-lane[data-sci]');
+    if (lane) return jumpToSci(lane.dataset.sci);
   });
 
   // After the atlas re-renders (window change, fresh fetch), re-apply

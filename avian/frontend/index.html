@@ -83,24 +83,25 @@
       <div class="stats-grid">
         <div class="stats-charts">
           <!-- Two-way switch (cloned from .atlas-sort) to flip the left
-               cell between the Day Dial (default) and the species timeline.
+               cell between the Day Dial (default) and the Day Rhythm.
                Choice persists in localStorage bird:statsChart. -->
           <div class="stats-chart-toggle" id="statsChartToggle" role="tablist" aria-label="chart type">
             <i class="seg-pill" aria-hidden="true"></i>
-            <button type="button" data-chart="dial"     aria-current="true">day</button>
-            <button type="button" data-chart="timeline">species</button>
+            <button type="button" data-chart="dial"   aria-current="true">day</button>
+            <button type="button" data-chart="rhythm">rhythm</button>
           </div>
           <!-- Day Dial: 24h radial histogram of detections by clock hour
                (default). Angle = time of day (midnight top, clockwise),
                radius = count, with a daylight band + "now" hand. Rendered
                by drawDayDial(). -->
           <div class="stats-dial" id="statsDial"></div>
-          <!-- Editorial detection timeline. Each column = one species from
-               the current window; the black square's vertical position
-               encodes detection count, with a rotated common+sci name
-               below and vertical hairlines between columns. Rendered by
-               drawHistograms(). -->
-          <div class="stats-timeline" id="statsTimeline" hidden></div>
+          <!-- Day Rhythm: per-species ridgeline of when each bird is heard
+               across a 24h "typical day" (fixed multi-day lookback, NOT the
+               window picker). One lane per species, normalized to its own
+               peak, ordered by peak hour so dawn singers cascade to the top.
+               Daylight band + "now" line + hover scrubber. Rendered by
+               drawDayRhythm(). -->
+          <div class="stats-rhythm" id="statsRhythm" hidden></div>
         </div>
         <aside class="stats-side">
           <!-- Right-cell toggle (clone of #statsChartToggle): flip the right column

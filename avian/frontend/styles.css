@@ -521,20 +521,16 @@
     to   { opacity: 1; transform: none; }
   }
   .bird-card.entering { animation: bird-card-in 480ms cubic-bezier(.2,.7,.3,1) backwards; }
-  /* Stats: the WHOLE graph populates left-to-right - columns, gridlines and
-     x-axis ticks stagger by their x; the y-axis + side panel fade in just
-     behind. Opacity only (these elements use transform for layout, so
-     animating transform here would fight their positioning). */
+  /* Stats side panel + Field Notes fade in (opacity only - these elements use
+     transform for layout, so animating transform here would fight it). The
+     Day Rhythm chart owns its own entrance (.rhythm-lane / rhythm-rise). */
   @keyframes stats-fade-in { from { opacity: 0; } to { opacity: 1; } }
-  .stats-tl-col.entering, .stats-tl-gridline.entering,
-  .stats-tl-xtick.entering, .stats-tl-yaxis.entering,
   .stats-side h3.entering, .stats-side small.entering, .stats-side li.entering,
   .fact.entering, .facts-head h3.entering, .facts-head small.entering {
     animation: stats-fade-in 340ms ease backwards;
   }
   @media (prefers-reduced-motion: reduce) {
-    .bird-card.entering, .stats-tl-col.entering, .stats-tl-gridline.entering,
-    .stats-tl-xtick.entering, .stats-tl-yaxis.entering,
+    .bird-card.entering,
     .stats-side h3.entering, .stats-side small.entering, .stats-side li.entering,
     .fact.entering, .facts-head h3.entering, .facts-head small.entering { animation: none; }
   }
@@ -607,21 +603,10 @@
   }
   @media (max-width: 900px) {
     .stats-grid { grid-template-columns: 1fr; gap: 40px; }
-    /* Single-column: the timeline has no tall grid sibling to stretch
-       against, so pin it to a usable height instead of letting it
-       collapse to its (zero) intrinsic height. clamp() keeps it sane
-       on both short landscape phones and tall portrait ones. */
-    .stats-timeline { height: clamp(260px, 44vh, 420px); }
   }
-  /* Phones: the timeline keeps its editorial form but uses fixed wider
-     columns (set in drawHistograms) and scrolls horizontally for the rest,
-     with larger labels/ticks so it's legible + tappable. */
-  @media (max-width: 700px) {
-    .stats-timeline { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-    .stats-tl-label { font-size: 11px; }
-    .stats-tl-label .sci { font-size: 9px; }
-    .stats-tl-xtick { font-size: 8px; }
-  }
+  /* The Day Rhythm SVG carries its own viewBox aspect ratio, so it needs no
+     single-column height pin or horizontal scroll; its phone tweaks live with
+     the .rhythm-* block below. */
   /* Desktop two-column: size the grid to the side panel's content height
      (the timeline stretches to match it) and centre it vertically, so the
      chart sits beside the text at the same height instead of stretching to
@@ -630,128 +615,59 @@
     .stats-grid { flex: 0 1 auto; margin: auto; }
   }
 
-  /* Editorial detection timeline. One evenly-spaced column per species,
-     ordered by last-detection time (x = time). Black square fills its
-     column so neighbours touch at the gridline; its height up the column
-     encodes count. Small rotated label + per-column timestamp at the
-     bottom. Fits the viewport - never scrolls. */
-  .stats-timeline {
-    position: relative;
-    flex: 1 1 auto; min-height: 0;
-    padding: 0 0 28px 32px;   /* left = y-axis (quantity), bottom = timestamps */
+  /* ---- Day Rhythm ridgeline (replaces the .stats-tl-* timeline) ---- */
+  .stats-rhythm { position: relative; flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .rhythm-svg { width: 100%; max-width: 460px; height: auto; overflow: visible; }
+
+  .rhythm-daylight { fill: var(--ink); fill-opacity: 0.035; }
+  :root[data-theme="dark"] .rhythm-daylight { fill-opacity: 0.06; }
+  .rhythm-grid { stroke: var(--hairline); stroke-width: 1; }
+  .rhythm-area  { fill: var(--ink); fill-opacity: 0.10; transition: fill-opacity 150ms ease; }
+  .rhythm-crest { fill: none; stroke: var(--ink); stroke-width: 1; transition: stroke 150ms ease; }
+  .rhythm-lane  { cursor: pointer; }
+  .rhythm-lane.is-hover .rhythm-area, .rhythm-lane.sync-hi .rhythm-area { fill-opacity: 0.20; }
+  .rhythm-lane.is-hover .rhythm-crest, .rhythm-lane.sync-hi .rhythm-crest { stroke: var(--accent); stroke-width: 1.3; }
+
+  .rhythm-name { font: 10px/1.1 ui-serif, "Iowan Old Style", Georgia, serif; font-weight: 600; fill: var(--ink);
+    paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round; }  /* paper halo for legibility over fills */
+  .rhythm-total { fill: var(--ink-soft); font-size: 8px; font-weight: 400; }
+  .rhythm-hlabel { fill: var(--ink-soft); font: 8px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+  .rhythm-now  { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.7; }
+  .rhythm-scrub { stroke: var(--accent); stroke-width: 1; }
+  .rhythm-scrub[hidden] { display: none; }
+
+  /* caption - normal-flow, muted mono (matches the old .stats-tl-empty/.cap voice) */
+  .rhythm-cap { margin-top: 4px; font: 8.5px/1 "SF Mono", Menlo, monospace;
+    color: var(--ink-soft); letter-spacing: 0.04em; text-align: center; }
+
+  /* readout pill - mirrors .dial-tip */
+  .rhythm-readout { position: absolute; top: 4px; transform: translateX(-50%); pointer-events: none; z-index: 5;
+    background: var(--paper); box-shadow: var(--edge-lg); border-radius: 8px; padding: 6px 8px; white-space: nowrap; }
+  .rhythm-readout[hidden] { display: none; }
+  .rhythm-readout .hd { display: block; font: 9px/1.4 ui-monospace, Menlo, monospace; letter-spacing: 0.08em;
+    color: var(--ink-soft); text-transform: uppercase; margin-bottom: 3px; }
+  .rhythm-readout .t  { display: flex; gap: 10px; justify-content: space-between;
+    font: 11px/1.5 ui-serif, "Iowan Old Style", Georgia, serif; }
+  .rhythm-readout .t .n { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+  /* entrance (the Day Rhythm's own cascade; the side panel uses stats-fade-in) */
+  @keyframes rhythm-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .rhythm-lane.entering { animation: rhythm-rise 480ms cubic-bezier(.2,.7,.3,1) backwards; }
+  @media (prefers-reduced-motion: reduce) { .rhythm-lane.entering { animation: none; } }
+
+  @media (max-width: 700px) {
+    .rhythm-svg { max-width: 100%; }
+    /* drawDayRhythm bumps laneH + keeps labels legible via its isMobile branch */
   }
-  .stats-tl-yaxis {
-    position: absolute; left: 0; top: 0; bottom: 28px; width: 28px;
-    border-right: 1px solid var(--hairline);
-  }
-  .stats-tl-ytick {
-    position: absolute; right: 5px;
-    font: 8px/1 "SF Mono", Menlo, monospace; color: var(--ink-soft);
-    transform: translateY(50%);
-  }
-  .stats-tl-ytick::after {
-    content: ''; position: absolute; right: -5px; top: 50%;
-    width: 4px; height: 1px; background: var(--hairline);
-  }
-  .stats-tl-plot {
-    position: relative; height: 100%;
-  }
-  /* Evenly-spaced cell, one per species. JS sets left (column centre)
-     and width (the column slot); the square and label centre within it. */
-  .stats-tl-col {
-    position: absolute; top: 0; bottom: 0;
-    transform: translateX(-50%);
-    cursor: pointer;
-  }
-  /* Faint vertical hairlines at every x-axis tick - the "no detections
-     in this slice" period reads as the empty space between marks. */
-  .stats-tl-gridline {
-    position: absolute; top: 0; bottom: 0;
-    width: 1px;
-    background: var(--hairline);
-    pointer-events: none;
-  }
-  .stats-tl-square {
-    position: absolute; left: 50%;
-    transform: translateX(-50%);
-    background: var(--ink);
-    /* Paper-coloured side borders. box-sizing: border-box keeps the box
-       column-filling, so the fill just insets 1px each side. Where two
-       squares touch, the abutting borders read as a crisp white line
-       directly between them; on the cluster's outer edges they vanish
-       into the matching paper background. */
-    border-left: 1px solid var(--paper);
-    border-right: 1px solid var(--paper);
-    transition: background 140ms ease, transform 140ms ease;
-  }
-  .stats-tl-col { cursor: pointer; }
-  /* Cross-highlight: hovering a square or a table row lights up the
-     matching species on the other side - the square scales up and its
-     label scales + shifts to the accent ink, so the whole column reads
-     as selected. */
-  .stats-tl-col.sync-hi .stats-tl-square {
-    background: var(--accent);
-    transform: translateX(-50%) scale(1.18);
-  }
-  .stats-tl-col.sync-hi .stats-tl-label {
-    transform: rotate(-90deg) translateY(55%) scale(1.1);
-  }
-  .stats-tl-col.sync-hi .stats-tl-label .com,
-  .stats-tl-col.sync-hi .stats-tl-label .sci { color: var(--accent); }
-  /* Two-line species label, rotated to read bottom-to-top like the
-     reference exhibition checklist. Sits just above the square -
-     rotate(-90deg) then translateY(50%) re-centres the stack on the
-     column regardless of label height. Common name and scientific
-     name sit as two adjacent columns of vertical text. The sync-hi
-     scale uses translateY(55%) to stay centred while enlarged. */
-  .stats-tl-label {
-    position: absolute; left: 50%;
-    transform-origin: 0% 100%;
-    /* translateY(50%) becomes a horizontal shift after the -90deg turn
-       that re-centres the rotated label on the column (= on its square),
-       so the name reads up the middle of each block. */
-    transform: rotate(-90deg) translateY(50%);
-    white-space: nowrap;
-    font: 10px/1.15 ui-serif, "Iowan Old Style", Georgia, serif;
-    color: var(--ink);
-    transition: transform 130ms ease;
-  }
-  .stats-tl-label .com {
-    display: block; font-weight: 600;
-    transition: color 130ms ease;
-  }
-  .stats-tl-label .sci {
-    display: block;
-    font-style: italic; color: var(--ink-soft); font-size: 8.5px;
-    transition: color 130ms ease;
-  }
-  /* Ticks live inside .stats-tl-plot so their left:% aligns with the
-     gridlines (both share the plot's content box). bottom is negative
-     to push the label into the x-axis gutter below the plot. */
-  .stats-tl-xtick {
-    position: absolute; bottom: -19px;
-    transform: translateX(-50%);
-    font: 7px/1 "SF Mono", Menlo, monospace; color: var(--ink-soft);
-    white-space: nowrap;
-  }
+
+  /* Shared empty state - used by the Day Dial, the Day Rhythm, and Field Notes. */
   .stats-tl-empty {
     position: absolute; inset: 0;
     display: flex; align-items: center; justify-content: center;
     font: 11px ui-monospace, Menlo, monospace; color: var(--ink-soft);
     text-transform: lowercase; letter-spacing: 0.18em;
   }
-  /* Trim note - shown when the plot can't fit every species column and
-     falls back to the most-heard subset. A paper background keeps it
-     legible even if a tall label reaches the corner behind it. */
-  .stats-tl-cap {
-    position: absolute; top: 0; right: 0; z-index: 2;
-    background: var(--paper); padding: 1px 0 3px 8px;
-    font: 8.5px/1 "SF Mono", Menlo, monospace; color: var(--ink-soft);
-    letter-spacing: 0.04em;
-  }
-
-  /* (Old chart-card / .stats-charts CSS removed - replaced by the
-     editorial .stats-timeline above.) */
 
   /* Right cell is a column: the notes|summary toggle pinned at the top, then a
      body that fills the rest and centres its content (as the lists did alone). */
@@ -1653,15 +1569,15 @@ body.av-local #dd-items  { display: block; }
   /* ===== Stats: chart toggle + Day Dial =====
      The left stats cell holds a segmented toggle (cloned from .atlas-sort)
      above two stacked, mutually-exclusive charts: the radial Day Dial
-     (default) and the editorial species timeline. Both inherit the
+     (default) and the Day Rhythm ridgeline. Both inherit the
      ink-on-paper tokens so light/dark themes flip for free. */
   .stats-charts { display: flex; flex-direction: column; gap: 14px; min-height: 0; flex: 1 1 auto; }
 
   /* Both charts toggle via the [hidden] attribute. .stats-dial sets
-     display:flex (and .stats-timeline is a flex child), so an explicit
+     display:flex (and .stats-rhythm is a flex child), so an explicit
      rule is needed - the UA [hidden]{display:none} loses to a class's
      display declaration on specificity. */
-  .stats-dial[hidden], .stats-timeline[hidden] { display: none; }
+  .stats-dial[hidden], .stats-rhythm[hidden] { display: none; }
 
   .stats-chart-toggle {
     align-self: flex-start; display: inline-flex; padding: 4px; position: relative;

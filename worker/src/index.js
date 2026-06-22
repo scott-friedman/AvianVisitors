@@ -448,7 +448,7 @@ async function queryApi(request, env, url) {
 
   // action from ?action=, else inferred from the path's last segment, so both
   // /api/recent and /api/birdnet-api.php?action=recent resolve the same.
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'facts'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   const action = url.searchParams.get('action') || (known.includes(seg) ? seg : 'recent');
 
@@ -462,6 +462,7 @@ async function queryApi(request, env, url) {
     case 'lifelist': return lifelist(env, tz);
     case 'timeseries': return timeseries(env, url, tz, now);
     case 'hourly': return hourly(env, url, tz, now);
+    case 'rhythm': return rhythm(env, url, tz, now);
     case 'species': return species(env, url, tz);
     case 'firstseen': return firstseen(env, url, tz);
     default: return json({ error: 'unknown action' }, 404);
@@ -736,6 +737,67 @@ async function hourly(env, url, tz, now) {
     hours, total, peak_hour: peakHour,
     tz_offset_hours: offH, now_local, sun,
     bins, as_of: new Date().toISOString(),
+  });
+}
+
+// Per-species activity by LOCAL clock hour over a FIXED multi-day lookback (the
+// "typical day"), for the Day Rhythm ridgeline. Independent of the collage
+// window picker: a daily pattern needs several days to be meaningful, so this
+// always aggregates the last ?days=N (default 14, clamp 1–90). Returns the top
+// ?top=M species (default 12) by total detections, each with a 24-bin hourly
+// histogram (raw counts — the client normalizes per-species), ordered by peak
+// hour so the ridges cascade dawn→dusk. Reuses hourly()'s sun + now_local block.
+async function rhythm(env, url, tz, now) {
+  const days = clampInt(url.searchParams.get('days'), 14, 1, 90);
+  const top  = clampInt(url.searchParams.get('top'), 12, 1, 40);
+  const since = now - days * 86400;
+
+  const { results } = await env.DB.prepare(
+    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS hour,
+            sci, com, COUNT(*) AS n
+       FROM detections
+      WHERE ts >= ?
+      GROUP BY hour, sci`
+  ).bind(tz, since).all();
+
+  const bySci = new Map();
+  for (const r of (results || [])) {
+    let s = bySci.get(r.sci);
+    if (!s) { s = { sci: r.sci, com: r.com, total: 0, bins: new Array(24).fill(0) }; bySci.set(r.sci, s); }
+    if (r.hour >= 0 && r.hour < 24) { s.bins[r.hour] = r.n; s.total += r.n; }
+  }
+
+  const list = [...bySci.values()].map((s) => {
+    let peak = 0, peakN = -1;
+    for (let h = 0; h < 24; h++) if (s.bins[h] > peakN) { peakN = s.bins[h]; peak = h; }
+    let sx = 0, sy = 0;
+    for (let h = 0; h < 24; h++) { const a = (2 * Math.PI * h) / 24; sx += s.bins[h] * Math.cos(a); sy += s.bins[h] * Math.sin(a); }
+    const meanHour = ((Math.atan2(sy, sx) / (2 * Math.PI)) * 24 + 24) % 24;
+    return { ...s, peak_hour: peak, mean_hour: Math.round(meanHour * 100) / 100 };
+  });
+
+  list.sort((a, b) => b.total - a.total);
+  const kept = list.filter((s) => s.total >= 3).slice(0, top);
+  kept.sort((a, b) => (a.peak_hour - b.peak_hour) || (a.mean_hour - b.mean_hour) || (b.total - a.total));
+
+  const span = await env.DB.prepare('SELECT MIN(ts) AS first FROM detections WHERE ts >= ?').bind(since).first();
+  const days_covered = span && span.first != null ? Math.min(days, Math.floor((now - span.first) / 86400) + 1) : 0;
+
+  // tz-correct now + sun (identical to hourly()).
+  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const localNow = new Date((now + offH * 3600) * 1000);
+  const now_local = {
+    hour: localNow.getUTCHours(),
+    minute: localNow.getUTCMinutes(),
+    frac: localNow.getUTCHours() + localNow.getUTCMinutes() / 60,
+  };
+  const sun = sunArc(env, localNow, offH);
+
+  return json({
+    days, days_covered, top,
+    species: kept,
+    tz_offset_hours: offH, now_local, sun,
+    as_of: new Date().toISOString(),
   });
 }
 
