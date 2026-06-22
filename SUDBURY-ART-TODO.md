@@ -4,7 +4,7 @@
 artwork**, so they're invisible on the e-ink frame and the website (the
 "detected ≠ shown" gotcha — see `CLAUDE.md`). This file tracks which still need
 illustrations drawn. Work the **land** list top-down (it's ranked by how often
-each is actually detected at Sudbury). Progress: **14 / 46 land birds done.**
+each is actually detected at Sudbury). Progress: **24 / 46 land birds done.**
 
 ## How this list was derived (don't redo unless the location changes)
 - BirdNET range/meta model @ Sudbury **42.3834, -71.4162**, threshold **0.03**
@@ -49,6 +49,19 @@ each is actually detected at Sudbury). Progress: **14 / 46 land birds done.**
   strays like a perch off the feet (region-erase, confirm vs the raw). Full how-to: `avian/scripts/README.md`.
 - Still **spot-check the very palest** (deferred gulls/doves, White-throated Sparrow,
   Eastern Bluebird belly) — they may want an even lower tol or a per-bird eyeball.
+- **Confirmed 2026-06-22 (batch 3): very-white bellies need `--tol 14`, not 18.** Wood
+  Thrush (white spotted belly, +44k px), Eastern Wood-Pewee, Veery, and Blue-headed
+  Vireo all had the lower belly eaten at 18 and keyed clean at 14 (verified: 0
+  border-halo px, single connected blob). On a cream/parchment background an eaten
+  belly is invisible — it reads as "washed out" (how Scott caught these), so check on
+  **magenta** AND against the raw, not on parchment. **But do NOT blanket-lower the
+  tol:** for the Great Crested Flycatcher, tol 14 left cream **ground blobs** near the
+  perch. Two traps when chasing a low tol — (1) those blobs are *interior*, so a
+  border-only halo check misses them; (2) a raw "belly pixels recovered" count
+  conflates real belly with ground junk. **Verdict test:** the recovered region must be
+  ONE connected component with **high mean color-distance from cream (≈120+)**, not a
+  low-distance (≈14) blob. White-throated Sparrow — despite being the palest — keyed
+  clean at 18 (its white throat is fully enclosed by dark borders), so decide per-bird.
 
 ---
 
@@ -63,19 +76,19 @@ each is actually detected at Sudbury). Progress: **14 / 46 land birds done.**
 - [x] **Ovenbird** — `Seiurus aurocapilla` · freq 0.49  ✅ DEPLOYED LIVE 2026-06-20 (r13) — detected n=3 (was one of the first real detections rendering as nothing); keyed `--tol 18` (white belly)
 - [x] **Eastern Phoebe** — `Sayornis phoebe` · freq 0.41  ✅ DEPLOYED LIVE 2026-06-20 (r13) — fill (not yet detected); keyed `--tol 18`; correctly plain (phoebes have no bold marks — verified not over-keyed)
 - [x] **Eastern Kingbird** — `Tyrannus tyrannus` · freq 0.37  ✅ DEPLOYED LIVE 2026-06-20 (r13) — fill (not yet detected); keyed `--tol 18`; white tail-tip band reads clearly
-- [ ] **Eastern Wood-Pewee** — `Contopus virens` · freq 0.34
-- [ ] **Ruby-crowned Kinglet** — `Corthylio calendula` · freq 0.29
-- [ ] **Great Crested Flycatcher** — `Myiarchus crinitus` · freq 0.27
+- [x] **Eastern Wood-Pewee** — `Contopus virens` · freq 0.34  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 14` (whitish belly was eaten at 18; washed-out-belly QA pass)
+- [x] **Ruby-crowned Kinglet** — `Corthylio calendula` · freq 0.29  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18` (clean; ruby crown patch visible on perched)
+- [x] **Great Crested Flycatcher** — `Myiarchus crinitus` · freq 0.27  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18`. NB: do NOT drop to 14 — its pale gray breast keys clean at 18, but 14 sprouts cream ground blobs by the perch (interior, so a border-halo check misses them; the fg-recovery metric also misreads the blobs as "recovered belly")
 - [x] **Ruby-throated Hummingbird** — `Archilochus colubris` · freq 0.27  ✅ DEPLOYED LIVE 2026-06-20 (r13) — detected n=2; keyed `--tol 18`; ruby gorget present on perched
 - [x] **Red-bellied Woodpecker** — `Melanerpes carolinus` · freq 0.25  ✅ DEPLOYED LIVE 2026-06-20 (r13) — detected n=1; keyed `--tol 18`; zebra back + red cap + clinging pose all clean
-- [ ] **Wood Thrush** — `Hylocichla mustelina` · freq 0.24
-- [ ] **Veery** — `Catharus fuscescens` · freq 0.22
-- [ ] **Scarlet Tanager** — `Piranga olivacea` · freq 0.17
-- [ ] **Black-throated Green Warbler** — `Setophaga virens` · freq 0.16
-- [ ] **Yellow-bellied Sapsucker** — `Sphyrapicus varius` · freq 0.15
-- [ ] **Blue-headed Vireo** — `Vireo solitarius` · freq 0.14
+- [x] **Wood Thrush** — `Hylocichla mustelina` · freq 0.24  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 14` (white spotted belly badly eaten at 18 — +44k px restored; the spots had been stranded)
+- [x] **Veery** — `Catharus fuscescens` · freq 0.22  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 14` (pale belly eaten at 18); kept visibly distinct from Wood Thrush (faint vs bold spotting)
+- [x] **Scarlet Tanager** — `Piranga olivacea` · freq 0.17  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18` (red+black male; clean edge, didn't need the all-dark tol 34)
+- [x] **Black-throated Green Warbler** — `Setophaga virens` · freq 0.16  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18` (tol 14 adds a border halo for almost no belly gain)
+- [x] **Yellow-bellied Sapsucker** — `Sphyrapicus varius` · freq 0.15  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18` (black & white, red crown+throat; clean)
+- [x] **Blue-headed Vireo** — `Vireo solitarius` · freq 0.14  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 14` (white spectacles + belly eaten at 18; caught proactively in the QA pass)
 - [x] **Eastern Bluebird** — `Sialia sialis` · freq 0.14  ✅ DEPLOYED LIVE 2026-06-20 (r13) — detected n=11; keyed `--tol 18`. **Flight pose regenerated once** (first gen drifted to a bordered vintage ornithological plate — wrong style, unkeyable); re-roll is proper kachō-e + matches the perched sibling
-- [ ] **White-throated Sparrow** — `Zonotrichia albicollis` · freq 0.13
+- [x] **White-throated Sparrow** — `Zonotrichia albicollis` · freq 0.13  ✅ DEPLOYED LIVE 2026-06-22 (r14) — keyed `--tol 18` (palest of the batch, but the white throat keys clean at 18 — no lower tol needed)
 - [ ] **Rose-breasted Grosbeak** — `Pheucticus ludovicianus` · freq 0.13
 - [ ] **Northern Parula** — `Setophaga americana` · freq 0.13
 - [ ] **Pine Warbler** — `Setophaga pinus` · freq 0.13
