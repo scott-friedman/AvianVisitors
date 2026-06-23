@@ -1778,3 +1778,169 @@ body.av-local #dd-items  { display: block; }
     .menu-links a:hover,
     .modal-actions .chip:hover { transform: none; }
   }
+
+  /* ============================================================
+     Chorus (view 4): a centered streamgraph of the last 12h.
+     Deliberate, flagged extension of the strict paper/ink palette:
+     ribbons need to be distinguishable, so a small curated muted
+     "field watercolor" set (--ch-1..12) is assigned stably per
+     species (hash of sci). Kept low-saturation to stay on-brand.
+     See CHORUS-PLAN.md §11.3. ============================================ */
+  :root {
+    --ch-1:#b9836f; --ch-2:#c9a25a; --ch-3:#8a9a5b; --ch-4:#7faa8e;
+    --ch-5:#6f8aa8; --ch-6:#c08aa0; --ch-7:#9a8f4f; --ch-8:#9a8e7e;
+    --ch-9:#8c7194; --ch-10:#88a7bd; --ch-11:#a96a4f; --ch-12:#7d9a86;
+  }
+  :root[data-theme="dark"] {
+    --ch-1:#cf9683; --ch-2:#dcb56e; --ch-3:#9eae6c; --ch-4:#92bda1;
+    --ch-5:#85a0bd; --ch-6:#d29fb4; --ch-7:#b1a45f; --ch-8:#b0a392;
+    --ch-9:#a486ac; --ch-10:#9dbcd2; --ch-11:#c07e62; --ch-12:#92af9b;
+  }
+
+  /* On chorus the global top-bar window picker is hidden (chorus is fixed 12h
+     with its own controls). It must beat .top .window-pick's display rule. */
+  .top .window-pick[hidden] { display: none !important; }
+
+  /* Layout: fit the viewport like collage/stats; scroll only if a phone needs it. */
+  .view#v3 { overflow-x: hidden; overflow-y: auto; padding: 8px 32px 88px; display: flex; }
+  @media (max-width: 700px) { .view#v3 { overflow-y: auto; padding: 8px 12px 96px; } }
+  .chorus-wrap {
+    flex: 1 1 auto; min-height: 0; width: 100%; max-width: 1040px;
+    margin: 0 auto; display: flex; flex-direction: column; justify-content: safe center; gap: 12px;
+  }
+
+  /* Controls - interval + mode reuse the global sliding seg-pill; variety is a
+     plain on/off toggle. Cloned from .stats-chart-toggle. */
+  .chorus-controls { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .chorus-seg { display: inline-flex; padding: 4px; position: relative; background: var(--paper-2); border-radius: 999px; box-shadow: var(--recess); }
+  .chorus-seg button,
+  .chorus-toggle {
+    background: transparent; border: 0; color: var(--ink-soft);
+    font: 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.18em; text-transform: uppercase;
+    padding: 8px 14px; border-radius: 999px; cursor: pointer; position: relative; z-index: 1;
+    transition: color 200ms ease, opacity 200ms ease;
+  }
+  .chorus-seg button:hover, .chorus-seg button[aria-current="true"] { color: var(--ink); }
+  .chorus-toggle { background: var(--paper-2); box-shadow: var(--recess); }
+  .chorus-toggle[aria-pressed="true"] { color: var(--ink); }
+  .chorus-toggle[aria-pressed="false"] { opacity: 0.5; }
+  .chorus-hint { margin-left: auto; font: 9.5px/1.3 ui-monospace, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); }
+
+  /* Stage: SVG (ribbons/axis) + the floating-illustration overlay + scrub tip.
+     touch-action:none so a horizontal drag scrubs instead of scrolling. */
+  /* Width is capped by the leftover viewport height (chrome above the stage =
+     ~372px: top bar + view padding + controls + caption + gaps), converted to a
+     width via the 1000:460 viewBox ratio (×2.17391). This shrinks the chart to
+     fit instead of clipping the controls, while the fixed aspect-ratio keeps the
+     floating birds (positioned by % of this box) glued to their ribbons. */
+  .chorus-stage {
+    position: relative; flex: 0 1 auto;
+    width: 100%; max-width: 1040px;
+    max-width: min(1040px, calc((100dvh - 372px) * 2.17391));
+    aspect-ratio: 1000 / 460; margin: 0 auto;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  .chorus-svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+  /* Background marks (echo the dial/rhythm daylight semantics). */
+  .chorus-daylight { fill: var(--ink); fill-opacity: 0.035; }
+  :root[data-theme="dark"] .chorus-daylight { fill-opacity: 0.06; }
+  .chorus-sun { stroke: var(--ink-soft); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.5; }
+  .chorus-band-lbl { font: 9px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.12em; text-transform: uppercase; fill: var(--ink-soft); }
+  .chorus-axis text { font: 9.5px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.06em; fill: var(--ink-soft); }
+  .chorus-axis line { stroke: var(--hairline); stroke-width: 1; }
+  .chorus-now line { stroke: var(--ink); stroke-width: 1.2; opacity: 0.5; }
+  .chorus-now text { font: 9px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.14em; text-transform: uppercase; fill: var(--ink-2); }
+  .chorus-scrub { stroke: var(--accent); stroke-width: 1; }
+  .chorus-scrub[hidden] { display: none; }
+
+  /* Variety line - distinct species per interval, dotted ink, its own top strip. */
+  .chorus-variety { fill: none; stroke: var(--ink); stroke-width: 1.3; stroke-dasharray: 1.5 3.5; opacity: 0.5; stroke-linecap: round; }
+  .chorus-variety-lbl { font: 9px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; fill: var(--ink-soft); }
+
+  /* Ribbons - fill via stable per-species hue class; crest line traces the top. */
+  .chorus-ribbon { cursor: pointer; }
+  .chorus-fill  { fill-opacity: 0.6; transition: fill-opacity 200ms ease, opacity 200ms ease; }
+  :root[data-theme="dark"] .chorus-fill { fill-opacity: 0.66; }
+  .chorus-crest { fill: none; stroke-width: 1.1; opacity: 0.5; transition: opacity 200ms ease, stroke-width 200ms ease; }
+  .chorus-h1  .chorus-fill { fill: var(--ch-1);  } .chorus-h1  .chorus-crest { stroke: var(--ch-1);  }
+  .chorus-h2  .chorus-fill { fill: var(--ch-2);  } .chorus-h2  .chorus-crest { stroke: var(--ch-2);  }
+  .chorus-h3  .chorus-fill { fill: var(--ch-3);  } .chorus-h3  .chorus-crest { stroke: var(--ch-3);  }
+  .chorus-h4  .chorus-fill { fill: var(--ch-4);  } .chorus-h4  .chorus-crest { stroke: var(--ch-4);  }
+  .chorus-h5  .chorus-fill { fill: var(--ch-5);  } .chorus-h5  .chorus-crest { stroke: var(--ch-5);  }
+  .chorus-h6  .chorus-fill { fill: var(--ch-6);  } .chorus-h6  .chorus-crest { stroke: var(--ch-6);  }
+  .chorus-h7  .chorus-fill { fill: var(--ch-7);  } .chorus-h7  .chorus-crest { stroke: var(--ch-7);  }
+  .chorus-h8  .chorus-fill { fill: var(--ch-8);  } .chorus-h8  .chorus-crest { stroke: var(--ch-8);  }
+  .chorus-h9  .chorus-fill { fill: var(--ch-9);  } .chorus-h9  .chorus-crest { stroke: var(--ch-9);  }
+  .chorus-h10 .chorus-fill { fill: var(--ch-10); } .chorus-h10 .chorus-crest { stroke: var(--ch-10); }
+  .chorus-h11 .chorus-fill { fill: var(--ch-11); } .chorus-h11 .chorus-crest { stroke: var(--ch-11); }
+  .chorus-h12 .chorus-fill { fill: var(--ch-12); } .chorus-h12 .chorus-crest { stroke: var(--ch-12); }
+  .chorus-ribbon.is-others .chorus-fill  { fill: var(--ink-soft); fill-opacity: 0.22; }
+  .chorus-ribbon.is-others .chorus-crest { stroke: var(--ink-soft); }
+  /* hover (cross-highlight): the wave under the pointer - and its bird - light up */
+  .chorus-ribbon.is-hover .chorus-fill  { fill-opacity: 0.84; }
+  .chorus-ribbon.is-hover .chorus-crest { opacity: 0.95; stroke-width: 1.5; }
+
+  /* Floating illustrations - the legend IS the art (like the collage tiles). */
+  .chorus-birds { position: absolute; inset: 0; pointer-events: none; }
+  .chorus-bird {
+    position: absolute; transform: translate(-50%, -50%); pointer-events: auto; cursor: pointer;
+    transition: transform 200ms ease, filter 200ms ease, opacity 220ms ease; will-change: transform;
+  }
+  .chorus-bird img { width: 100%; height: auto; display: block; filter: drop-shadow(0 2px 6px rgba(26,22,18,0.18)); }
+  .chorus-bird:hover, .chorus-bird.is-hover { transform: translate(-50%, -50%) scale(1.07); z-index: 4; }
+  .chorus-bird:hover img, .chorus-bird.is-hover img { filter: drop-shadow(0 4px 12px rgba(26,22,18,0.30)) saturate(1.08); }
+  .chorus-bird-nm {
+    position: absolute; left: 50%; top: 100%; transform: translateX(-50%); margin-top: 2px; white-space: nowrap;
+    font: 8.5px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--ink-2); opacity: 0; transition: opacity 200ms ease; pointer-events: none;
+  }
+  .chorus-bird:hover .chorus-bird-nm, .chorus-bird.is-hover .chorus-bird-nm, .chorus-bird.is-active .chorus-bird-nm { opacity: 1; }
+  /* art-less species: no portrait, just a small name pill at the crest */
+  .chorus-bird.noart img { display: none; }
+  .chorus-bird.noart .chorus-bird-nm { opacity: 1; position: static; transform: none; margin: 0; background: var(--paper); padding: 2px 6px; border-radius: 10px; box-shadow: var(--edge); }
+
+  /* tap-to-isolate ("follow this wave"): dim everything but the active species */
+  .chorus-stage.has-active .chorus-ribbon:not(.is-active) { opacity: 0.12; }
+  .chorus-stage.has-active .chorus-bird:not(.is-active) { opacity: 0.12; }
+  .chorus-stage.has-active .chorus-ribbon.is-active .chorus-fill { fill-opacity: 0.84; }
+  .chorus-stage.has-active .chorus-bird.is-active { transform: translate(-50%, -50%) scale(1.12); z-index: 5; }
+
+  /* Scrub readout pill (the precision layer; mirrors .dial-tip / .rhythm-readout). */
+  .chorus-tip {
+    position: absolute; z-index: 9; min-width: 140px; max-width: 230px; pointer-events: none;
+    background: var(--paper); box-shadow: var(--edge-lg); border-radius: 12px; padding: 9px 11px;
+    transform: translate(-50%, 0);
+  }
+  .chorus-tip[hidden] { display: none; }
+  .chorus-tip .hd { display: block; font: 9.5px/1.4 ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 6px; }
+  .chorus-tip .row { display: flex; align-items: center; gap: 7px; margin: 3px 0; }
+  .chorus-tip .row img { width: 22px; height: 22px; object-fit: contain; flex: 0 0 22px; }
+  .chorus-tip .row .c { flex: 1; font: 12.5px/1.1 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink); }
+  .chorus-tip .row .n { font: 11px/1 ui-monospace, Menlo, monospace; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .chorus-tip .empty { font: 12px/1.2 ui-serif, Georgia, serif; color: var(--ink-soft); }
+
+  /* Plain-English caption (matches the collage/notes voice). */
+  .chorus-caption { flex: 0 0 auto; font: 14px/1.5 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-2); max-width: 1040px; margin: 0 auto; width: 100%; }
+  .chorus-caption b { color: var(--ink); font-weight: 600; }
+  .chorus-empty { text-align: center; color: var(--ink-soft); font: 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.18em; text-transform: uppercase; padding: 100px 0; }
+  .chorus-empty[hidden] { display: none; }
+
+  /* Entrance: ribbons rise + fade (by stack order), then birds settle in (by x). */
+  @keyframes chorus-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes chorus-bird-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.7); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+  .chorus-ribbon.entering { animation: chorus-rise 460ms cubic-bezier(.2,.7,.3,1) backwards; }
+  .chorus-bird.entering { animation: chorus-bird-in 420ms cubic-bezier(.2,.7,.3,1) backwards; }
+  @media (prefers-reduced-motion: reduce) { .chorus-ribbon.entering, .chorus-bird.entering { animation: none; } }
+
+  @media (max-width: 700px) {
+    .chorus-controls { gap: 10px; }
+    .chorus-hint { display: none; }
+    .chorus-caption { font-size: 12.5px; }
+  }
+  /* No sticky :hover lift on touch (iOS keeps :hover after a tap; taps drive
+     isolate via .is-active instead). */
+  @media (hover: none), (pointer: coarse) {
+    .chorus-bird:hover { transform: translate(-50%, -50%); }
+    .chorus-bird:hover img { filter: drop-shadow(0 2px 6px rgba(26,22,18,0.18)); }
+  }

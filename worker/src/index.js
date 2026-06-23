@@ -485,7 +485,7 @@ async function queryApi(request, env, url) {
 
   // action from ?action=, else inferred from the path's last segment, so both
   // /api/recent and /api/birdnet-api.php?action=recent resolve the same.
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config', 'chorus'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   const action = url.searchParams.get('action') || (known.includes(seg) ? seg : 'recent');
 
@@ -500,6 +500,7 @@ async function queryApi(request, env, url) {
     case 'timeseries': return timeseries(env, url, tz, now);
     case 'hourly': return hourly(env, url, tz, now);
     case 'rhythm': return rhythm(env, url, tz, now);
+    case 'chorus': return chorus(env, url, tz, now);
     case 'species': return species(env, url, tz);
     case 'firstseen': return firstseen(env, url, tz);
     case 'frame-config': return json({ window_hours: await getFrameWindow(env) });
@@ -835,6 +836,105 @@ async function rhythm(env, url, tz, now) {
     days, days_covered, top,
     species: kept,
     tz_offset_hours: offH, now_local, sun,
+    as_of: new Date().toISOString(),
+  });
+}
+
+// Rolling N-hour stream of per-species detections, binned by a chosen interval, for
+// the Chorus streamgraph. Fixed-duration rolling window (now-Nh .. now), independent
+// of the collage window picker (like rhythm). Bins align to LOCAL wall-clock interval
+// boundaries: a slot index floor((ts + tzOffset) / intervalSeconds) lands 30-min bins
+// on tidy :00/:30 marks, and each species becomes a zero-filled array indexed by
+// (slot - firstSlot). Returns the top ?top species by volume; the remainder is rolled
+// into a single neutral "others" ribbon so the total stays honest. Reuses hourly()'s
+// sun + now_local block for the daylight band + "now" edge.
+async function chorus(env, url, tz, now) {
+  const hours    = clampInt(url.searchParams.get('hours'), 12, 1, 48);
+  const interval = clampInt(url.searchParams.get('interval'), 30, 10, 120); // minutes
+  const top      = clampInt(url.searchParams.get('top'), 24, 1, 60);
+
+  const iv   = interval * 60;                                  // interval seconds
+  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const off  = offH * 3600;                                    // tz offset seconds
+  const since = now - hours * 3600;
+
+  const firstSlot = Math.floor((since + off) / iv);
+  const lastSlot  = Math.floor((now   + off) / iv);
+  const nBins = lastSlot - firstSlot + 1;
+
+  const { results } = await env.DB.prepare(
+    `SELECT CAST((ts + ?) / ? AS INT) AS slot, sci, com, COUNT(*) AS n
+       FROM detections
+      WHERE ts >= ?
+      GROUP BY slot, sci
+      ORDER BY slot, n DESC`
+  ).bind(off, iv, since).all();
+
+  const bySci = new Map();
+  const totals  = new Array(nBins).fill(0);
+  const variety = new Array(nBins).fill(0);
+  const seen = Array.from({ length: nBins }, () => new Set());
+  for (const r of (results || [])) {
+    const b = r.slot - firstSlot;
+    if (b < 0 || b >= nBins) continue;                         // defensive
+    let s = bySci.get(r.sci);
+    if (!s) { s = { sci: r.sci, com: r.com, total: 0, bins: new Array(nBins).fill(0) }; bySci.set(r.sci, s); }
+    s.bins[b] += r.n; s.total += r.n;
+    totals[b] += r.n;
+    if (!seen[b].has(r.sci)) { seen[b].add(r.sci); variety[b] += 1; }
+  }
+
+  // --- Trim all-zero bins at both ends so the river fills the width with the
+  //     actual span of song. Overnight, "the last 12 h" trails off into dead
+  //     quiet; dropping the empty edges keeps the stream honest (interior lulls
+  //     survive) instead of wasting a third of the chart on silence. ---
+  let lo = 0, hi = nBins - 1;
+  while (lo < hi && totals[lo] === 0) lo++;
+  while (hi > lo && totals[hi] === 0) hi--;
+  const MIN_BINS = 8;                                          // a single busy bin still reads as a river
+  if (hi - lo + 1 < MIN_BINS) {
+    lo = Math.max(0, hi - (MIN_BINS - 1));                     // prefer to show the lead-up (extend earlier)
+    if (hi - lo + 1 < MIN_BINS) hi = Math.min(nBins - 1, lo + (MIN_BINS - 1));
+  }
+  const endsAtNow = hi === nBins - 1;                          // did we keep the bin that contains "now"?
+  const vis = hi - lo + 1;
+  const cut = (a) => a.slice(lo, hi + 1);
+  for (const s of bySci.values()) s.bins = cut(s.bins);       // every per-bin array trims to [lo, hi]
+
+  const all  = [...bySci.values()].sort((a, b) => b.total - a.total);
+  const kept = all.slice(0, top);
+  const rest = all.slice(top);
+  let others = null;
+  if (rest.length) {
+    const bins = new Array(vis).fill(0);
+    let tot = 0;
+    for (const s of rest) { for (let i = 0; i < vis; i++) bins[i] += s.bins[i]; tot += s.total; }
+    others = { total: tot, bins, n_species: rest.length };
+  }
+
+  for (const s of kept) {                                      // peak bin → where its bird floats
+    let p = 0, pn = -1;
+    for (let i = 0; i < vis; i++) if (s.bins[i] > pn) { pn = s.bins[i]; p = i; }
+    s.peak_bin = p;
+  }
+
+  const pad = (x) => String(x).padStart(2, '0');               // local bin-start labels (visible range only)
+  const bin_starts = [];
+  for (let i = lo; i <= hi; i++) {
+    const d = new Date((firstSlot + i) * iv * 1000);           // local-aligned epoch read as UTC = local wall clock
+    bin_starts.push(`${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`);
+  }
+
+  const localNow = new Date((now + off) * 1000);
+  const now_local = { hour: localNow.getUTCHours(), minute: localNow.getUTCMinutes(),
+                      frac: localNow.getUTCHours() + localNow.getUTCMinutes() / 60 };
+  const sun = sunArc(env, localNow, offH);
+
+  return json({
+    window_hours: hours, interval_minutes: interval, n_bins: vis,
+    tz_offset_hours: offH, now_local, sun, ends_at_now: endsAtNow,
+    bin_starts, totals_by_bin: cut(totals), variety_by_bin: cut(variety),
+    species: kept, others,
     as_of: new Date().toISOString(),
   });
 }

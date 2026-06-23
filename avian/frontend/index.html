@@ -185,6 +185,38 @@
       <div class="atlas-grid" id="atlasGrid"></div>
     </section>
 
+    <!-- ========== View 4 - Chorus ========== -->
+    <!-- A streamgraph of the last rolling 12h: time runs left (12h ago) to
+         right (now) as a centered "river of song." Each species is a colored
+         ribbon (thickness = its volume that interval); its watercolor
+         illustration floats above the ribbon's peak. Hover/drag reads exact
+         counts; tapping a ribbon or bird follows just that wave. Window-picker
+         independent (fixed 12h) - the picker is hidden while on this view.
+         Built by drawChorus(). See CHORUS-PLAN.md. -->
+    <section class="view" id="v3" aria-label="The last twelve hours">
+      <div class="chorus-wrap" id="chorusWrap">
+        <div class="chorus-controls" id="chorusControls">
+          <div class="chorus-seg" id="chorusInterval" role="tablist" aria-label="time detail">
+            <i class="seg-pill" aria-hidden="true"></i>
+            <button type="button" data-iv="30" aria-current="true">30 min</button>
+            <button type="button" data-iv="60">1 hr</button>
+          </div>
+          <div class="chorus-seg" id="chorusMode" role="tablist" aria-label="view mode">
+            <i class="seg-pill" aria-hidden="true"></i>
+            <button type="button" data-mode="volume" aria-current="true">volume</button>
+            <button type="button" data-mode="mix">mix</button>
+          </div>
+          <button type="button" class="chorus-toggle" id="chorusVariety" aria-pressed="true">variety line</button>
+          <span class="chorus-hint" id="chorusHint">hover to read · tap a bird to follow it</span>
+        </div>
+        <!-- SVG (ribbons/axis/now) + the floating-illustration overlay + scrub
+             readout are all injected here by drawChorus(). -->
+        <div class="chorus-stage" id="chorusStage"></div>
+        <div class="chorus-caption" id="chorusCaption"></div>
+        <div class="chorus-empty" id="chorusEmpty" hidden>No calls in the last twelve hours.</div>
+      </div>
+    </section>
+
   </div>
 </main>
 
@@ -285,6 +317,7 @@
   <button type="button" data-i="0" aria-current="true">collage</button>
   <button type="button" data-i="1">stats</button>
   <button type="button" data-i="2">atlas</button>
+  <button type="button" data-i="3">chorus</button>
 </nav>
 
 

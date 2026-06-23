@@ -64,7 +64,7 @@
   // Each view's title text. The shared static-head shows one of these
   // based on the current view; identical adjacent values mean the title
   // stays put with no fade (collage and stats both say Heard Recently).
-  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Visitors'];
+  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Visitors', 'The Last Twelve Hours'];
   var staticHead = document.querySelector('.static-head');
   var staticTitle = document.getElementById('staticTitle');
   function setTitleForView(i) {
@@ -93,7 +93,7 @@
   var STATS_LEAD = SLIDE_MS - 200;    // stats - begin a touch sooner
   var currentView = 0;                // collage shows first (no go() needed)
   function go(i) {
-    i = Math.max(0, Math.min(2, i));
+    i = Math.max(0, Math.min(3, i));
     // Only a genuine view *switch* replays the entrance. Re-selecting the
     // current view (tapping its nav button, or a same-bird re-highlight that
     // calls go() while already there) must not retrigger the load-in.
@@ -103,12 +103,16 @@
     btns.forEach(function (b, j) { b.setAttribute('aria-current', j === i ? 'true' : 'false'); });
     syncPill(slider);
     setTitleForView(i);
+    // Chorus has its own in-view time controls (fixed 12h), so the global
+    // top-bar window picker is hidden while on it and restored elsewhere.
+    if (winPick) winPick.hidden = (i === 3);
     if (!switching) return;
     // Replay the view's entrance animation on switch (collage bloom,
-    // stats left-to-right, atlas row-by-row).
+    // stats left-to-right, atlas row-by-row, chorus ribbons-then-birds).
     if (i === 0) playCollageEntrance();
     else if (i === 1) playActiveStatsEntrance(STATS_LEAD);
     else if (i === 2) playAtlasEntrance(SWITCH_LEAD);
+    else if (i === 3) playChorusEntrance(document.getElementById('chorusStage'), SWITCH_LEAD);
   }
   btns.forEach(function (b) { b.addEventListener('click', function () { go(+b.dataset.i); }); });
 
@@ -242,14 +246,61 @@
     });
   });
 
+  // ---- Chorus controls (4th view) ----
+  // interval (30m/1h) re-bins the river => REFETCH then redraw; mode (volume/mix)
+  // and the variety line are pure client transforms => redraw only. All persist.
+  var chorusInterval = (+readLS('bird:chorusInterval', '30') === 60) ? 60 : 30;
+  var chorusMode     = (readLS('bird:chorusMode', 'volume') === 'mix') ? 'mix' : 'volume';
+  var chorusVariety  = readLS('bird:chorusVariety', '1') !== '0';
+  var chorusIntervalEl = document.getElementById('chorusInterval');
+  var chorusModeEl     = document.getElementById('chorusMode');
+  var chorusVarietyEl  = document.getElementById('chorusVariety');
+  if (chorusIntervalEl) {
+    [].forEach.call(chorusIntervalEl.querySelectorAll('button'), function (b) {
+      b.setAttribute('aria-current', (+b.dataset.iv === chorusInterval) ? 'true' : 'false');
+    });
+    chorusIntervalEl.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      [].forEach.call(chorusIntervalEl.querySelectorAll('button'), function (x) { x.setAttribute('aria-current', x === b ? 'true' : 'false'); });
+      chorusInterval = +b.dataset.iv;
+      writeLS('bird:chorusInterval', String(chorusInterval));
+      syncPill(chorusIntervalEl);
+      fetchChorus().then(function () { drawChorus(true); });   // n_bins changes -> refetch
+    });
+  }
+  if (chorusModeEl) {
+    [].forEach.call(chorusModeEl.querySelectorAll('button'), function (b) {
+      b.setAttribute('aria-current', (b.dataset.mode === chorusMode) ? 'true' : 'false');
+    });
+    chorusModeEl.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      [].forEach.call(chorusModeEl.querySelectorAll('button'), function (x) { x.setAttribute('aria-current', x === b ? 'true' : 'false'); });
+      chorusMode = b.dataset.mode;
+      writeLS('bird:chorusMode', chorusMode);
+      syncPill(chorusModeEl);
+      drawChorus(true);   // pure re-render
+    });
+  }
+  if (chorusVarietyEl) {
+    chorusVarietyEl.setAttribute('aria-pressed', chorusVariety ? 'true' : 'false');
+    chorusVarietyEl.addEventListener('click', function () {
+      chorusVariety = !chorusVariety;
+      writeLS('bird:chorusVariety', chorusVariety ? '1' : '0');
+      chorusVarietyEl.setAttribute('aria-pressed', chorusVariety ? 'true' : 'false');
+      drawChorus(true);
+    });
+  }
+
   // Open-space click advances these segmented toggles to the next option.
   wireToggleAdvance(slider);
   wireToggleAdvance(winPick);
   wireToggleAdvance(atlasSortEl);
   wireToggleAdvance(statsChartEl);
   wireToggleAdvance(statsSideEl);
+  wireToggleAdvance(chorusIntervalEl);
+  wireToggleAdvance(chorusModeEl);
   wireToggleAdvance(document.getElementById('modalPoseToggle'));
-  function syncAllPills() { syncPill(slider); syncPill(winPick); if (atlasSortEl) syncPill(atlasSortEl); if (statsChartEl) syncPill(statsChartEl); if (statsSideEl) syncPill(statsSideEl); if (framePick) syncPill(framePick); }
+  function syncAllPills() { syncPill(slider); syncPill(winPick); if (atlasSortEl) syncPill(atlasSortEl); if (statsChartEl) syncPill(statsChartEl); if (statsSideEl) syncPill(statsSideEl); if (framePick) syncPill(framePick); if (chorusIntervalEl) syncPill(chorusIntervalEl); if (chorusModeEl) syncPill(chorusModeEl); }
   // The buttons size from text content; wait for fonts so width is correct.
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(syncAllPills);
@@ -954,6 +1005,7 @@
     hourly: null,       // ?action=hourly&hours=N - per-clock-hour bins for the Day Dial (refetched on picker change)
     facts: null,        // ?action=facts - ordered Field Notes for the right cell (refetched on poll)
     rhythm: null,       // ?action=rhythm&days=N - per-species 24h bins for the Day Rhythm (FIXED lookback, NOT the picker)
+    chorus: null,       // ?action=chorus&hours=12&interval=N - per-species interval bins for the Chorus streamgraph (FIXED 12h, NOT the picker)
   };
 
   // Derived chart arrays, backfilled so 30 buckets always exist.
@@ -1170,6 +1222,24 @@
   // hour (server-side) so dawn singers sit on top and the ridges cascade down
   // the day. A daylight band + "now" line echo the Day Dial; a hover/drag
   // scrubber reads the cross-section ("8-9am: Robin 12, Cardinal 8, ...").
+  // Catmull-Rom -> cubic Bezier through pts [[x,y],...] (tension 1/6). Returns a
+  // path string that STARTS with an M at pts[0] (a self-contained open curve).
+  // Shared by the Day Rhythm ridgeline and the Chorus streamgraph; for a closed
+  // ribbon, append a second smoothPath() with its leading M swapped to L (see
+  // drawChorus) so the boundary curves join without a stray subpath break.
+  function smoothPath(pts) {
+    if (pts.length < 2) return '';
+    function f(x) { return x.toFixed(2); }
+    var d = 'M' + f(pts[0][0]) + ' ' + f(pts[0][1]);
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+      var c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      var c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += 'C' + f(c1x) + ' ' + f(c1y) + ' ' + f(c2x) + ' ' + f(c2y) + ' ' + f(p2[0]) + ' ' + f(p2[1]);
+    }
+    return d;
+  }
+
   function drawDayRhythm(animate) {
     var host = document.getElementById('statsRhythm');
     if (!host) return;
@@ -1188,19 +1258,8 @@
 
     function xForH(h) { return plotL + (h / 24) * plotW; }
     function f(x) { return x.toFixed(2); }
-
-    // Catmull-Rom -> cubic Bezier through pts [[x,y],...] (tension 1/6).
-    function smoothPath(pts) {
-      if (pts.length < 2) return '';
-      var d = 'M' + f(pts[0][0]) + ' ' + f(pts[0][1]);
-      for (var i = 0; i < pts.length - 1; i++) {
-        var p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
-        var c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
-        var c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
-        d += 'C' + f(c1x) + ' ' + f(c1y) + ' ' + f(c2x) + ' ' + f(c2y) + ' ' + f(p2[0]) + ' ' + f(p2[1]);
-      }
-      return d;
-    }
+    // smoothPath() is a shared module-level helper (lifted out of this closure so
+    // the Chorus streamgraph can reuse the exact same Catmull-Rom spline).
 
     var s = ['<svg class="rhythm-svg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="When each species is heard across the day">'];
 
@@ -1341,6 +1400,369 @@
       }
     });
   })();
+
+  // ======================= Chorus: 12h streamgraph =======================
+  // A centered streamgraph (ThemeRiver) of the last rolling 12h. Time runs
+  // left->right (12h ago -> now); the stack is centered on a wandering baseline
+  // so the whole reads as an organic flowing river - wide = busy, thin = quiet.
+  // Each species is one ribbon (thickness = its volume that interval) and its
+  // watercolor illustration floats over the ribbon's peak. Reuses the shared
+  // smoothPath() Catmull-Rom spline for the ribbon boundaries. Data is
+  // DATA.chorus from /api/chorus (FIXED 12h, NOT the window picker). Hover/drag
+  // reads exact per-interval counts; tapping a ribbon or bird follows just that
+  // wave. See CHORUS-PLAN.md.
+  var CH_W = 1000, CH_H = 460, CH_L = 10, CH_R = 990, CH_T = 46, CH_B = 414;
+  var CH_MID = (CH_T + CH_B) / 2, CH_PLOTW = CH_R - CH_L;
+
+  // Stable per-species ribbon hue: hash sci -> 1..12 (the --ch-* palette) so a
+  // bird keeps its colour across renders, intervals, and sessions.
+  function chorusHue(sci) {
+    var h = 0; for (var i = 0; i < sci.length; i++) h = (h * 31 + sci.charCodeAt(i)) >>> 0;
+    return (h % 12) + 1;
+  }
+  // argmax index of a numeric array (the "others" ribbon's peak bin).
+  function argMax(arr) { var p = 0, pn = -1; for (var i = 0; i < arr.length; i++) if (arr[i] > pn) { pn = arr[i]; p = i; } return p; }
+  // "HH:MM" tail of a bin_starts entry -> [h, m]; -> compact clock label "6a"/"6:30a".
+  function chorusHM(CH, i) { var m = /(\d\d):(\d\d)\s*$/.exec((CH.bin_starts || [])[i] || ''); return m ? [+m[1], +m[2]] : [0, 0]; }
+  function chorusClock(h, m) { var hr = ((h % 24) + 24) % 24, ap = hr < 12 ? 'a' : 'p', h12 = (hr % 12) || 12; return m ? (h12 + ':' + (m < 10 ? '0' : '') + m + ap) : (h12 + ap); }
+
+  // Cheap render signature so a no-op 30s poll doesn't blow away an active
+  // hover/isolate (the river only changes on a new detection or a bin-boundary
+  // slide). animate=true (a real interaction/switch) always re-renders.
+  var _chorusSig = null;
+  var _chorusActive = null;   // sci of the currently isolated ("followed") ribbon
+
+  function drawChorus(animate) {
+    var stage = document.getElementById('chorusStage');
+    if (!stage) return;
+    var cap   = document.getElementById('chorusCaption');
+    var empty = document.getElementById('chorusEmpty');
+    var CH = DATA.chorus;
+    var sp = (CH && CH.species) || [];
+    var N  = (CH && CH.n_bins) || 0;
+    var hasCalls = CH && N && (CH.totals_by_bin || []).some(function (v) { return v > 0; });
+
+    if (!hasCalls) {
+      stage.innerHTML = ''; if (cap) cap.textContent = '';
+      if (empty) empty.hidden = false;
+      _chorusSig = null; _chorusActive = null;
+      return;
+    }
+    if (empty) empty.hidden = true;
+
+    var sig = N + '|' + CH.interval_minutes + '|' + chorusMode + '|' + (chorusVariety ? 1 : 0)
+            + '|' + ((CH.bin_starts || [])[0] || '') + '|' + (CH.totals_by_bin || []).join(',')
+            + '|' + sp.map(function (s) { return s.sci + ':' + s.total; }).join(',')
+            + '|' + (CH.others ? CH.others.total : 0);
+    if (!animate && sig === _chorusSig && stage.querySelector('.chorus-svg')) return;
+    _chorusSig = sig;
+
+    var isMobile = (window.innerWidth || 800) <= 700;
+    var totals = CH.totals_by_bin || [];
+
+    function xForBin(i) { return CH_L + ((i + 0.5) / N) * CH_PLOTW; }
+    function f(x) { return Math.round(x * 100) / 100; }
+
+    // ---- species order: inside-out by peak bin (earliest peaks toward the
+    // centre, alternating outward) for a balanced streamgraph; "others" rides
+    // the outer fringe. ----
+    var byPeak = sp.slice().sort(function (a, b) { return (a.peak_bin - b.peak_bin) || (b.total - a.total); });
+    var topArr = [], botArr = [];
+    byPeak.forEach(function (s, i) { (i % 2 ? topArr.unshift(s) : botArr.push(s)); });
+    var ordered = topArr.concat(botArr);
+    if (CH.others && CH.others.total > 0) {
+      ordered = ordered.concat([{ sci: '__others__', com: CH.others.n_species + ' more species',
+        total: CH.others.total, bins: CH.others.bins, peak_bin: argMax(CH.others.bins), isOthers: true }]);
+    }
+
+    // ---- value + y-scale (mode-aware) ----
+    function val(s, i) {
+      var b = (s.bins[i] || 0);
+      if (chorusMode === 'mix') { var t = totals[i]; return t > 0 ? b / t : 0; }
+      return b;
+    }
+    var bandH = (CH_B - CH_T) * 0.60;     // leaves headroom above/below for floating birds
+    var maxStack = 1;
+    if (chorusMode !== 'mix') for (var bi = 0; bi < N; bi++) maxStack = Math.max(maxStack, totals[bi]);
+    var unit = bandH / maxStack;          // px per detection (volume mode)
+
+    // ---- stacked, centered boundaries per ordered species ----
+    ordered.forEach(function (s) { s._top = new Array(N); s._bot = new Array(N); });
+    for (var b = 0; b < N; b++) {
+      var tot = totals[b];
+      var totalH = chorusMode === 'mix' ? (tot > 0 ? bandH : 0) : tot * unit;
+      var cursor = CH_MID - totalH / 2;
+      for (var k = 0; k < ordered.length; k++) {
+        var s = ordered[k];
+        var hgt = chorusMode === 'mix' ? (tot > 0 ? val(s, b) * bandH : 0) : val(s, b) * unit;
+        s._top[b] = cursor; cursor += hgt; s._bot[b] = cursor;
+      }
+    }
+
+    var svg = ['<svg class="chorus-svg" viewBox="0 0 ' + CH_W + ' ' + CH_H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Stream of bird calls over the last twelve hours">'];
+
+    // ---- daylight band (per-bin day/night by local clock; contiguous runs) ----
+    var sun = CH.sun;
+    if (sun && sun.sunrise != null && sun.sunset != null) {
+      var ivH = (CH.interval_minutes || 30) / 60;
+      var dayBin = [];
+      for (var d0 = 0; d0 < N; d0++) { var hm = chorusHM(CH, d0); var hc = (hm[0] + hm[1] / 60 + ivH / 2) % 24; dayBin[d0] = (hc >= sun.sunrise && hc < sun.sunset); }
+      var runS = -1, firstDay = -1;
+      for (var d1 = 0; d1 <= N; d1++) {
+        var on = d1 < N && dayBin[d1];
+        if (on && runS < 0) { runS = d1; if (firstDay < 0) firstDay = d1; }
+        if (!on && runS >= 0) {
+          var x0 = runS === 0 ? CH_L : CH_L + (runS / N) * CH_PLOTW;
+          var x1 = d1 === N ? CH_R : CH_L + (d1 / N) * CH_PLOTW;
+          svg.push('<rect class="chorus-daylight" x="' + f(x0) + '" y="' + CH_T + '" width="' + f(x1 - x0) + '" height="' + (CH_B - CH_T) + '"/>');
+          runS = -1;
+        }
+      }
+      if (firstDay > 0) {   // a dawn divider only if night precedes day in-window
+        var dxw = CH_L + (firstDay / N) * CH_PLOTW;
+        svg.push('<line class="chorus-sun" x1="' + f(dxw) + '" y1="' + CH_T + '" x2="' + f(dxw) + '" y2="' + CH_B + '"/>');
+        svg.push('<text class="chorus-band-lbl" x="' + f(dxw - 6) + '" y="' + (CH_T - 6) + '" text-anchor="end">night</text>');
+        svg.push('<text class="chorus-band-lbl" x="' + f(dxw + 6) + '" y="' + (CH_T - 6) + '" text-anchor="start">daylight</text>');
+      }
+    }
+
+    // ---- ribbons (closed area = top L->R then bottom R->L; crest line on top) ----
+    function ribbonPath(s) {
+      var top = [[CH_L, s._top[0]]], bot = [[CH_L, s._bot[0]]];
+      for (var i = 0; i < N; i++) { var x = xForBin(i); top.push([x, s._top[i]]); bot.push([x, s._bot[i]]); }
+      top.push([CH_R, s._top[N - 1]]); bot.push([CH_R, s._bot[N - 1]]);
+      var crest = smoothPath(top);
+      // close: reuse smoothPath for the reversed bottom, swapping its leading M
+      // to L so the two boundaries join as one subpath (no stray moveto).
+      var area = crest + smoothPath(bot.slice().reverse()).replace(/^M/, 'L') + 'Z';
+      return { area: area, crest: crest };
+    }
+    ordered.forEach(function (s) {
+      var p = ribbonPath(s);
+      var cls = 'chorus-ribbon ' + (s.isOthers ? 'is-others' : 'chorus-h' + chorusHue(s.sci));
+      var esc = String(s.sci).replace(/"/g, '&quot;');
+      svg.push('<g class="' + cls + '" data-sci="' + esc + '">'
+        + '<path class="chorus-fill" d="' + p.area + '"/>'
+        + '<path class="chorus-crest" d="' + p.crest + '"/></g>');
+    });
+
+    // ---- variety line (distinct species per interval, own scale, top strip) ----
+    if (chorusVariety) {
+      var variety = CH.variety_by_bin || [];
+      var vmax = 1; for (var vi = 0; vi < N; vi++) vmax = Math.max(vmax, variety[vi]);
+      var vBase = 92, vH = 46;   // strip sits in the headroom above the stream
+      function vY(i) { return vBase - ((variety[i] || 0) / vmax) * vH; }
+      var vpts = [[CH_L, vY(0)]];
+      for (var v2 = 0; v2 < N; v2++) vpts.push([xForBin(v2), vY(v2)]);
+      vpts.push([CH_R, vY(N - 1)]);
+      svg.push('<path class="chorus-variety" d="' + smoothPath(vpts) + '"/>');
+      svg.push('<text class="chorus-variety-lbl" x="' + (CH_L + 2) + '" y="40">variety · up to ' + Math.max.apply(null, variety.length ? variety : [0]) + ' kinds at once</text>');
+    }
+
+    // ---- time axis (a labeled tick every ~2h) ----
+    var tickEvery = Math.max(1, Math.round(120 / (CH.interval_minutes || 30)));
+    svg.push('<g class="chorus-axis">');
+    for (var t = 0; t < N; t += tickEvery) {
+      var tx = CH_L + (t / N) * CH_PLOTW, hm2 = chorusHM(CH, t);
+      svg.push('<line x1="' + f(tx) + '" y1="' + CH_B + '" x2="' + f(tx) + '" y2="' + (CH_B + 5) + '"/>');
+      svg.push('<text x="' + f(tx) + '" y="' + (CH_B + 18) + '" text-anchor="middle">' + chorusClock(hm2[0], hm2[1]) + '</text>');
+    }
+    svg.push('</g>');
+
+    // ---- "now" edge — only when the river actually reaches the present (after
+    // trimming the overnight quiet, the right edge is often the last call, not now) ----
+    if (CH.ends_at_now !== false) {
+      svg.push('<g class="chorus-now"><line x1="' + CH_R + '" y1="' + CH_T + '" x2="' + CH_R + '" y2="' + CH_B + '"/>'
+        + '<text x="' + CH_R + '" y="' + (CH_T - 4) + '" text-anchor="end">now ▾</text></g>');
+    }
+
+    // ---- scrub line (hidden until hover/drag) ----
+    svg.push('<line class="chorus-scrub" x1="0" y1="' + CH_T + '" x2="0" y2="' + CH_B + '" hidden/>');
+    svg.push('</svg>');
+
+    // ---- floating illustrations overlay ----
+    var realSp = ordered.filter(function (s) { return !s.isOthers; });
+    var sortedTotals = realSp.map(function (s) { return s.total; }).sort(function (a, b) { return b - a; });
+    var flightCut = sortedTotals.length ? sortedTotals[Math.min(4, sortedTotals.length - 1)] : Infinity;
+    // On phones, cap how many birds float (top by volume) so the river stays legible.
+    var floatCap = isMobile ? 8 : realSp.length;
+    var floatSet = {}; realSp.slice().sort(function (a, b) { return b.total - a.total; }).slice(0, floatCap).forEach(function (s) { floatSet[s.sci] = 1; });
+
+    var birds = ['<div class="chorus-birds">'];
+    realSp.forEach(function (s) {
+      if (!floatSet[s.sci]) return;
+      var pb = s.peak_bin, x = xForBin(pb), y = (s._top[pb] + s._bot[pb]) / 2;
+      var base = isMobile ? 8 : 10.5, lo = isMobile ? 30 : 40, hi = isMobile ? 66 : 100;
+      var size = Math.max(lo, Math.min(hi, base * Math.sqrt(s.total)));
+      var pose = s.total >= flightCut ? 2 : 1;
+      var src = avImg(s.sci, pose);
+      var esc = String(s.sci).replace(/"/g, '&quot;');
+      birds.push('<div class="chorus-bird" data-sci="' + esc + '" style="left:' + f(x / CH_W * 100) + '%;top:' + f(y / CH_H * 100) + '%;width:' + f(size / CH_W * 100) + '%">'
+        + '<img src="' + src + '" alt="' + String(s.com || s.sci).replace(/"/g, '&quot;') + '" data-av-fb="1" loading="lazy">'
+        + '<span class="chorus-bird-nm">' + (s.com || s.sci) + '</span></div>');
+    });
+    birds.push('</div>');
+
+    stage.innerHTML = svg.join('') + birds.join('') + '<div class="chorus-tip" hidden></div>';
+
+    // Art fallback: illustrations -> cutouts -> "no art" text label (the global
+    // capture-phase handler is opted out via data-av-fb, so we own the chain and
+    // can detect the FINAL miss - HTTP status is unreliable on Pages).
+    [].forEach.call(stage.querySelectorAll('.chorus-bird img'), function (img) {
+      img.addEventListener('error', function () {
+        if (!img.dataset.cut) { img.dataset.cut = '1'; img.src = img.src.replace('/assets/illustrations/', '/assets/cutouts/'); }
+        else { var host = img.closest('.chorus-bird'); if (host) host.classList.add('noart'); }
+      });
+    });
+
+    if (_chorusActive) applyChorusActive(stage, _chorusActive);   // re-assert isolate after a live re-render
+    drawChorusCaption(CH, sp);
+    wireChorusScrub(stage, CH, N);
+    wireChorusInteract(stage);
+    if (animate) playChorusEntrance(stage);
+  }
+
+  // Plain-English read of the current river (matches the site's caption voice).
+  function drawChorusCaption(CH, sp) {
+    var cap = document.getElementById('chorusCaption');
+    if (!cap) return;
+    var totals = CH.totals_by_bin || [];
+    var total = totals.reduce(function (a, b) { return a + b; }, 0) + (CH.others ? CH.others.total : 0);
+    var nSpecies = sp.length + (CH.others ? CH.others.n_species : 0);
+    var N = CH.n_bins || totals.length;
+    var pk = argMax(totals), hm = chorusHM(CH, pk);
+    var loud = sp.slice().sort(function (a, b) { return b.total - a.total; })[0];
+    var when = chorusClock(hm[0], hm[1]);
+    var dawn = (CH.sun && CH.sun.sunrise != null && Math.abs((hm[0] + hm[1] / 60) - CH.sun.sunrise) <= 1.5) ? ' — the dawn chorus —' : '';
+    // Span the river actually covers (its empty edges were trimmed off): first
+    // bin's start → now, or → the last call's end if it's since gone quiet.
+    var startHM = chorusHM(CH, 0), startT = chorusClock(startHM[0], startHM[1]);
+    var endsNow = CH.ends_at_now !== false;
+    var lastHM = chorusHM(CH, N - 1), endMin = lastHM[0] * 60 + lastHM[1] + (CH.interval_minutes || 30);
+    var endT = endsNow ? 'now' : chorusClock(Math.floor(endMin / 60), endMin % 60);
+    cap.innerHTML = '<b>' + nSpecies + ' species</b> · <b>' + fmtN(total) + (total === 1 ? ' call' : ' calls') + '</b> from <b>' + startT + '</b> to <b>' + endT + '</b>. '
+      + 'Busiest around <b>' + when + '</b>' + dawn + (loud ? ', led by the <b>' + (loud.com || loud.sci) + '</b>' : '') + '.' + (endsNow ? '' : ' Quiet since then.') + ' '
+      + 'Each bird floats above its ribbon at the moment it was loudest; the river is widest when the most birds were calling at once.';
+  }
+
+  // Hover/drag a vertical scrubber; the readout ranks that interval's species by
+  // ABSOLUTE count, with tiny illustration thumbnails. Mirrors wireRhythmScrub
+  // (touch + mouse share the handler; one-time outside dismissal).
+  function wireChorusScrub(stage, CH, N) {
+    var svg = stage.querySelector('.chorus-svg');
+    var scrub = stage.querySelector('.chorus-scrub');
+    var tip = stage.querySelector('.chorus-tip');
+    if (!svg || !scrub || !tip) return;
+    var sp = CH.species || [], totals = CH.totals_by_bin || [], variety = CH.variety_by_bin || [];
+    function show(clientX) {
+      var box = svg.getBoundingClientRect();
+      if (!box.width) return;
+      var vx = ((clientX - box.left) / box.width) * CH_W;
+      var bi = Math.floor(((vx - CH_L) / CH_PLOTW) * N);
+      bi = Math.max(0, Math.min(N - 1, bi));
+      var sx = CH_L + ((bi + 0.5) / N) * CH_PLOTW;
+      scrub.setAttribute('x1', sx); scrub.setAttribute('x2', sx); scrub.hidden = false;
+      var ranked = sp.map(function (s) { return { com: s.com || s.sci, sci: s.sci, n: (s.bins || [])[bi] || 0 }; })
+        .filter(function (r) { return r.n > 0; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 5);
+      var hm0 = chorusHM(CH, bi);
+      var endH, endM;
+      if (bi + 1 < N) { var hm1 = chorusHM(CH, bi + 1); endH = hm1[0]; endM = hm1[1]; }
+      else if (CH.ends_at_now !== false && CH.now_local) { endH = CH.now_local.hour; endM = CH.now_local.minute; }
+      else { var add = hm0[1] + (CH.interval_minutes || 30); endH = hm0[0] + Math.floor(add / 60); endM = add % 60; }
+      var rows = ranked.length
+        ? ranked.map(function (r) { return '<div class="row"><img src="' + avImg(r.sci, 1) + '" data-av-fb="1" onerror="this.style.visibility=\'hidden\'" alt=""><span class="c">' + r.com + '</span><span class="n">' + r.n + '</span></div>'; }).join('')
+        : '<div class="empty">— quiet —</div>';
+      tip.innerHTML = '<span class="hd">' + chorusClock(hm0[0], hm0[1]) + '–' + chorusClock(endH, endM) + ' · ' + (variety[bi] || 0) + ' kinds</span>' + rows;
+      tip.hidden = false;
+      // position within the stage, clamped so the pill never clips an edge
+      var sb = stage.getBoundingClientRect();
+      var px = ((clientX - box.left) / box.width) * sb.width + (box.left - sb.left);
+      var tw = tip.offsetWidth || 150;
+      tip.style.left = Math.max(tw / 2 + 4, Math.min(sb.width - tw / 2 - 4, px)) + 'px';
+      tip.style.top = Math.max(0, (box.top - sb.top) + (CH_T / CH_H) * box.height + 6) + 'px';
+    }
+    function hide() { scrub.hidden = true; tip.hidden = true; }
+    svg.addEventListener('mousemove', function (e) { show(e.clientX); });
+    svg.addEventListener('mouseleave', hide);
+    svg.addEventListener('touchstart', function (e) { if (e.touches[0]) show(e.touches[0].clientX); }, { passive: true });
+    svg.addEventListener('touchmove', function (e) { if (e.touches[0]) show(e.touches[0].clientX); }, { passive: true });
+    svg.addEventListener('touchend', hide);
+    if (!wireChorusScrub._wired) {
+      wireChorusScrub._wired = true;
+      document.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.chorus-svg')) return;
+        document.querySelectorAll('.chorus-tip').forEach(function (t) { t.hidden = true; });
+        document.querySelectorAll('.chorus-scrub').forEach(function (l) { l.hidden = true; });
+      });
+    }
+  }
+
+  // Cross-highlight (hover a ribbon OR its bird -> both light up) + tap-to-isolate
+  // (tap a ribbon or bird -> follow just that wave; tap empty space -> clear).
+  // Delegated off the stage so it survives the periodic re-render.
+  function applyChorusActive(stage, sci) {
+    stage.classList.toggle('has-active', !!sci);
+    stage.querySelectorAll('[data-sci]').forEach(function (el) {
+      el.classList.toggle('is-active', !!sci && el.getAttribute('data-sci') === sci);
+    });
+  }
+  function wireChorusInteract(stage) {
+    if (stage._choWired) return;     // delegated handlers persist across re-renders
+    stage._choWired = true;
+    function setHover(sci, on) {
+      stage.querySelectorAll('[data-sci="' + (sci || '').replace(/"/g, '\\"') + '"]').forEach(function (el) { el.classList.toggle('is-hover', on); });
+    }
+    stage.addEventListener('mouseover', function (ev) {
+      var el = ev.target.closest && ev.target.closest('[data-sci]');
+      if (el) setHover(el.getAttribute('data-sci'), true);
+    });
+    stage.addEventListener('mouseout', function (ev) {
+      var el = ev.target.closest && ev.target.closest('[data-sci]');
+      if (!el) return;
+      var to = ev.relatedTarget;
+      if (to && el.contains(to)) return;
+      setHover(el.getAttribute('data-sci'), false);
+    });
+    stage.addEventListener('click', function (ev) {
+      var el = ev.target.closest && ev.target.closest('[data-sci]');
+      if (!el) return;
+      ev.stopPropagation();
+      var sci = el.getAttribute('data-sci');
+      _chorusActive = (_chorusActive === sci) ? null : sci;
+      applyChorusActive(stage, _chorusActive);
+    });
+    if (!wireChorusInteract._outside) {
+      wireChorusInteract._outside = true;
+      document.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('#chorusStage [data-sci]')) return;
+        var st = document.getElementById('chorusStage');
+        if (st) { _chorusActive = null; applyChorusActive(st, null); }
+      });
+    }
+  }
+
+  // Ribbons rise + fade (staggered by stack order), then the birds settle in
+  // (staggered by x). Matches the site's entrance vocabulary; reduced-motion off.
+  function playChorusEntrance(stage, lead) {
+    if (!stage) return;
+    lead = lead || 0;
+    var ribbons = [].slice.call(stage.querySelectorAll('.chorus-ribbon'));
+    var birds = [].slice.call(stage.querySelectorAll('.chorus-bird'))
+      .sort(function (a, b) { return (parseFloat(a.style.left) || 0) - (parseFloat(b.style.left) || 0); });
+    // Ribbons rise (by stack order); birds begin settling in left->right while the
+    // river is still forming (overlap), so the whole reveal stays snappy (~1.1s).
+    var rStep = 22, bStep = 26, birdsLead = lead + 300;
+    ribbons.forEach(function (el, i) { el.classList.remove('entering'); el.style.animationDelay = Math.round(lead + i * rStep) + 'ms'; });
+    birds.forEach(function (el, i) { el.classList.remove('entering'); el.style.animationDelay = Math.round(birdsLead + i * bStep) + 'ms'; });
+    void stage.offsetWidth;
+    ribbons.forEach(function (el) { el.classList.add('entering'); });
+    birds.forEach(function (el) { el.classList.add('entering'); });
+    var maxEnd = Math.max(lead + ribbons.length * rStep + 460, birdsLead + birds.length * bStep + 420);
+    setTimeout(function () {
+      ribbons.forEach(function (el) { el.classList.remove('entering'); el.style.animationDelay = ''; });
+      birds.forEach(function (el) { el.classList.remove('entering'); el.style.animationDelay = ''; });
+    }, maxEnd + 80);
+  }
 
   // ---- Side text lists (real Pi data) ----
   function renderStatsLists() {
@@ -1661,6 +2083,16 @@
     drawActiveStatsChart(animate);
     drawActiveSidePanel(animate);
     renderAtlas(animate);
+    drawChorus(animate);
+  }
+
+  // Chorus is window-independent (always 12h) but interval-dependent (a client
+  // control), so it has its own fetch keyed off chorusInterval. Resolves having
+  // set DATA.chorus; the resolved value is unused by refreshAll's Promise.all.
+  function fetchChorus() {
+    return fetchJson(AV_API + '/api/birdnet-api.php?action=chorus&hours=12&interval=' + chorusInterval)
+      .then(function (j) { DATA.chorus = j; })
+      .catch(function () { /* keep last good river on a failed poll */ });
   }
 
   function refreshRecent(animate) {
@@ -1692,6 +2124,7 @@
       fetchJson(AV_API + '/api/birdnet-api.php?action=hourly&hours=' + forHours).catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=facts').catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=rhythm&days=14').catch(function () { return null; }),
+      fetchChorus(),   // sets DATA.chorus itself; window-independent (fixed 12h)
     ]).then(function (parts) {
       DATA.stats = parts[0];
       DATA.lifelist = parts[1];
