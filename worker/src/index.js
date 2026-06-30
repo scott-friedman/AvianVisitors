@@ -14,6 +14,9 @@
  *                          collage polls this every ~5–10 s.
  *   GET  /api/{stats,lifelist,timeseries,species,firstseen}  (or ?action=)
  *                        — reimplements avian/api/birdnet-api.php against D1.
+ *   GET  /api/coverage   — art + song-signature gap lists (D1 life list diffed
+ *                          against Pages art-manifest.json + signatures.json) for
+ *                          the HA admin page. See ../BIRDS-DASHBOARD.md.
  *
  * Storage: D1 `avian-detections`, table detections(id, sci, com, conf, ts,
  * file), ts = unix seconds (UTC). Audio clips live in R2 (`avian-clips`, 7-day
@@ -102,6 +105,9 @@ export default {
       }
       if (path === '/api/wiki' && request.method === 'GET') {
         return await wiki(url);
+      }
+      if (path === '/api/coverage' && request.method === 'GET') {
+        return await coverage(env);
       }
       if (path.startsWith('/api/')) {
         return await queryApi(request, env, url);
@@ -706,6 +712,94 @@ async function lifelist(env, tz) {
       ORDER BY MIN(ts) ASC`
   ).bind(tz, tz).all();
   return json({ species: results || [], as_of: new Date().toISOString() });
+}
+
+// ---- coverage (/api/coverage): art + song-signature gaps for the admin page --
+// Diffs the D1 life list against the art slugs (Pages art-manifest.json) and the
+// song-signature set (Pages signatures.json) and returns the per-species gaps the
+// HA "Barry's Birds" admin page lists + alerts on. Read-only, no secret (no
+// metered work). See ../BIRDS-DASHBOARD.md.
+//
+// Pages serves a 200 HTML fallback for a missing asset, so we read the manifest
+// (a real JSON list) rather than probing image URLs and trusting the status code.
+// If a manifest can't be fetched/parsed we degrade to NO gap for that dimension
+// (artSet/sigSet stay null → empty array) so a transient Pages hiccup can't
+// false-alarm "all art missing"; the *_ok flags say which lists are trustworthy.
+
+// Scientific names with no `type:song` clip on xeno-canto by design — a missing
+// signature here is expected, so they're excluded from `signature_addable` (the
+// list alerts fire on). Mirrors the EXEMPT note in build-signatures / CLAUDE.md.
+const COVERAGE_SIG_EXEMPT = new Set([
+  'Archilochus colubris',   // Ruby-throated Hummingbird
+  'Dryobates villosus',     // Hairy Woodpecker
+  'Sphyrapicus varius',     // Yellow-bellied Sapsucker
+]);
+
+// Same slug rule as apt.js slugify() + the illustration filenames.
+function slugifySci(sci) {
+  return String(sci).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+async function fetchJsonAsset(u) {
+  try {
+    const r = await fetch(u, {
+      headers: { 'User-Agent': 'avian-worker/coverage' },
+      cf: { cacheTtl: 300, cacheEverything: true },
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function coverage(env) {
+  const base = (env.PAGES_BASE || 'https://barrysbirds.pages.dev').replace(/\/+$/, '');
+
+  // Detected species (life list), heaviest hitters first so the gap lists read
+  // "most-heard missing bird" at the top.
+  const { results } = await env.DB.prepare(
+    `SELECT sci, com, COUNT(*) AS n
+       FROM detections
+      GROUP BY sci
+      ORDER BY COUNT(*) DESC`
+  ).all();
+  const detected = results || [];
+
+  // Art slugs + signature keys live in Pages (decoupled from the Worker, so art
+  // and signatures expand on a Pages redeploy with no Worker change).
+  const [manifest, sigs] = await Promise.all([
+    fetchJsonAsset(`${base}/assets/art-manifest.json`),
+    fetchJsonAsset(`${base}/assets/signatures.json`),
+  ]);
+  const artSet = manifest && Array.isArray(manifest.slugs) ? new Set(manifest.slugs) : null;
+  const sigSet = sigs && sigs.species ? new Set(Object.keys(sigs.species)) : null;
+
+  const art_missing = [];
+  const signature_missing = [];
+  const signature_addable = [];
+  for (const r of detected) {
+    const row = { sci: r.sci, com: r.com, n: r.n };
+    if (artSet && !artSet.has(slugifySci(r.sci))) art_missing.push(row);
+    if (sigSet && !sigSet.has(r.sci)) {
+      signature_missing.push(row);
+      if (!COVERAGE_SIG_EXEMPT.has(r.sci)) signature_addable.push(row);
+    }
+  }
+
+  return json({
+    art_missing,
+    signature_missing,
+    signature_addable,
+    totals: {
+      detected: detected.length,
+      with_art: artSet ? artSet.size : null,
+      with_signature: sigSet ? sigSet.size : null,
+    },
+    art_manifest_ok: artSet != null,
+    signatures_ok: sigSet != null,
+    as_of: new Date().toISOString(),
+  }, 200, { 'Cache-Control': 'public, max-age=300' });
 }
 
 async function timeseries(env, url, tz, now) {

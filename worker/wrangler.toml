@@ -42,6 +42,11 @@ SITE_LON = "-71.417"
 # to a pure-white, animation-free collage (see avian/frontend/index.html).
 FRAME_URL = "https://barrysbirds.pages.dev/?frame=1"
 
+# Pages origin the Worker reads back for GET /api/coverage — the art-manifest.json
+# (illustration slugs) and signatures.json (song-signature species) it diffs the
+# D1 life list against. Same host as FRAME_URL, sans the ?frame=1 query.
+PAGES_BASE = "https://barrysbirds.pages.dev"
+
 # Liveness threshold for GET /api/status. The Pi pings POST /api/heartbeat every
 # 15 min, so 2700 s (45 min) = 3 missed pings before /api/status returns 503.
 # Point an external uptime monitor (UptimeRobot, etc.) at /api/status to get alerted.

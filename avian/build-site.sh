@@ -26,6 +26,17 @@ cp "$ROOT"/avian/frontend/index.html \
 cp -R "$ROOT"/avian/assets/illustrations "$OUT/assets/"
 cp -R "$ROOT"/avian/assets/cutouts "$OUT/assets/"
 
+# art-manifest.json: the set of illustration slugs (perched <slug>.png only) so
+# the Worker's GET /api/coverage can compute the "detected but no art" gap by
+# reading a real JSON list — Pages serves a 200 HTML fallback for a missing .png,
+# so probing image URLs is unreliable. Slug = filename sans .png (already the
+# apt.js slugify of the scientific name).
+ls "$OUT"/assets/illustrations/*.png \
+  | sed -E 's#.*/##; /-2\.png$/d; s/\.png$//' \
+  | sort \
+  | awk 'BEGIN{printf "{\"slugs\":["} {printf "%s\"%s\"", (NR>1?",":""), $0} END{print "]}"}' \
+  > "$OUT/assets/art-manifest.json"
+
 # Canonical song signatures (precomputed) + the bundled reference clips the
 # bloom plays. Both optional - the site degrades to a hidden bloom without them.
 [ -f "$ROOT/avian/assets/signatures.json" ] && cp "$ROOT"/avian/assets/signatures.json "$OUT/assets/"
