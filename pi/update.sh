@@ -18,7 +18,15 @@ REPO="${AVIAN_REPO:-$HOME/BirdNET-Pi}"
 
 echo "==> git pull --ff-only in $REPO"
 before="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo none)"
-git -C "$REPO" pull --ff-only
+# Fail LOUD if the pull errors (diverged history from a hand-scp'd file, an
+# untracked-file collision, no network) — without this check the script fell
+# through to "already up to date" and exit 0, masking a silent no-update on the
+# box's only remote-update path (REVIEW-TODO B-Low).
+if ! git -C "$REPO" pull --ff-only; then
+  echo "ERROR: git pull FAILED — the box did NOT update." >&2
+  echo "       Inspect with: git -C $REPO status   (diverged/scp'd file? untracked collision?)" >&2
+  exit 1
+fi
 after="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo none)"
 
 if [ "$before" = "$after" ]; then
@@ -34,7 +42,7 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(eval echo "~$USER_NAME")"
 
 echo "==> re-syncing systemd units"
-for svc in avian-forwarder.service avian-heartbeat.service avian-mic-watchdog.service; do
+for svc in avian-forwarder.service avian-heartbeat.service avian-mic-watchdog.service avian-net-watchdog.service; do
   [ -f "$REPO/pi/systemd/$svc" ] || continue
   sed "s|REPLACE_USER|$USER_NAME|; s|REPLACE_HOME|$HOME_DIR|g" "$REPO/pi/systemd/$svc" \
     | sudo tee "/etc/systemd/system/$svc" >/dev/null
@@ -43,6 +51,8 @@ done
   sudo cp "$REPO/pi/systemd/avian-heartbeat.timer" /etc/systemd/system/avian-heartbeat.timer
 [ -f "$REPO/pi/systemd/avian-mic-watchdog.timer" ] && \
   sudo cp "$REPO/pi/systemd/avian-mic-watchdog.timer" /etc/systemd/system/avian-mic-watchdog.timer
+[ -f "$REPO/pi/systemd/avian-net-watchdog.timer" ] && \
+  sudo cp "$REPO/pi/systemd/avian-net-watchdog.timer" /etc/systemd/system/avian-net-watchdog.timer
 
 sudo systemctl daemon-reload
 
@@ -55,6 +65,8 @@ sudo systemctl enable --now avian-heartbeat.timer 2>/dev/null || true
 sudo systemctl restart avian-heartbeat.timer 2>/dev/null || echo "   !! avian-heartbeat.timer not installed"
 sudo systemctl enable --now avian-mic-watchdog.timer 2>/dev/null || true
 sudo systemctl restart avian-mic-watchdog.timer 2>/dev/null || echo "   !! avian-mic-watchdog.timer not installed"
+sudo systemctl enable --now avian-net-watchdog.timer 2>/dev/null || true
+sudo systemctl restart avian-net-watchdog.timer 2>/dev/null || echo "   !! avian-net-watchdog.timer not installed"
 
 # The frame unit owns its own venv + path (frame/install.sh), so update.sh doesn't
 # re-render it — it just re-arms the timer to pick up a pulled display.py. That only

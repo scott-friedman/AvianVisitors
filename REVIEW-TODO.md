@@ -14,20 +14,21 @@ bench**, than after the box ships. Read this alongside [`DEPLOY-SUDBURY.md`](DEP
 
 ---
 
-## Session progress — RESUME HERE (updated 2026-06-19)
+## Session progress — RESUME HERE (updated 2026-07-01)
 
-**Paused mid-backlog at Scott's request.** Done this session (checked + annotated inline below):
-**A-High** (liveness heartbeat), **B-High** (Pi update path), **C-Med** (SSH-posture docs),
-**A-Med** (forwarder offset). **All three ⭐ ship-blockers are complete.**
+**2026-07-01 live-box review pass** (box had been deployed + up 11 days; everything from
+06-19 verified holding: no failed units, no OOM, no throttling, no backlog, watchdog armed,
+clean forwarder/heartbeat logs). Closed this pass: **C-Med** (tunnel-health — generalized to
+a full **net watchdog**, `pi/net-watchdog.sh`), **B-Low** (unattended upgrades), **B-Low**
+(`update.sh` silent-fail), **A-Low** (clock — verified `NTPSynchronized=yes` live). Plus two
+**new findings fixed** (see "Found in the 2026-07-01 live review" below): journald was
+`Storage=volatile` (~4 h of logs, wiped on reboot) and zram sat 100 % full spilling to SD swap.
 
-**Remaining — open `- [ ]` items, suggested order:**
+**Remaining — open `- [ ]` items:**
 1. `[Low]` A — frame render PNG sanity check → `worker/src/index.js` `frame()` (byte floor before cache)
-2. `[Low]` A — clock/`systemd-timesyncd` → `pi/zero2w-tune.sh`
-3. `[Low]` B — unattended security upgrades → `pi/zero2w-tune.sh`
-4. `[Med]` C — tunnel logical-health recovery → new cloudflared reachability watchdog timer
-5. `[Low]` C — standardize frame cadence docs to **hourly** (DECIDED; `frame/install.sh`,
-   `CLAUDE.md`, `PLAN.md` still say "1–2 min" / "15 min" — just make them say hourly)
-6. `[Low]` C — decouple frame signature window → drop the `hours` knob in `frame/display.py`
+2. `[Low]` C — standardize frame cadence docs (live timer fires **5 min**; `frame/install.sh`,
+   `CLAUDE.md`, `PLAN.md` say "1–2 min" / "15 min" / "hourly" — make them say what the unit does)
+3. `[Low]` C — decouple frame signature window → drop the `hours` knob in `frame/display.py`
    (Worker `/frame.png` is hard-coded to 24 h)
 
 **Decisions locked this session (don't re-ask on resume):**
@@ -104,11 +105,31 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   shown on the panel until the data changes.
   **Fix:** sanity-check the PNG (e.g. byte length above a floor) before `INSERT OR REPLACE`.
 
-- [ ] **[Low] Clock dependency on an RTC-less Pi.** `parse_ts` reads `BirdDB.txt` wall-clock as
+- [x] **[Low] Clock dependency on an RTC-less Pi.** `parse_ts` reads `BirdDB.txt` wall-clock as
   Pi-local (`pi/detection-forwarder.py:43-48`). The Zero 2 W has no RTC, so a boot without
   network has a wrong clock until NTP syncs → off timestamps. Low risk (forwarder waits for
   `network-online`; detections need uptime anyway).
   **Fix:** confirm `systemd-timesyncd` is enabled; optionally skip posting until time is synced.
+  **DONE (2026-07-01):** verified live — `timedatectl` shows `NTP=yes`, `NTPSynchronized=yes`,
+  TZ America/New_York. The optional skip-until-synced guard was judged not worth the code
+  (a boot without network produces no detections to mis-stamp anyway).
+
+### Found in the 2026-07-01 live review (both fixed same day)
+
+- [x] **[High] journald was `Storage=volatile` — ~4 h of logs, wiped on every reboot.** Set
+  in `/etc/systemd/journald.conf` (not by our scripts or BirdNET-Pi's installer; likely a
+  PI-RECOVERY-era leftover). Volatile storage is governed by `RuntimeMaxUse` (~9 MB of tmpfs),
+  so the tune script's `SystemMaxUse=200M` was silently ineffective — and after a hardware-
+  watchdog reboot there'd be **zero forensics** for what killed the box.
+  **DONE:** `Storage=persistent` + `SystemMaxUse=200M` (now effective); folded into
+  `pi/zero2w-tune.sh` §8. SD wear is a rounding error vs the recorder's ~8 GB/day of WAVs.
+
+- [x] **[Med] zram sat 100 % full — no spike cushion left.** `/dev/zram0` held 235 of 237 MB;
+  overflow had already pushed 141 MB onto the SD swapfile (the June-19 death lane). Measured
+  lz4 ratio on this workload: only 1.63:1.
+  **DONE:** `ALGO=zstd` + `PERCENT=75` in `/etc/default/zramswap` (≈348 MB device, ~2.5:1
+  typical — more capacity at the same RAM cost); folded into `pi/zero2w-tune.sh` §3. Applied
+  with a reboot (a live zram restart would force ~190 MB back through RAM — don't).
 
 ## B. Remote updating
 
@@ -135,7 +156,7 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   if the frame isn't clone-based. (No runtime-tracked
   files, so `--ff-only` is safe; it fails loud rather than silently merging.)
 
-- [ ] **[Low] `update.sh` can mask a failed pull as "up to date".** It runs `set -uo pipefail`
+- [x] **[Low] `update.sh` can mask a failed pull as "up to date".** It runs `set -uo pipefail`
   (no `-e`), so if `git pull --ff-only` errors (untracked-file collision, diverged history), the
   script falls through with `before == after` and prints "already up to date — nothing to restart"
   & exits 0 — a silent no-update on the box's only remote-update path. Real bite avoided during the
@@ -143,10 +164,17 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   re-align" and memory `avian-pi-ops`).
   **Fix:** check the pull's exit status (or compare `HEAD` to `origin/avian-visitors` after fetch)
   and abort loudly on failure instead of falling through to the no-op path.
+  **DONE (2026-07-01):** `pi/update.sh` now checks the pull's exit status and aborts with a
+  loud ERROR + "inspect with git status" hint instead of falling through.
 
-- [ ] **[Low] Enable unattended security upgrades.** Internet-connected box running for months
+- [x] **[Low] Enable unattended security upgrades.** Internet-connected box running for months
   unattended. **Fix:** `unattended-upgrades` for OS + `cloudflared` patches; fold into the
   tuning script.
+  **DONE (2026-07-01):** folded into `pi/zero2w-tune.sh` §9 + applied live. Debian security
+  (stock origins) **+ the cloudflared repo** (the service runs `--no-autoupdate`; apt is its
+  only patch lane — it was pinned at 2026.6.1 with the lane closed). `Automatic-Reboot=false`,
+  and `apt-daily-upgrade.timer` retimed to 03:30 (stock ~06:00 = dawn chorus, peak-RAM window).
+  Deliberately NOT the raspi kernel/firmware repo — too risky unattended.
 
 ## C. Remote access
 
@@ -167,13 +195,20 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   Strong-password reminder added to `DEPLOY-SUDBURY.md`. (Tighter options — Access app / key auth —
   noted in the script output if you ever want them.)
 
-- [ ] **[Med] The tunnel is the sole way in, with no logical-health recovery.** Once at Dad's,
+- [x] **[Med] The tunnel is the sole way in, with no logical-health recovery.** Once at Dad's,
   `inky.local` is gone and `cloudflared` is your only path (`pi/README.md:124`). Process crashes
-  self-heal (the installed `cloudflared` unit restarts on failure — confirm with
-  `systemctl cat cloudflared`) and the watchdog reboots a hung box, so this is belt-and-suspenders
+  self-heal (the installed `cloudflared` unit restarts on failure — confirmed live:
+  `Restart=on-failure`) and the watchdog reboots a hung box, so this is belt-and-suspenders
   for the rare "tunnel up but not routing" case.
   **Fix:** a cron/timer that restarts `cloudflared` (or reboots) if an outbound reachability check
   has failed for N minutes.
+  **DONE (2026-07-01):** generalized to the whole network stack (a wedged wifi association /
+  wpa_supplicant / DNS was the one failure that still meant "call Dad" — the hardware watchdog
+  doesn't cover it). New `pi/net-watchdog.sh` + `avian-net-watchdog.{service,timer}` (5-min
+  probe of two independent HTTPS endpoints — Worker `/health` + gstatic, ANY success = online
+  so a single-vendor outage can't false-alarm; 15 min down → restart NetworkManager +
+  cloudflared; 45 min → reboot, max once per 6 h, never in the first 15 min of uptime).
+  See `pi/README.md` → "Net watchdog".
 
 - [ ] **[Low] Cadence docs disagree three ways.** `frame/systemd/birdframe.timer` fires hourly
   (`OnUnitActiveSec=1h`), but `frame/install.sh:38` tells the user "every 15 min" and `CLAUDE.md`

@@ -44,9 +44,13 @@ if ! dpkg -s zram-tools >/dev/null 2>&1; then
   apt-get update -qq && apt-get install -y -qq zram-tools || echo "   !! apt install zram-tools FAILED (check network)"
 fi
 cat > /etc/default/zramswap <<'EOF'
-# AvianVisitors zero2w-tune — compressed RAM swap, used before the SD swapfile
-ALGO=lz4
-PERCENT=50
+# AvianVisitors zero2w-tune — compressed RAM swap, used before the SD swapfile.
+# zstd, not lz4: measured on the live box (2026-07-01) lz4 only got 1.63:1 on
+# this workload and the 50%-of-RAM device sat 100% full, spilling to SD swap —
+# zstd (~2.5:1 typical) + a 75% device buys real spike headroom for the same
+# RAM cost, and the 4 cores idle at ~0.3 load so the extra CPU is free.
+ALGO=zstd
+PERCENT=75
 PRIORITY=100
 EOF
 systemctl enable --now zramswap >/dev/null 2>&1 || systemctl enable --now zramswap.service >/dev/null 2>&1 || true
@@ -80,13 +84,55 @@ cat > /etc/NetworkManager/conf.d/wifi-powersave-off.conf <<'EOF'
 wifi.powersave=2
 EOF
 
-echo "== 8. journald cap 200M (prevent a log-overflow lockup months out) =="
-if grep -qE '^#?SystemMaxUse=' /etc/systemd/journald.conf; then
-  sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=200M/' /etc/systemd/journald.conf
+echo "== 8. journald: persistent + capped 200M (post-mortem logs survive a reboot) =="
+# Storage=volatile (found set on the live box, 2026-07-01) keeps only ~4 h of logs
+# in tmpfs and wipes them on every reboot — useless exactly when the hardware
+# watchdog fires, and it silently defeats the SystemMaxUse cap (volatile storage
+# is governed by RuntimeMaxUse instead). Persistent journald writes ~50 MB/day;
+# the recorder already writes ~8 GB/day of WAVs, so the SD wear is a rounding error.
+JC=/etc/systemd/journald.conf
+if grep -qE '^#?Storage=' "$JC"; then
+  sed -i 's/^#\?Storage=.*/Storage=persistent/' "$JC"
 else
-  echo 'SystemMaxUse=200M' >> /etc/systemd/journald.conf
+  echo 'Storage=persistent' >> "$JC"
 fi
+if grep -qE '^#?SystemMaxUse=' "$JC"; then
+  sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=200M/' "$JC"
+else
+  echo 'SystemMaxUse=200M' >> "$JC"
+fi
+grep -E '^(Storage|SystemMaxUse)=' "$JC" | sed 's/^/   /'
+
+echo "== 9. unattended security upgrades (months-unattended, internet-connected box) =="
+if ! dpkg -s unattended-upgrades >/dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq unattended-upgrades || echo "   !! apt install unattended-upgrades FAILED (check network)"
+fi
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+# Debian security comes from the package's stock 50unattended-upgrades origins;
+# this ADDS cloudflared (its apt repo is the tunnel client's only update lane —
+# the service runs --no-autoupdate) and deliberately NOT the raspi firmware/
+# kernel repo (too risky to swap kernels with nobody at the house). Never
+# auto-reboot: detection would be down until someone noticed.
+cat > /etc/apt/apt.conf.d/52avian-unattended <<'EOF'
+Unattended-Upgrade::Origins-Pattern {
+        "origin=cloudflared";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+EOF
+# Run at 03:30, not the stock ~06:00 — dawn chorus is this box's peak-RAM window.
+mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d
+cat > /etc/systemd/system/apt-daily-upgrade.timer.d/avian.conf <<'EOF'
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 03:30
+RandomizedDelaySec=30m
+EOF
+systemctl daemon-reload
+echo "   unattended-upgrades on (Debian security + cloudflared; no auto-reboot; 03:30)"
 
 echo
-echo "== DONE. REBOOT REQUIRED (gpu_mem + watchdog take effect on boot). =="
+echo "== DONE. REBOOT REQUIRED (gpu_mem + watchdog + zram size take effect on boot). =="
 echo "   Detection stays OFF at boot (disabled); start it manually to re-measure."

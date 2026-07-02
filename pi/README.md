@@ -114,6 +114,36 @@ journalctl -u avian-mic-watchdog -n 3 --no-pager
 
 ---
 
+# Net watchdog — `net-watchdog.sh` (auto-recover a stranded box)
+
+The heartbeat catches a dead box, the mic watchdog a deaf one — this un-strands one.
+The tunnel is the **only** way in at Dad's; cloudflared restarts on crash and the
+hardware watchdog reboots a hung kernel, but a wedged wifi association /
+wpa_supplicant / DNS just takes the box offline until someone power-cycles it.
+UptimeRobot would *alert*, nothing would *fix*.
+
+`net-watchdog.sh` runs on a systemd timer (every 5 min): it curls two independent
+HTTPS endpoints (the Worker's `/health` + Google's connectivity check — any success
+= online, so a single-vendor cloud outage can't false-alarm). After **15 min** of
+both failing it restarts NetworkManager + cloudflared; after **45 min** it reboots —
+at most once per 6 h and never in the first 15 min of uptime, so a long ISP outage
+can't reboot-loop the box. Escalation state lives in `/var/lib/avian/`. Runs as root.
+Test the escalation without an outage: run it with `AVIAN_NET_DRYRUN=1
+AVIAN_NET_URLS=https://invalid.invalid AVIAN_NET_HEAL_SECS=1 AVIAN_NET_REBOOT_SECS=2`.
+
+Install (units run from the `~/BirdNET-Pi` clone — see "Updating the Pi" below):
+
+```sh
+sed "s|REPLACE_HOME|$HOME|g" pi/systemd/avian-net-watchdog.service \
+  | sudo tee /etc/systemd/system/avian-net-watchdog.service >/dev/null
+sudo cp pi/systemd/avian-net-watchdog.timer /etc/systemd/system/avian-net-watchdog.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now avian-net-watchdog.timer
+sudo systemctl start avian-net-watchdog.service     # dry-run now (silent no-op if online)
+```
+
+---
+
 # Pi 512 MB survival — `lean-mode.sh` + `zero2w-tune.sh`
 
 The Zero 2 W has **512 MB RAM** and BirdNET's analyzer needs ~150 MB resident. The full
@@ -131,9 +161,11 @@ boot hack if present. **Necessary but not sufficient** — stripping saves only 
 
 ## `zero2w-tune.sh` — make 512 MB actually work
 `sudo bash pi/zero2w-tune.sh`, **then reboot**. Idempotent. Applies:
-- **zram** compressed-RAM swap as the primary lane (~50 % of RAM, lz4) + `vm.swappiness=100`
+- **zram** compressed-RAM swap as the primary lane (75 % of RAM, **zstd**) + `vm.swappiness=100`
   — fast spike absorption, no SD wear. The stock 512 MB SD swapfile stays as a low-priority
   backstop (deliberately **not** grown to 2 GB — a big SD swapfile thrashes the card to death).
+  (Was lz4/50 % until 2026-07-01: measured live, lz4 got only 1.63:1 and the device sat 100 %
+  full, spilling to SD swap; zstd + 75 % buys real spike headroom for the same RAM cost.)
 - **mono capture + 30 s recordings** (`birdnet.conf` `CHANNELS=1`, `RECORDING_LENGTH=30`) —
   less IO; lets the slow CPU keep pace so no backlog builds.
 - **clears the corrupt numba JIT cache** (`*.nbi`/`*.nbc`) — the prior OOM crashes truncated
@@ -141,7 +173,13 @@ boot hack if present. **Necessary but not sufficient** — stripping saves only 
   recompiles a *corrupt* entry, only a missing one).
 - **`gpu_mem=16`** (headless; the Inky panel is SPI, not the GPU) — frees ~48 MB RAM.
 - **hardware watchdog** (`RuntimeWatchdogSec=15`) — auto-reboots a hung box instead of a
-  physical power-cycle. Plus Wi-Fi power-save off and `journald` capped at 200 MB.
+  physical power-cycle. Plus Wi-Fi power-save off.
+- **journald persistent + capped 200 MB** — the box shipped with `Storage=volatile` (~4 h of
+  logs, wiped on reboot: useless exactly when the watchdog fires, and it silently defeats the
+  `SystemMaxUse` cap). Persistent logging costs ~50 MB/day vs the recorder's ~8 GB/day of WAVs.
+- **unattended security upgrades** — Debian security + the cloudflared repo (the tunnel
+  client runs `--no-autoupdate`; apt is its only patch lane), `Automatic-Reboot=false`,
+  retimed to 03:30 (the stock ~06:00 slot is dawn chorus — this box's peak-RAM window).
 
 Also clear any recording backlog before going live (a pile of unanalyzed clips drives
 sustained memory pressure): `rm ~/BirdSongs/StreamData/*.wav`.
@@ -208,10 +246,12 @@ ssh bird-pi
 bash ~/BirdNET-Pi/pi/update.sh     # git pull --ff-only → re-sync units → restart
 ```
 
-`update.sh` is idempotent and a no-op when there's nothing new. It pulls, re-renders
-the forwarder + heartbeat + mic-watchdog units (in case a template changed),
-`daemon-reload`s, and restarts `avian-forwarder` + `avian-heartbeat.timer` +
-`avian-mic-watchdog.timer` + `birdframe.timer`. The
+`update.sh` is idempotent, a no-op when there's nothing new, and **aborts loudly if
+the pull fails** (a diverged/scp'd file, an untracked collision) instead of masking
+it as "up to date". It pulls, re-renders the forwarder + heartbeat + mic-watchdog +
+net-watchdog units (in case a template changed), `daemon-reload`s, and restarts
+`avian-forwarder` + the `avian-heartbeat` / `avian-mic-watchdog` /
+`avian-net-watchdog` / `birdframe` timers. The
 detection engine (BirdNET-Pi) updates the same way it always did — its services are
 unaffected by a glue-only change; a `git pull` simply also carries any base updates.
 

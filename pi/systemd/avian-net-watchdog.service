@@ -1,0 +1,11 @@
+[Unit]
+Description=AvianVisitors net watchdog (self-heal wifi/tunnel; reboot as last resort)
+Documentation=https://github.com/scott-friedman/AvianVisitors
+
+[Service]
+# Runs as root (no User=): it restarts NetworkManager/cloudflared and can reboot.
+# install rewrites the REPLACE_HOME path to match your Pi (see pi/update.sh).
+Type=oneshot
+# Runs from the ~/BirdNET-Pi clone so `git pull` + restart updates it.
+ExecStart=/bin/bash REPLACE_HOME/BirdNET-Pi/pi/net-watchdog.sh
+Nice=10
