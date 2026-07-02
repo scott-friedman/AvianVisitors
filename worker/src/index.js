@@ -394,6 +394,16 @@ async function frame(request, env, url) {
   let png;
   try {
     png = await renderFrame(env, windowHours);
+    // Sanity-gate before caching: a catastrophically broken screenshot (empty,
+    // truncated, not a PNG) must not be cached under this signature — it would
+    // stick on the panel until the data next changes. The floor is deliberately
+    // tiny: a LEGITIMATE frame can be near-blank (a 1H window overnight), so
+    // this catches garbage, not sparseness. Bad render → same stale fallback
+    // as a thrown render error.
+    if (!png || png.length < 1000 ||
+        !(png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47)) {
+      throw new Error(`render produced invalid png (${png ? png.length : 0} bytes)`);
+    }
   } catch (err) {
     const stale = await env.DB.prepare('SELECT png, sig FROM frame_cache WHERE id = 1').first();
     if (stale && stale.png) return pngResponse(stale.png, stale.sig, 'stale');

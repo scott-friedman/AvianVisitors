@@ -7,7 +7,9 @@
 # a Pi Zero 2 W at a relative's house never serves anything.
 base_url = "https://avian-worker.s-friedman.workers.dev"
 
-hours = 24             # window reflected on the frame
+hours = 24             # FALLBACK change-detection window only — normally the shared
+                       # window comes from /api/frame-config (the site's 1H–ALL picker)
+                       # and this is ignored; used only when that endpoint is unreachable
 
 # The ready-made 800x480 PNG, rendered off-Pi by avian-worker's /frame.png
 # (Cloudflare Browser Rendering), gated by its FRAME_KEY secret — put that key

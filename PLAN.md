@@ -12,7 +12,7 @@ We're turning a small Raspberry Pi at Scott's dad's house into a "bird visitors"
 
 To keep the tiny Pi happy, it does as little as possible: it just **listens, tells the cloud "I heard a robin," and downloads a finished picture for the frame.** All the website hosting and image-making happens on **Cloudflare** (Scott's existing account, but in its own separate space — nothing shared with his other project, "foobos"). When a bird is heard, the website updates within about **5–10 seconds**.
 
-What Scott will notice when it's done: visit a web link → see birds appear live as they're heard; glance at the frame → see today's birds, refreshed every minute or two.
+What Scott will notice when it's done: visit a web link → see birds appear live as they're heard; glance at the frame → see today's birds, refreshed within ~5 minutes.
 
 ---
 
@@ -38,10 +38,10 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 - **Repo**: branch `avian-visitors` on `origin` (`scott-friedman/AvianVisitors`). Commits: plan · worker · worker-deploy · pages · frame-port · this status update.
 - **Demo data**: 6 species seeded in prod D1 so the page isn't blank pre-Pi. Clear when the Pi goes live: `wrangler d1 execute avian-detections --remote --command "DELETE FROM detections"`.
-- **Pi**: Zero 2 W at `inky@inky.local`. **BirdNET-Pi installed** (services up; admin UI http://inky.local/ → set sound card + region here; origin repointed to scott-friedman fork). **Frame client live on the panel** (`~/birdframe`, reuses `inky-web`'s venv; inky-web disabled; hourly timer). **Forwarder live** (`~/avian/detection-forwarder.py`, tails `BirdDB.txt` → worker; tested end-to-end). **No USB mic yet** ⇒ no real detections.
+- **Pi**: Zero 2 W at `inky@inky.local`. **BirdNET-Pi installed** (services up; admin UI http://inky.local/ → set sound card + region here; origin repointed to scott-friedman fork). **Frame client live on the panel** (`~/birdframe`, reuses `inky-web`'s venv; inky-web disabled; 5-min timer). **Forwarder live** (`~/avian/detection-forwarder.py`, tails `BirdDB.txt` → worker; tested end-to-end). **No USB mic yet** ⇒ no real detections.
 - **Local tooling**: `wrangler` authed (OAuth, account-wide — careful re foobos), `gh` (scott-friedman), Cloudflare MCP, **Google Chrome.app** (off-Pi frame previews), Pillow 11.3.
 
-**Per-phase status:** 0 ✅ · 1 ✅ · 2 ✅ (BirdNET-Pi installed; forwarder live + tested end-to-end — real audio needs the mic) · 3 ✅ · 4 ✅ (frame rendering off-Pi + physically on the panel, hourly) · 5 ✅ (remote-admin tunnel LIVE — `ssh bird-pi`, password-gated; only the CI auto-deploy token still pending).
+**Per-phase status:** 0 ✅ · 1 ✅ · 2 ✅ (BirdNET-Pi installed; forwarder live + tested end-to-end — real audio needs the mic) · 3 ✅ · 4 ✅ (frame rendering off-Pi + physically on the panel, 5-min poll) · 5 ✅ (remote-admin tunnel LIVE — `ssh bird-pi`, password-gated; only the CI auto-deploy token still pending).
 
 **Phase 4 cloud — DONE (2026-06-19):** (a) `?frame=1` strips chrome to a pure-white, animation-free collage (inline script+`<style>` in `avian/frontend/index.html`; apt.js untouched) — Pages deployed. (b) Worker `GET /frame.png` Browser-Renders that view at 800×480, signature-caches the PNG in D1 `frame_cache`, FRAME_KEY-gated — deployed + verified (401 w/o key, miss→hit, dithers to exactly 7 colours). **Browser Rendering confirmed available on the Workers FREE plan** (10 min/day) — the "may need Paid" worry is resolved. Deps: `@cloudflare/puppeteer`, `nodejs_compat` flag, `FRAME_URL` var, `FRAME_KEY` secret (gitignored `worker/.avian-frame-key`).
 
@@ -129,9 +129,9 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Steps**:
   1. Worker `GET /frame.png`: use **Cloudflare Browser Rendering** to screenshot the Pages collage → output **800×480** sized/dithered for the **7.3" 7-color** panel. Cache; only re-render on change.
   2. **Port `frame/display.py`** from 13.3" Spectra-6 (1200×1600, 6-ink) to **800×480 7-color**: geometry, palette, matting. Reference: inky's `/Users/scott/inky/src/inky_web/{display.py,image_processor.py}`. Iterate with `frame/display.py --preview out.png`.
-  3. On the Pi: configure `~/.birdframe/config.toml` with `image_url = <worker>/frame.png`; install `frame/` via `frame/install.sh` (systemd timer; set cadence ~1–2 min). **`shoot=true` is NOT usable** (Zero 2 W has no browser).
+  3. On the Pi: configure `~/.birdframe/config.toml` with `image_url = <worker>/frame.png`; install `frame/` via `frame/install.sh` (systemd timer, 5-min cadence). **`shoot=true` is NOT usable** (Zero 2 W has no browser).
   4. **Disable inky-web** so the frame client owns the panel: `sudo systemctl disable --now inky-web`.
-- **Done when**: a detected bird appears on the physical panel within ~1–2 min; refresh only on change.
+- **Done when**: a detected bird appears on the physical panel within ~5 min; refresh only on change.
 - **Needs Scott**: physical access to confirm the panel renders; ok to disable inky-web.
 
 ## Phase 5 — Remote admin + hardening  ·  ✅ DONE (tunnel live 2026-06-19)
@@ -144,7 +144,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 ## Definition of done (v1)
 
-A real detection on the Pi → appears on the public Pages collage within **~5–10 s** and on the e-ink panel within **~1–2 min**; the **Pi makes only outbound calls** (no open ports); **zero foobos resources touched**.
+A real detection on the Pi → appears on the public Pages collage within **~5–10 s** and on the e-ink panel within **~5 min**; the **Pi makes only outbound calls** (no open ports); **zero foobos resources touched**.
 
 ## Deferred to v2
 

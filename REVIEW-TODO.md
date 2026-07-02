@@ -24,12 +24,12 @@ a full **net watchdog**, `pi/net-watchdog.sh`), **B-Low** (unattended upgrades),
 **new findings fixed** (see "Found in the 2026-07-01 live review" below): journald was
 `Storage=volatile` (~4 h of logs, wiped on reboot) and zram sat 100 % full spilling to SD swap.
 
-**Remaining — open `- [ ]` items:**
-1. `[Low]` A — frame render PNG sanity check → `worker/src/index.js` `frame()` (byte floor before cache)
-2. `[Low]` C — standardize frame cadence docs (live timer fires **5 min**; `frame/install.sh`,
-   `CLAUDE.md`, `PLAN.md` say "1–2 min" / "15 min" / "hourly" — make them say what the unit does)
-3. `[Low]` C — decouple frame signature window → drop the `hours` knob in `frame/display.py`
-   (Worker `/frame.png` is hard-coded to 24 h)
+**Remaining: NONE — backlog fully closed 2026-07-01.** The last three `[Low]` items went in
+the same pass: the frame-PNG sanity gate (committed to `worker/src/index.js`; **goes live with
+the next `wrangler deploy`**, which also ships the staged `/api/coverage` endpoint the HA
+dashboard is waiting on), the cadence docs (CLAUDE.md + PLAN.md now say 5-min poll /
+redraw-on-change, matching `birdframe.timer`), and the signature-window item (found OBSOLETE —
+the 2026-06-22 shared window picker already solved it properly; see the item).
 
 **Decisions locked this session (don't re-ask on resume):**
 - Liveness = **Worker `/api/heartbeat` + `/api/status` (503 when silent)**, alerted by **UptimeRobot** (Scott has an account).
@@ -99,11 +99,17 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   Secret-rotation-needs-restart noted in `pi/README.md` + the forwarder docstring. Verified with
   `/tmp/test_forwarder.py` (round-trip, resume-and-catch-up, first-run-skips-history, truncation).
 
-- [ ] **[Low] Frame render can cache a broken screenshot.** `frame()` caches whatever
+- [x] **[Low] Frame render can cache a broken screenshot.** `frame()` caches whatever
   `renderFrame` returns (`worker/src/index.js:192-195`). If the Pages site serves a blank/error
   page that still screenshots at 200, that bad PNG is cached under the current signature and
   shown on the panel until the data changes.
   **Fix:** sanity-check the PNG (e.g. byte length above a floor) before `INSERT OR REPLACE`.
+  **DONE (2026-07-01):** empty/truncated/non-PNG renders now throw into the existing
+  stale-fallback path instead of being cached. The floor is deliberately tiny (magic bytes +
+  1 KB): a *legitimate* frame can be near-blank (a 1H window overnight), so this catches
+  garbage, not sparseness — a plausible-looking error-page screenshot still passes, accepted
+  for a Low. **Deploy-gated:** committed but live only after the next `wrangler deploy`
+  (which also ships the staged `/api/coverage`).
 
 - [x] **[Low] Clock dependency on an RTC-less Pi.** `parse_ts` reads `BirdDB.txt` wall-clock as
   Pi-local (`pi/detection-forwarder.py:43-48`). The Zero 2 W has no RTC, so a boot without
@@ -210,17 +216,27 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
   cloudflared; 45 min → reboot, max once per 6 h, never in the first 15 min of uptime).
   See `pi/README.md` → "Net watchdog".
 
-- [ ] **[Low] Cadence docs disagree three ways.** `frame/systemd/birdframe.timer` fires hourly
+- [x] **[Low] Cadence docs disagree three ways.** `frame/systemd/birdframe.timer` fires hourly
   (`OnUnitActiveSec=1h`), but `frame/install.sh:38` tells the user "every 15 min" and `CLAUDE.md`
   / `PLAN.md` say "~1–2 min." Harmless but confusing on a future revisit.
   **Fix:** make the docs match the unit (or change the unit); note the panel can lag a new bird
   by up to an hour by design.
+  **DONE (2026-07-01):** the truth had moved again — the live timer fires every **5 min**
+  (the hourly→5-min change shipped 2026-06-19; polls are cheap `no change; skip` runs, the
+  panel redraws only on a signature change). `CLAUDE.md` + `PLAN.md` now say 5 min /
+  redraw-on-change; `frame/install.sh` already said 5 min.
 
-- [ ] **[Low] Frame signature window is coupled by convention, not enforced.** The Pi computes its
+- [x] **[Low] Frame signature window is coupled by convention, not enforced.** The Pi computes its
   change-signature over `hours` (config default 24, `frame/display.py:59`); the Worker's
   `/frame.png` is hard-coded to 24h (`worker/src/index.js:171`). Set `hours ≠ 24` in the Pi config
   and the two disagree about "changed" → the panel under- or over-refreshes.
   **Fix:** drop the `hours` knob for the frame path, or pass it through to the Worker.
+  **OBSOLETE (2026-07-01):** the 2026-06-22 shared window picker solved this properly — both
+  sides now read the SAME window from `/api/frame-config` (display.py fetches it per run and
+  folds `:win` into its signature; the Worker renders that window and folds it into its own
+  sig). `cfg["hours"]` survives only as the fallback when `/api/frame-config` is unreachable —
+  dropping it would remove graceful degradation, so it stays. Clarified the misleading comment
+  in `frame/config.example.toml` ("window reflected on the frame" → fallback-only).
 
 ---
 

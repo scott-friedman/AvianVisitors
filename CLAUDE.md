@@ -27,12 +27,12 @@ We do **not** run stock AvianVisitors (which serves the collage from the Pi via 
                  │  collage HTML/JS/CSS + 498 illustrations → Cloudflare    │
                  │  Pages, deployed only on design/code change (GH Action)  │
                  └─────────────────────────────────────────────────────────┘
-                 ┌─ 🟣 E-INK (gentle, ~1–2 min) ───────────────────────────┐
+                 ┌─ 🟣 E-INK (gentle, ~5 min) ─────────────────────────────┐
                  │  avian-worker renders frame.png (800×480) ← Pi pulls it  │
                  └─────────────────────────────────────────────────────────┘
 ```
 
-- **Pi's entire job:** run BirdNET detection (writes its own SQLite) → on each detection, a hook **POSTs** {species, time, confidence} to `avian-worker` → and **pulls** `frame.png` for the panel every minute or two. All **outbound** — no open ports, no public serving from the Pi.
+- **Pi's entire job:** run BirdNET detection (writes its own SQLite) → on each detection, a hook **POSTs** {species, time, confidence} to `avian-worker` → and **pulls** `frame.png` for the panel every 5 minutes (the panel redraws only on change). All **outbound** — no open ports, no public serving from the Pi.
 - **Live data freshness:** the page polls the Worker every ~5–10 s. That matches BirdNET's own latency floor (it analyses multi-second audio windows; slower on a Zero 2 W → ~5–15 s chirp-to-ID), so polling is the bottleneck-free sweet spot. SSE/WebSocket push is possible later but is overkill given the ML floor.
 - **Why this shape:** kills the Zero 2 W's blockers — no local browser needed (render off-Pi), no public traffic hitting the Pi (edge serves it), frees RAM (no Caddy/PHP), and nothing inbound at the relative's house. It also sidesteps upstream's public Worker, which **is not in this repo** (the frontend assumes one — see `apt.js` references to `caches.default` / "every CF DC").
 
@@ -97,7 +97,7 @@ Authoritative upstream docs: `README.md`, `frame/README.md`, `avian/forwarding/R
 
 ## Driving the e-ink display (`frame/`) — primary output
 
-The panel is the headline output. **`frame/display.py` is hardcoded for a 13.3" Spectra 6 (1200×1600, 6-ink); our panel is 7.3" 7-color (800×480)** — the layout geometry/palette/matting must be **ported to 800×480**. In the edge design the heavy lifting moves to the Worker: it renders/dithers an 800×480 PNG, and the Pi's frame client just fetches and pushes it (no local browser — the Zero 2 W can't run one). Keep the cadence gentle (~1–2 min, only on change) to protect the panel. Reference for driving this exact panel: inky's `display.py`/`image_processor.py` (7-color dither at 800×480) at `/Users/scott/inky`. Iterate off-Pi with `frame/display.py --preview out.png`.
+The panel is the headline output. **`frame/display.py` is hardcoded for a 13.3" Spectra 6 (1200×1600, 6-ink); our panel is 7.3" 7-color (800×480)** — the layout geometry/palette/matting must be **ported to 800×480**. In the edge design the heavy lifting moves to the Worker: it renders/dithers an 800×480 PNG, and the Pi's frame client just fetches and pushes it (no local browser — the Zero 2 W can't run one). Keep the cadence gentle (5-min poll, panel redraws only on change — `frame/systemd/birdframe.timer`) to protect the panel. Reference for driving this exact panel: inky's `display.py`/`image_processor.py` (7-color dither at 800×480) at `/Users/scott/inky`. Iterate off-Pi with `frame/display.py --preview out.png`.
 
 ## Local development (Mac)
 
