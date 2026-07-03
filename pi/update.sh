@@ -16,24 +16,36 @@ set -uo pipefail
 REPO="${AVIAN_REPO:-$HOME/BirdNET-Pi}"
 [ -d "$REPO/.git" ] || { echo "ERROR: $REPO is not a git clone (set AVIAN_REPO)"; exit 1; }
 
-echo "==> git pull --ff-only in $REPO"
-before="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo none)"
-# Fail LOUD if the pull errors (diverged history from a hand-scp'd file, an
-# untracked-file collision, no network) — without this check the script fell
-# through to "already up to date" and exit 0, masking a silent no-update on the
-# box's only remote-update path (REVIEW-TODO B-Low).
-if ! git -C "$REPO" pull --ff-only; then
-  echo "ERROR: git pull FAILED — the box did NOT update." >&2
-  echo "       Inspect with: git -C $REPO status   (diverged/scp'd file? untracked collision?)" >&2
-  exit 1
-fi
-after="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo none)"
+if [ -n "${AVIAN_UPDATE_REEXEC:-}" ]; then
+  # Second pass, running the freshly-pulled copy of this script (see below).
+  echo "==> continuing with the updated update.sh ($(git -C "$REPO" rev-parse --short HEAD))"
+else
+  echo "==> git pull --ff-only in $REPO"
+  before="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo none)"
+  # Fail LOUD if the pull errors (diverged history from a hand-scp'd file, an
+  # untracked-file collision, no network) — without this check the script fell
+  # through to "already up to date" and exit 0, masking a silent no-update on the
+  # box's only remote-update path (REVIEW-TODO B-Low).
+  if ! git -C "$REPO" pull --ff-only; then
+    echo "ERROR: git pull FAILED — the box did NOT update." >&2
+    echo "       Inspect with: git -C $REPO status   (diverged/scp'd file? untracked collision?)" >&2
+    exit 1
+  fi
+  after="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo none)"
 
-if [ "$before" = "$after" ]; then
-  echo "==> already up to date ($after) — nothing to restart."
-  exit 0
+  if [ "$before" = "$after" ]; then
+    echo "==> already up to date ($after) — nothing to restart."
+    exit 0
+  fi
+  echo "==> updated $before -> $after"
+  # Re-exec the PULLED script before doing any unit sync: bash keeps reading a
+  # replaced script through its original fd, so without this the OLD update.sh
+  # finishes the run and any change to the sync steps themselves (a new unit,
+  # a new backstop file) silently doesn't apply — bit us 2026-07-03 when the
+  # freshly-added avian-prune units weren't installed by the very pull that
+  # added them. The env guard prevents a re-exec loop.
+  AVIAN_UPDATE_REEXEC=1 exec bash "$REPO/pi/update.sh"
 fi
-echo "==> updated $before -> $after"
 
 # Render the units this repo owns from their templates (deterministic; picks up any
 # template change in the pull) and reinstall. Forwarder + heartbeat run from the
