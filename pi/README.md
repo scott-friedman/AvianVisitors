@@ -83,6 +83,14 @@ which the monitor treats as "down". The JSON body also reports `last_detection_a
 — a long gap there while `alive:true` means the box is fine but the **mic/analyzer**
 has gone quiet.
 
+**What the monitor does NOT catch:** intermittent worker-side failures. During the
+2026-07-03 D1 overload the worker 500'd in multi-minute bursts, dropping detections —
+but scattered failed pings never breach the 45-min tolerance, so `/api/status` stayed
+200 throughout. That failure mode surfaces in the **Pi journals** instead: red
+`avian-heartbeat` runs (which log the worker's error body) and forwarder
+`POST failed ... after retries` lines. Check those first when things feel flaky but
+the monitor is green.
+
 ---
 
 # Mic watchdog — `mic-watchdog.sh` (auto-recover a silent recorder)
