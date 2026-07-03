@@ -74,51 +74,23 @@ export default {
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    try {
-      if (path === '/api/detection' && request.method === 'POST') {
-        return await ingest(request, env);
+    // D1's storage object occasionally resets mid-flight ("D1_ERROR: ... storage
+    // caused object to be reset") and every in-flight query throws — observed
+    // 2026-07-03 in multi-minute bursts that dropped detections and flapped the
+    // heartbeat. Every route is idempotent (INSERT OR IGNORE / single-row upsert
+    // / reads), so retry the dispatch on that signature. /frame.png is excluded:
+    // a retry there could double-bill the metered Browser Rendering minutes.
+    let lastErr;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await dispatch(request.clone(), env, url, path);
+      } catch (err) {
+        lastErr = err;
+        if (path === '/frame.png' || !isTransientD1(err) || attempt === 2) break;
+        await new Promise((r) => setTimeout(r, 200 + 400 * attempt));
       }
-      if (path === '/api/clip' && request.method === 'POST') {
-        return await clip(request, env, url);
-      }
-      if (path === '/api/recording' && request.method === 'GET') {
-        return await recording(request, env, url);
-      }
-      if (path === '/api/heartbeat' && request.method === 'POST') {
-        return await heartbeat(request, env);
-      }
-      if (path === '/api/frame-config' && request.method === 'POST') {
-        return await setFrameConfig(request, env);
-      }
-      // UptimeRobot (and many uptime monitors) probe with HEAD, not GET. Accept
-      // both so the liveness check reaches status() instead of falling through to
-      // queryApi() and getting a 405. A HEAD reply carries the same 200/503 status
-      // and headers but no body (a HEAD response must not include one).
-      if (path === '/api/status' && (request.method === 'GET' || request.method === 'HEAD')) {
-        const res = await status(env);
-        return request.method === 'HEAD'
-          ? new Response(null, { status: res.status, headers: res.headers })
-          : res;
-      }
-      if (path === '/frame.png' && request.method === 'GET') {
-        return await frame(request, env, url);
-      }
-      if (path === '/api/wiki' && request.method === 'GET') {
-        return await wiki(url);
-      }
-      if (path === '/api/coverage' && request.method === 'GET') {
-        return await coverage(env);
-      }
-      if (path.startsWith('/api/')) {
-        return await queryApi(request, env, url);
-      }
-      if (path === '/' || path === '/health') {
-        return json({ ok: true, service: 'avian-worker' });
-      }
-    } catch (err) {
-      return json({ error: 'internal', detail: String((err && err.message) || err) }, 500);
     }
-    return json({ error: 'not found' }, 404);
+    return json({ error: 'internal', detail: String((lastErr && lastErr.message) || lastErr) }, 500);
   },
 
   // Cron ([triggers] in wrangler.toml, ET daylight only): Mojo's periodic
@@ -127,6 +99,57 @@ export default {
     ctx.waitUntil(mojoVisit(env));
   },
 };
+
+// A transient D1 infrastructure failure (the storage object restarting), worth
+// an immediate in-place retry — as opposed to a SQL/data error, which never is.
+function isTransientD1(err) {
+  const m = String((err && err.message) || err);
+  return /D1_ERROR/i.test(m) && /reset|starting up|network|internal error/i.test(m);
+}
+
+async function dispatch(request, env, url, path) {
+  if (path === '/api/detection' && request.method === 'POST') {
+    return await ingest(request, env);
+  }
+  if (path === '/api/clip' && request.method === 'POST') {
+    return await clip(request, env, url);
+  }
+  if (path === '/api/recording' && request.method === 'GET') {
+    return await recording(request, env, url);
+  }
+  if (path === '/api/heartbeat' && request.method === 'POST') {
+    return await heartbeat(request, env);
+  }
+  if (path === '/api/frame-config' && request.method === 'POST') {
+    return await setFrameConfig(request, env);
+  }
+  // UptimeRobot (and many uptime monitors) probe with HEAD, not GET. Accept
+  // both so the liveness check reaches status() instead of falling through to
+  // queryApi() and getting a 405. A HEAD reply carries the same 200/503 status
+  // and headers but no body (a HEAD response must not include one).
+  if (path === '/api/status' && (request.method === 'GET' || request.method === 'HEAD')) {
+    const res = await status(env);
+    return request.method === 'HEAD'
+      ? new Response(null, { status: res.status, headers: res.headers })
+      : res;
+  }
+  if (path === '/frame.png' && request.method === 'GET') {
+    return await frame(request, env, url);
+  }
+  if (path === '/api/wiki' && request.method === 'GET') {
+    return await wiki(url);
+  }
+  if (path === '/api/coverage' && request.method === 'GET') {
+    return await coverage(env);
+  }
+  if (path.startsWith('/api/')) {
+    return await queryApi(request, env, url);
+  }
+  if (path === '/' || path === '/health') {
+    return json({ ok: true, service: 'avian-worker' });
+  }
+  return json({ error: 'not found' }, 404);
+}
 
 // ---- Mojo, the resident dog-bird (easter egg) ---------------------------------
 // A fake species for dad: the family dog, drawn in the field-guide style and
@@ -441,7 +464,7 @@ async function frame(request, env, url) {
   const windowHours = await getFrameWindow(env); // shared, set via /api/frame-config
   const since = now - windowHours * 3600;
   const rows = (await env.DB.prepare(
-    'SELECT sci, COUNT(*) AS n FROM detections WHERE ts >= ? GROUP BY sci'
+    'SELECT sci, COUNT(*) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? GROUP BY sci'
   ).bind(since).all()).results || [];
   const sig = await frameSignature(rows, windowHours);
 
@@ -558,6 +581,21 @@ async function wiki(url) {
 
 // ---- read API (reimplements avian/api/birdnet-api.php over D1) ---------------
 
+// Poll micro-cache. The page refetches ~10 of these endpoints every 30 s per
+// visible tab (refreshAll in apt.js), and several aggregate over the whole
+// detections table — measured 2026-07-03 at ~108M D1 rows read/day from routine
+// viewing, enough to tip D1's storage object into reset loops (500 bursts across
+// every endpoint, dropped detections). These responses only actually change when
+// a new detection lands (MAX(ts) moves) or a rolling window slides (time passes),
+// so serve from isolate memory keyed on (action+params, MAX(ts), 5-min clock
+// bucket). Best-effort by design: a new isolate or an eviction just recomputes;
+// staleness is bounded by the bucket (≤5 min) and a new detection busts it
+// instantly. species/frame-config stay uncached (rare / must-be-fresh).
+const POLL_CACHE = new Map(); // key → { ver, bucket, status, body }
+const POLL_CACHE_ACTIONS = new Set(['recent', 'stats', 'lifelist', 'timeseries', 'firstseen', 'hourly', 'facts', 'rhythm', 'chorus']);
+const POLL_CACHE_BUCKET_MS = 5 * 60 * 1000;
+const POLL_CACHE_MAX = 200; // bound ?hours=/?days= key variants; FIFO-evict beyond
+
 async function queryApi(request, env, url) {
   if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405);
 
@@ -570,29 +608,57 @@ async function queryApi(request, env, url) {
   const tz = tzMod(env);
   const now = Math.floor(Date.now() / 1000);
 
-  switch (action) {
-    case 'recent': return recent(env, url, tz, now);
-    case 'stats': return stats(env, tz, now);
-    case 'facts': return facts(env, tz, now);
-    case 'lifelist': return lifelist(env, tz);
-    case 'timeseries': return timeseries(env, url, tz, now);
-    case 'hourly': return hourly(env, url, tz, now);
-    case 'rhythm': return rhythm(env, url, tz, now);
-    case 'chorus': return chorus(env, url, tz, now);
-    case 'species': return species(env, url, tz);
-    case 'firstseen': return firstseen(env, url, tz);
-    case 'frame-config': return json({ window_hours: await getFrameWindow(env) });
-    default: return json({ error: 'unknown action' }, 404);
+  const run = () => {
+    switch (action) {
+      case 'recent': return recent(env, url, tz, now);
+      case 'stats': return stats(env, tz, now);
+      case 'facts': return facts(env, tz, now);
+      case 'lifelist': return lifelist(env, tz);
+      case 'timeseries': return timeseries(env, url, tz, now);
+      case 'hourly': return hourly(env, url, tz, now);
+      case 'rhythm': return rhythm(env, url, tz, now);
+      case 'chorus': return chorus(env, url, tz, now);
+      case 'species': return species(env, url, tz);
+      case 'firstseen': return firstseen(env, url, tz);
+      case 'frame-config': return getFrameWindow(env).then((h) => json({ window_hours: h }));
+      default: return json({ error: 'unknown action' }, 404);
+    }
+  };
+
+  if (!POLL_CACHE_ACTIONS.has(action)) return run();
+
+  // MAX(ts) is O(1) via idx_detections_ts — one row read per request, vs the
+  // tens of thousands the aggregate endpoints would re-scan on every poll.
+  const mx = await env.DB.prepare('SELECT MAX(ts) AS ts FROM detections').first();
+  const ver = (mx && mx.ts) || 0;
+  const bucket = Math.floor(Date.now() / POLL_CACHE_BUCKET_MS);
+  const key = action + '?' + url.searchParams.toString();
+  const hit = POLL_CACHE.get(key);
+  if (hit && hit.ver === ver && hit.bucket === bucket) {
+    return new Response(hit.body, { status: hit.status, headers: { ...JSON_HEADERS, 'X-Poll-Cache': 'hit' } });
   }
+  const res = await run();
+  if (res.status === 200) {
+    const body = await res.clone().text();
+    POLL_CACHE.delete(key); // re-insert so Map order stays LRU-ish for FIFO eviction
+    if (POLL_CACHE.size >= POLL_CACHE_MAX) POLL_CACHE.delete(POLL_CACHE.keys().next().value);
+    POLL_CACHE.set(key, { ver, bucket, status: res.status, body });
+  }
+  return res;
 }
 
 async function recent(env, url, tz, now) {
   const hours = clampInt(url.searchParams.get('hours'), 24, 1, 1000000);
   const since = now - hours * 3600;
+  // INDEXED BY: without it SQLite picks idx_detections_dedupe (sci,ts) to skip
+  // the GROUP BY sort and SCANS THE WHOLE TABLE on every poll, ignoring the ts
+  // window (measured 16k rows/query on 2026-07-03 → D1 overload resets). Pinning
+  // idx_detections_ts makes it a range search: rows read = rows in the window.
+  // Same trap on every windowed GROUP BY sci / COUNT(DISTINCT sci) query below.
   const { results } = await env.DB.prepare(
     `SELECT sci, com, COUNT(*) AS n, MAX(conf) AS best_conf,
             datetime(MAX(ts), 'unixepoch', ?) AS last_seen
-       FROM detections
+       FROM detections INDEXED BY idx_detections_ts
       WHERE ts >= ?
       GROUP BY sci
       ORDER BY MAX(ts) DESC`
@@ -617,10 +683,10 @@ async function stats(env, tz, now) {
   const total = (await first('SELECT COUNT(*) AS n FROM detections')).n;
   const speciesN = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections')).n;
   const today = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', todayStart)).n;
-  const todaySpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections WHERE ts >= ?', todayStart)).n;
+  const todaySpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', todayStart)).n;
   const lastHour = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', hourStart)).n;
   const week = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', weekStart)).n;
-  const weekSpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections WHERE ts >= ?', weekStart)).n;
+  const weekSpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', weekStart)).n;
   const started = await first(`SELECT date(MIN(ts), 'unixepoch', ?) AS d FROM detections`, tz);
 
   return json({
@@ -659,7 +725,7 @@ async function facts(env, tz, now) {
   const calls = (n) => `${fmt(n)} call${n === 1 ? '' : 's'}`;
 
   // ---- today totals (drives most conditions) ----
-  const td = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections WHERE ts >= ?', todayStart);
+  const td = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', todayStart);
   const todayN = td ? td.n : 0, todaySpec = td ? td.s : 0;
 
   if (!todayN) {                                 // empty-day path — never blank
@@ -712,7 +778,7 @@ async function facts(env, tz, now) {
 
   // 4) TOP — most-heard species today (+ share)
   const top = await first(
-    'SELECT com, sci, COUNT(*) AS n FROM detections WHERE ts >= ? GROUP BY sci ORDER BY n DESC LIMIT 1', todayStart);
+    'SELECT com, sci, COUNT(*) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? GROUP BY sci ORDER BY n DESC LIMIT 1', todayStart);
   if (top) {
     const pct = Math.round((top.n / todayN) * 100);
     push('top', 'TOP', `Most heard today: ${top.com} — ${calls(top.n)} (${pct}% of today).`, top.sci);
@@ -729,7 +795,7 @@ async function facts(env, tz, now) {
   // 6) RETURN — heard today after a ≥3-day absence (activates as the dataset ages)
   const back = await first(
     `SELECT d.sci, d.com, MIN(d.ts) AS firstToday, p.prev AS prev
-       FROM detections d
+       FROM detections d INDEXED BY idx_detections_ts
        JOIN (SELECT sci, MAX(ts) AS prev FROM detections WHERE ts < ? GROUP BY sci) p ON p.sci = d.sci
       WHERE d.ts >= ?
       GROUP BY d.sci
@@ -740,7 +806,7 @@ async function facts(env, tz, now) {
   }
 
   // 7) NOW — last hour
-  const lh = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections WHERE ts >= ?', now - 3600);
+  const lh = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', now - 3600);
   if (lh && lh.n > 0) push('now', 'NOW', `Last hour: ${calls(lh.n)} from ${lh.s} species.`);
 
   // 8) QUIET — longest silent run of clock-hours today (cyclic, wraps midnight)

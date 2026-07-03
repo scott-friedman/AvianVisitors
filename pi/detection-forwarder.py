@@ -184,20 +184,23 @@ def handle_line(secret: str, line: str) -> None:
         print(f"no clip for {sci} @ {date_s} {clip_time} under {EXTRACTED}/By_Date",
               file=sys.stderr, flush=True)
 
-    # A few quick retries ride out a transient blip (DNS, a momentary wifi drop) —
-    # common on a Pi. A sustained outage still drops the line: acceptable for a
-    # species collage (common birds re-detect constantly; the worker dedupes), and
-    # not worth a persistent spool. Offset persistence covers the *restart* case.
+    # Retries with growing backoff (3/6/12 s ≈ 20 s covered) ride out a transient
+    # blip — DNS, a momentary wifi drop, a D1 storage reset (2026-07-03: back-to-
+    # back 500 bursts dropped ~30 detections on the old 3×2 s schedule; the worker
+    # now also retries D1 internally). A sustained outage still drops the line:
+    # acceptable for a species collage (common birds re-detect constantly; the
+    # worker dedupes), and not worth a persistent spool. Offset persistence covers
+    # the *restart* case.
     last = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             status = post(secret, sci, com, conf, ts, file_key)
             print(f"posted {sci} ({com}) conf={conf:.3f} ts={ts} file={file_key or '-'} -> {status}", flush=True)
             return
         except Exception as e:  # HTTPError (4xx/5xx) or URLError (network) — retry then give up
             last = e
-            if attempt < 2:
-                time.sleep(2)
+            if attempt < 3:
+                time.sleep(3 * 2 ** attempt)
     print(f"POST failed for {sci} after retries: {last}", file=sys.stderr, flush=True)
 
 

@@ -18,14 +18,21 @@ SECRET="$(<"$SECRET_FILE")"   # $(<file) strips the trailing newline, matching t
 
 # The secret rides in a header (same value the forwarder POSTs continuously). On a
 # single-user Pi behind the tunnel, brief argv exposure to `ps` is a non-threat.
-code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
-  -XPOST "$ENDPOINT" \
-  -H "X-Avian-Secret: $SECRET" \
-  -H 'User-Agent: avian-heartbeat/1.0')" || { echo "heartbeat: curl failed (offline?)" >&2; exit 1; }
-
-if [ "$code" = "204" ]; then
-  echo "heartbeat: ok ($code) -> $ENDPOINT"
-else
-  echo "heartbeat: unexpected HTTP $code from $ENDPOINT" >&2
-  exit 1
-fi
+# Two attempts 20 s apart so a transient worker/D1 blip (2026-07-03: D1 storage
+# resets 500'd single pings) doesn't flap the unit red; keep the response body —
+# the worker puts the real error detail there, and discarding it cost a debug cycle.
+body="$(mktemp)"
+trap 'rm -f "$body"' EXIT
+for attempt in 1 2; do
+  code="$(curl -sS -o "$body" -w '%{http_code}' --max-time 20 \
+    -XPOST "$ENDPOINT" \
+    -H "X-Avian-Secret: $SECRET" \
+    -H 'User-Agent: avian-heartbeat/1.0')" || code="000 (curl failed — offline?)"
+  if [ "$code" = "204" ]; then
+    echo "heartbeat: ok ($code) -> $ENDPOINT"
+    exit 0
+  fi
+  echo "heartbeat: HTTP $code from $ENDPOINT: $(head -c 300 "$body")" >&2
+  [ "$attempt" = 1 ] && sleep 20
+done
+exit 1
