@@ -42,7 +42,7 @@ USER_NAME="${SUDO_USER:-$USER}"
 HOME_DIR="$(eval echo "~$USER_NAME")"
 
 echo "==> re-syncing systemd units"
-for svc in avian-forwarder.service avian-heartbeat.service avian-mic-watchdog.service avian-net-watchdog.service; do
+for svc in avian-forwarder.service avian-heartbeat.service avian-mic-watchdog.service avian-net-watchdog.service avian-prune.service; do
   [ -f "$REPO/pi/systemd/$svc" ] || continue
   sed "s|REPLACE_USER|$USER_NAME|; s|REPLACE_HOME|$HOME_DIR|g" "$REPO/pi/systemd/$svc" \
     | sudo tee "/etc/systemd/system/$svc" >/dev/null
@@ -53,6 +53,14 @@ done
   sudo cp "$REPO/pi/systemd/avian-mic-watchdog.timer" /etc/systemd/system/avian-mic-watchdog.timer
 [ -f "$REPO/pi/systemd/avian-net-watchdog.timer" ] && \
   sudo cp "$REPO/pi/systemd/avian-net-watchdog.timer" /etc/systemd/system/avian-net-watchdog.timer
+[ -f "$REPO/pi/systemd/avian-prune.timer" ] && \
+  sudo cp "$REPO/pi/systemd/avian-prune.timer" /etc/systemd/system/avian-prune.timer
+
+# BirdNET-Pi's stock 95%-disk purge (scripts/disk_check.sh, /etc/crontab) hard-
+# exits unless this web-UI-created file exists — the lean box has no web UI, so
+# ensure it here. Backstop only; avian-prune.timer keeps the disk far from 95%.
+EXCL="$REPO/scripts/disk_check_exclude.txt"
+[ -f "$EXCL" ] || printf '##start\n##end\n' > "$EXCL"
 
 sudo systemctl daemon-reload
 
@@ -67,6 +75,8 @@ sudo systemctl enable --now avian-mic-watchdog.timer 2>/dev/null || true
 sudo systemctl restart avian-mic-watchdog.timer 2>/dev/null || echo "   !! avian-mic-watchdog.timer not installed"
 sudo systemctl enable --now avian-net-watchdog.timer 2>/dev/null || true
 sudo systemctl restart avian-net-watchdog.timer 2>/dev/null || echo "   !! avian-net-watchdog.timer not installed"
+sudo systemctl enable --now avian-prune.timer 2>/dev/null || true
+sudo systemctl restart avian-prune.timer 2>/dev/null || echo "   !! avian-prune.timer not installed"
 
 # The frame unit owns its own venv + path (frame/install.sh), so update.sh doesn't
 # re-render it — it just re-arms the timer to pick up a pulled display.py. That only

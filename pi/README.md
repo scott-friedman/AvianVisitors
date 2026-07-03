@@ -152,6 +152,29 @@ sudo systemctl start avian-net-watchdog.service     # dry-run now (silent no-op 
 
 ---
 
+# Disk prune — `prune-extracted.sh` (stop the SD card filling)
+
+`~/BirdSongs/Extracted` grows **~420 MB/day** (an mp3 + a spectrogram PNG per
+detection), and BirdNET-Pi's own 95%-disk purge **silently no-ops on this lean
+box**: `scripts/disk_check.sh` hard-exits unless `scripts/disk_check_exclude.txt`
+exists, and only the stripped web UI ever creates that file. Left alone, the SD
+fills in ~8 months and recording/analysis die while the heartbeat stays green
+(it doesn't touch disk). Found in the 2026-07-03 stability audit.
+
+`prune-extracted.sh` runs daily (systemd timer, 10 min after boot too): deletes
+`Extracted/By_Date/<YYYY-MM-DD>` day-dirs older than 30 days (compared by dir
+*name*, not mtime). 30 days is generous — R2 is the real clip store (`clips/`
+7-day TTL + `rare/` forever, see `../CLIP-RETENTION-PLAN.md`); the local copy is
+only the forwarder's upload source and a recovery buffer. `update.sh` also
+creates the missing `disk_check_exclude.txt` (`##start`/`##end`) so the stock
+95% purge works again as a backstop. Override the window with
+`AVIAN_PRUNE_DAYS` in the service unit.
+
+Install is via `update.sh` (it renders + enables `avian-prune.{service,timer}`),
+or by hand following the same pattern as the watchdogs above.
+
+---
+
 # Pi 512 MB survival — `lean-mode.sh` + `zero2w-tune.sh`
 
 The Zero 2 W has **512 MB RAM** and BirdNET's analyzer needs ~150 MB resident. The full

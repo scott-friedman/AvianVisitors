@@ -1,0 +1,14 @@
+[Unit]
+Description=AvianVisitors: prune extracted clips older than 30 days (disk-fill guard)
+Documentation=https://github.com/scott-friedman/AvianVisitors
+
+[Service]
+# Runs as the birdnet user (owns ~/BirdSongs). install rewrites the REPLACE_*
+# placeholders (see pi/update.sh).
+Type=oneshot
+User=REPLACE_USER
+Environment=AVIAN_EXTRACTED=REPLACE_HOME/BirdSongs/Extracted
+# Runs from the ~/BirdNET-Pi clone so `git pull` + restart updates it.
+ExecStart=/bin/bash REPLACE_HOME/BirdNET-Pi/pi/prune-extracted.sh
+Nice=15
+IOSchedulingClass=idle

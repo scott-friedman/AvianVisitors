@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily prune of extracted clips older than 30 days
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=24h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

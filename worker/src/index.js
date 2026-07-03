@@ -50,17 +50,39 @@ function json(obj, status = 200, extra = {}) {
   });
 }
 
+// Local-time offset in hours from UTC. TZ_NAME (an IANA zone, "America/New_York")
+// is authoritative and DST-correct via Intl; TZ_OFFSET_HOURS is the fixed-offset
+// fallback (and the value used if Intl can't resolve the zone). Cached per
+// wall-clock hour — DST transitions land on an hour boundary.
+let _tzCache = { hour: -1, off: 0 };
+function tzOffsetHours(env) {
+  const zone = (env.TZ_NAME || '').trim();
+  if (!zone) return parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const hour = Math.floor(Date.now() / 3600000);
+  if (_tzCache.hour === hour) return _tzCache.off;
+  let off = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  try {
+    // "GMT-04:00" (or bare "GMT" for UTC itself).
+    const name = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' })
+      .formatToParts(new Date()).find((p) => p.type === 'timeZoneName').value;
+    const m = /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(name);
+    if (m) off = m[1] ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) + Number(m[3]) / 60) : 0;
+  } catch { /* keep the fixed-offset fallback */ }
+  _tzCache = { hour, off };
+  return off;
+}
+
 // SQLite datetime() modifier for the deployment's local timezone, e.g. "-4 hours".
 // Day-bucketed views (daily, by_hour, formatted timestamps) use it; rolling
 // windows (recent/last_hour/week/today) are computed in UTC seconds below.
 function tzMod(env) {
-  const h = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const h = tzOffsetHours(env);
   return `${h >= 0 ? '+' : ''}${h} hours`;
 }
 
 // Start of the local day, in UTC seconds (so it compares against ts directly).
 function localDayStart(env, now) {
-  const offset = (parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0) * 3600;
+  const offset = tzOffsetHours(env) * 3600;
   const local = now + offset;
   return local - (local % 86400) - offset;
 }
@@ -140,7 +162,10 @@ async function dispatch(request, env, url, path) {
     return await wiki(url);
   }
   if (path === '/api/coverage' && request.method === 'GET') {
-    return await coverage(env);
+    // Micro-cached: coverage() full-table GROUP BYs + fetches two Pages
+    // manifests, and the HA dashboard polls it. Manifest changes (a Pages
+    // deploy) propagate within one 5-min bucket.
+    return await pollCached(env, 'coverage', () => coverage(env));
   }
   if (path.startsWith('/api/')) {
     return await queryApi(request, env, url);
@@ -239,14 +264,48 @@ async function ingest(request, env) {
     'INSERT OR IGNORE INTO detections (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)'
   ).bind(sci, com, c, ts, file).run();
 
+  // Rare-species archival (best-effort — must never fail the ingest). Mojo is
+  // excluded: his cron self-heals his one bark from master/ already.
+  if (file && env.CLIPS && sci !== MOJO.sci) {
+    try {
+      await archiveRareClip(env, sci, file);
+    } catch { /* archive is a bonus; the detection row is what matters */ }
+  }
+
   return new Response(null, { status: 204, headers: CORS });
 }
 
 // ---- clip upload + playback (R2) --------------------------------------------
 // The Pi POSTs each detection's mp3 to /api/clip?file=<basename> (secret-gated,
-// right after the detection POST); the public site plays it back via
-// /api/recording. Objects live under clips/<basename>; the bucket's 7-day
-// lifecycle rule expires them. See AUDIO-FIX-PLAN.md.
+// BEFORE the detection POST — so the clip exists when ingest() runs); the public
+// site plays it back via /api/recording. Objects live under clips/<basename>;
+// the bucket's 7-day lifecycle rule (prefix-scoped to clips/) expires them.
+// See AUDIO-FIX-PLAN.md and CLIP-RETENTION-PLAN.md.
+
+// Rare-clip archive: the flat 7-day TTL deletes a once-ever Veery as fast as the
+// 1000th goldfinch, so each species' first RARE_MAX clips are also copied to
+// rare/<basename> — a prefix with NO lifecycle rule, kept indefinitely (same
+// exemption trick as Mojo's master/). The count is lifetime, so a common species
+// archived its first 25 long ago and never copies again; storage is bounded at
+// RARE_MAX × ~45 KB ≈ 1.1 MB per species, ever. The per-species COUNT is a
+// covering-index seek on idx_detections_dedupe (EXPLAIN QUERY PLAN verified
+// 2026-07-03 — see the D1 full-scan gotcha in CLAUDE.md).
+const RARE_MAX = 25;
+
+async function archiveRareClip(env, sci, file) {
+  const key = clipKey(file);
+  if (!key) return;
+  const row = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM detections WHERE sci = ?'
+  ).bind(sci).first();
+  if (!row || row.n > RARE_MAX) return;
+  if (await env.CLIPS.head('rare/' + key)) return; // replayed detection; already archived
+  const src = await env.CLIPS.get('clips/' + key);
+  if (!src) return; // clip upload failed or already expired — nothing to copy
+  await env.CLIPS.put('rare/' + key, src.body, {
+    httpMetadata: { contentType: 'audio/mpeg' },
+  });
+}
 
 // Validate a clip key = one mp3 basename; block path traversal / nesting. Keys
 // may contain ':' (the HH:MM:SS time) and Unicode letters (non-English common
@@ -281,15 +340,20 @@ async function clip(request, env, url) {
 }
 
 // GET /api/recording?file=<key>  → that exact clip.
-// GET /api/recording?sci=<name>  → newest clip for that species (≤7 days old).
+// GET /api/recording?sci=<name>  → newest clip for that species.
+// Lookup order per key: clips/ (7-day hot set) then rare/ (the forever archive
+// of each species' first RARE_MAX clips). For ?sci=, if the newest clip has
+// expired from both, fall back to the species' OLDEST clip — the one most
+// likely archived — so a rare bird's atlas play button outlives the TTL.
 // Honors Range (the <audio> element seeks; the spectrogram does a full fetch).
 // Missing/expired object → 404, which the frontend degrades to "no audio".
 async function recording(request, env, url) {
   if (!env.CLIPS) return new Response('no clip storage', { status: 404, headers: CORS });
 
+  let sci = null;
   let key = clipKey(url.searchParams.get('file'));
   if (!key) {
-    const sci = (url.searchParams.get('sci') || '').trim();
+    sci = (url.searchParams.get('sci') || '').trim();
     if (!sci) return new Response('file or sci required', { status: 400, headers: CORS });
     const row = await env.DB.prepare(
       'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts DESC LIMIT 1'
@@ -299,7 +363,17 @@ async function recording(request, env, url) {
   }
 
   const rng = parseRange(request.headers.get('Range'));
-  const obj = await env.CLIPS.get('clips/' + key, rng ? { range: rng } : undefined);
+  const opts = rng ? { range: rng } : undefined;
+  let obj = (await env.CLIPS.get('clips/' + key, opts)) || (await env.CLIPS.get('rare/' + key, opts));
+  if (!obj && sci) {
+    const oldest = await env.DB.prepare(
+      'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts ASC LIMIT 1'
+    ).bind(sci).first();
+    const alt = oldest && oldest.file ? clipKey(oldest.file) : null;
+    if (alt && alt !== key) {
+      obj = (await env.CLIPS.get('rare/' + alt, opts)) || (await env.CLIPS.get('clips/' + alt, opts));
+    }
+  }
   if (!obj) return new Response('not found', { status: 404, headers: CORS });
 
   const size = obj.size; // full object size, even on a ranged get
@@ -626,13 +700,17 @@ async function queryApi(request, env, url) {
   };
 
   if (!POLL_CACHE_ACTIONS.has(action)) return run();
+  return pollCached(env, action + '?' + url.searchParams.toString(), run);
+}
 
+// The micro-cache core, shared by queryApi and /api/coverage (which the HA
+// dashboard polls with a full-table GROUP BY behind it).
+async function pollCached(env, key, run) {
   // MAX(ts) is O(1) via idx_detections_ts — one row read per request, vs the
   // tens of thousands the aggregate endpoints would re-scan on every poll.
   const mx = await env.DB.prepare('SELECT MAX(ts) AS ts FROM detections').first();
   const ver = (mx && mx.ts) || 0;
   const bucket = Math.floor(Date.now() / POLL_CACHE_BUCKET_MS);
-  const key = action + '?' + url.searchParams.toString();
   const hit = POLL_CACHE.get(key);
   if (hit && hit.ver === ver && hit.bucket === bucket) {
     return new Response(hit.body, { status: hit.status, headers: { ...JSON_HEADERS, 'X-Poll-Cache': 'hit' } });
@@ -705,7 +783,7 @@ async function stats(env, tz, now) {
 // Sudbury-local via tz/localDayStart/sunArc (never the viewer's clock).
 async function facts(env, tz, now) {
   const todayStart = localDayStart(env, now);
-  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const offH = tzOffsetHours(env);
   const first = (sql, ...b) => env.DB.prepare(sql).bind(...b).first();
   const all = async (sql, ...b) => (await env.DB.prepare(sql).bind(...b).all()).results || [];
 
@@ -995,7 +1073,7 @@ async function hourly(env, url, tz, now) {
 
   // tz-correct "now" and sun, in Sudbury-local fractional hours (see D5). Shift
   // UTC `now` by the offset, then read the Date's UTC fields = local wall clock.
-  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const offH = tzOffsetHours(env);
   const localNow = new Date((now + offH * 3600) * 1000);
   const now_local = {
     hour: localNow.getUTCHours(),
@@ -1055,7 +1133,7 @@ async function rhythm(env, url, tz, now) {
   const days_covered = span && span.first != null ? Math.min(days, Math.floor((now - span.first) / 86400) + 1) : 0;
 
   // tz-correct now + sun (identical to hourly()).
-  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const offH = tzOffsetHours(env);
   const localNow = new Date((now + offH * 3600) * 1000);
   const now_local = {
     hour: localNow.getUTCHours(),
@@ -1086,7 +1164,7 @@ async function chorus(env, url, tz, now) {
   const top      = clampInt(url.searchParams.get('top'), 24, 1, 60);
 
   const iv   = interval * 60;                                  // interval seconds
-  const offH = parseInt(env.TZ_OFFSET_HOURS ?? '0', 10) || 0;
+  const offH = tzOffsetHours(env);
   const off  = offH * 3600;                                    // tz offset seconds
   const since = now - hours * 3600;
 

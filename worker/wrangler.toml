@@ -21,17 +21,22 @@ binding = "BROWSER"
 
 # R2: per-detection bird-call clips (~45 KB mp3 each). The Pi POSTs bytes to
 # /api/clip (secret-gated); the public site plays them via /api/recording.
-# A 7-day object-lifecycle rule (set on the bucket, NOT in this file) deletes
-# clips a week after upload → ~440 MB steady-state. See AUDIO-FIX-PLAN.md.
+# A 7-day object-lifecycle rule (set on the bucket, NOT in this file; prefix-
+# scoped to clips/) deletes clips a week after upload → ~440 MB steady-state.
+# Each species' first 25 clips are also copied to rare/ (no lifecycle rule →
+# kept forever; ≤1.1 MB per species). See AUDIO-FIX-PLAN.md + CLIP-RETENTION-PLAN.md.
 [[r2_buckets]]
 binding = "CLIPS"
 bucket_name = "avian-clips"
 
 [vars]
-# Local-day offset (hours from UTC) for the "today"/daily buckets, e.g. "-4" for
-# US Eastern (EDT). Rolling windows (recent/last_hour/week) are computed in UTC
-# seconds and are unaffected. Default UTC.
-TZ_OFFSET_HOURS = "-4"  # Sudbury, MA = US Eastern (EDT). Fixed offset: reads -5 (EST) in winter; acceptable for v1 day-buckets.
+# Local timezone for "today"/daily buckets and displayed times. TZ_NAME (IANA
+# zone) is authoritative and DST-correct (computed per-hour via Intl in the
+# Worker); TZ_OFFSET_HOURS is only the fallback if TZ_NAME is unset or Intl
+# can't resolve it. Rolling windows (recent/last_hour/week) are computed in UTC
+# seconds and are unaffected.
+TZ_NAME = "America/New_York"  # Sudbury, MA
+TZ_OFFSET_HOURS = "-4"        # fallback only (EDT; would read -5-in-winter wrong — TZ_NAME avoids that)
 
 # Site coordinates for the Day Dial's sunrise/sunset band (/api/hourly → sunArc).
 # Sudbury, MA. East-positive longitude. Unset/invalid → sun:null → band omitted.
