@@ -21,6 +21,19 @@ cp "$ROOT"/avian/frontend/index.html \
    "$ROOT"/avian/frontend/styles.css \
    "$OUT/"
 
+# Cache-bust the shell assets (learned 2026-07-03): the site sits behind
+# zone-cached hosts — the birds-origin custom domain AND the ridge /birds proxy
+# both cache assets for 24 h — and a Pages deploy purges neither, so a bare
+# ./apt.js kept serving the previous build for up to a day (stale DIMS/MASKS =
+# new birds render everywhere EXCEPT the collage). Point index.html at
+# content-hashed URLs instead: a changed file gets a new cache key instantly;
+# unchanged files keep their warm cache. (HTML itself is not edge-cached long:
+# must-revalidate at the origin, 5-min TTL on the proxy.)
+for f in apt.js spectral-core.js config.js styles.css; do
+  h="$( (md5 -q "$OUT/$f" 2>/dev/null || md5sum "$OUT/$f" | awk '{print $1}') | cut -c1-8)"
+  perl -pi -e "s#\./\Q$f\E\"#./$f?v=$h\"#g" "$OUT/index.html"
+done
+
 # Static bird imagery: illustrations (perched <slug>.png, flight <slug>-2.png)
 # and cutouts (photo fallback for the apt.js onerror chain).
 cp -R "$ROOT"/avian/assets/illustrations "$OUT/assets/"

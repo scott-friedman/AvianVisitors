@@ -120,7 +120,67 @@ export default {
     }
     return json({ error: 'not found' }, 404);
   },
+
+  // Cron ([triggers] in wrangler.toml, ET daylight only): Mojo's periodic
+  // "detections". See the MOJO block below for what/why/how-to-remove.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(mojoVisit(env));
+  },
 };
+
+// ---- Mojo, the resident dog-bird (easter egg) ---------------------------------
+// A fake species for dad: the family dog, drawn in the field-guide style and
+// "detected" on a cron so he has always been heard within the last hour — which
+// keeps him on the public collage AND on the e-ink frame (1-h window). The rows
+// are real D1 detections, so every view (stats, dial, rhythm, chorus, modal)
+// stays self-consistent, and every row's play button serves his actual bark.
+// Full removal:
+//   1. delete this block, the scheduled() handler above, and [triggers] in
+//      wrangler.toml → `wrangler deploy`
+//   2. DELETE FROM detections WHERE sci = 'Canis volaticus'  (--remote)
+//   3. wrangler r2 object delete the clips/ key + master/mojo-bark.mp3 (--remote)
+//   4. remove canis-volaticus[-2].png + the FORCE_POSE entry in apt.js,
+//      re-run build_masks.py, bump versions, redeploy Pages
+const MOJO = {
+  sci: 'Canis volaticus',
+  com: 'Mojo',
+  file: 'Mojo-93-2026-07-03-birdnet-08:12:47.mp3', // R2 clip key (his bark)
+  master: 'master/mojo-bark.mp3', // lifecycle-proof copy (outside clips/)
+  skipProb: 0.4,                  // fraction of cron ticks that stay silent
+  confLo: 0.82,
+  confHi: 0.97,
+  extract:
+    'Mojo is a dog hailing from Puerto Rico. While he is scared of trash for ' +
+    'some reason, he loves his family and enjoys peeing on graves in the ' +
+    'cemetery and taking long walks around Sudbury. His distinctive bark is ' +
+    'commonly heard when he sees a person he doesn’t like or when you have a ' +
+    'treat for him. Commonly found attacking his favorite toy, Boney, he ' +
+    'spends many hours of the day asleep, waiting for his next meal.',
+};
+
+async function mojoVisit(env) {
+  // Random skips keep the cadence organic (a dog does not bark every 30:00).
+  if (Math.random() < MOJO.skipProb) return;
+  const conf = MOJO.confLo + Math.random() * (MOJO.confHi - MOJO.confLo);
+  const ts = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    'INSERT OR IGNORE INTO detections (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)'
+  ).bind(MOJO.sci, MOJO.com, Math.round(conf * 1000) / 1000, ts, MOJO.file).run();
+
+  // The clips/ 7-day lifecycle eventually deletes his bark; restore it from
+  // the master copy so the play button never goes quiet.
+  if (env.CLIPS) {
+    const head = await env.CLIPS.head('clips/' + MOJO.file);
+    if (!head) {
+      const m = await env.CLIPS.get(MOJO.master);
+      if (m) {
+        await env.CLIPS.put('clips/' + MOJO.file, m.body, {
+          httpMetadata: { contentType: 'audio/mpeg' },
+        });
+      }
+    }
+  }
+}
 
 // ---- ingest -----------------------------------------------------------------
 
@@ -481,6 +541,8 @@ async function wikiSummary(name) {
 async function wiki(url) {
   const sci = (url.searchParams.get('sci') || '').trim();
   if (!sci) return json({ error: 'sci required' }, 400, WIKI_DAY);
+  // Mojo has no Wikipedia page (yet). Serve his curated field notes.
+  if (sci === MOJO.sci) return json({ extract: MOJO.extract, title: MOJO.com }, 200, WIKI_DAY);
   if (!SCI_RE.test(sci)) return json({ error: 'invalid sci' }, 400, WIKI_DAY);
 
   // Scientific name first (WP redirects it to the species page); fall back to
