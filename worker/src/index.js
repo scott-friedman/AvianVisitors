@@ -453,7 +453,7 @@ async function renderFrame(env, windowHours) {
 // rare miss (recent splits / disambiguation). The {extract,title} shape matches
 // wiki.php, so the frontend is unchanged but for the URL. Cached 24 h
 // (descriptions don't change) at the browser, the CF edge, and the WP subrequest.
-const WIKI_UA = 'BarrysBirds/1.0 (+https://barrysbirds.pages.dev; avian-worker)';
+const WIKI_UA = 'BarrysBirds/1.0 (+https://indianridgeroad.com/birds/; avian-worker)';
 const WIKI_DAY = { 'Cache-Control': 'public, max-age=86400' };
 // "Genus species" (+ optional sub/trinomial) — the shape wiki.php enforced.
 const SCI_RE = /^[A-Za-z]{2,40}(?:[ ][a-z]{2,40}){1,3}$/;

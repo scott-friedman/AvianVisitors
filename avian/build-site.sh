@@ -42,4 +42,11 @@ ls "$OUT"/assets/illustrations/*.png \
 [ -f "$ROOT/avian/assets/signatures.json" ] && cp "$ROOT"/avian/assets/signatures.json "$OUT/assets/"
 [ -d "$ROOT/avian/assets/songs" ] && cp -R "$ROOT"/avian/assets/songs "$OUT/assets/"
 
+# NOTE (2026-07-02): the public home is indianridgeroad.com/birds/. This
+# site deploys to the `avianvisitors` Pages project (origin:
+# birds-origin.indianridgeroad.com, proxied by the `ridge` worker). The old
+# `barrysbirds` project is now only a static 301 stub for legacy
+# barrysbirds.pages.dev links — do NOT deploy this site there.
+#   npx wrangler pages deploy _site --project-name avianvisitors --branch production
+
 echo "built $OUT  ($(find "$OUT" -type f | wc -l | tr -d ' ') files, $(du -sh "$OUT" | cut -f1))"
