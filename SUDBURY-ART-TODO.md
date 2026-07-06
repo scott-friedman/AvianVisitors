@@ -4,7 +4,8 @@
 artwork**, so they're invisible on the e-ink frame and the website (the
 "detected ≠ shown" gotcha — see `CLAUDE.md`). This file tracks which still need
 illustrations drawn. Work the **land** list top-down (it's ranked by how often
-each is actually detected at Sudbury). Progress: **34 / 46 land birds done.**
+each is actually detected at Sudbury). Progress: **35 / 46 land birds done.**
+(All 11 remaining are **undetected** at Sudbury so far — no current collage gap; add on detection.)
 
 ## How this list was derived (don't redo unless the location changes)
 - BirdNET range/meta model @ Sudbury **42.3834, -71.4162**, threshold **0.03**
@@ -105,7 +106,7 @@ each is actually detected at Sudbury). Progress: **34 / 46 land birds done.**
 - [ ] **Fish Crow** — `Corvus ossifragus` · freq 0.06
 - [ ] **Blackpoll Warbler** — `Setophaga striata` · freq 0.05
 - [ ] **Orchard Oriole** — `Icterus spurius` · freq 0.04
-- [ ] **Broad-winged Hawk** — `Buteo platypterus` · freq 0.04
+- [x] **Broad-winged Hawk** — `Buteo platypterus` · freq 0.04  ✅ DEPLOYED LIVE 2026-07-06 (r17) — detected n=1 (only detected-but-invisible bird left); keyed `--tol 18` (pale barred belly intact), cream strays removed via keep-largest. Needed a NEW `species-notes.json` entry (it's a BUTEO not an Accipiter — banded black-and-white tail + rufous-barred underparts + dark trailing edge in flight; the note prevented Red-tail/Accipiter drift). Bonus: also got a **song signature** (whistle is tonal, XC933598 @ 0.93) — complete species (art+bloom).
 - [ ] **Northern Waterthrush** — `Parkesia noveboracensis` · freq 0.04
 - [ ] **Alder Flycatcher** — `Empidonax alnorum` · freq 0.04
 - [ ] **Eastern Meadowlark** — `Sturnella magna` · freq 0.04

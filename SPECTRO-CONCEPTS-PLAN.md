@@ -190,8 +190,8 @@ Net new footprint = just the small bloom in dead space; the line is a swap, not 
    only while the representative clip plays. Gate the bloom-in / any idle motion on
    `prefers-reduced-motion`.
 5. Theme repaint hook (repaint bloom + visible strips on `data-theme` change — mirror existing pattern).
-7. Deploy: `avian/build-site.sh` → `wrangler pages deploy _site --project-name barrysbirds --branch production`
-   (run from `worker/`). Frontend-only; no worker/D1/Pi deploy.
+7. Deploy: `avian/build-site.sh` → `wrangler pages deploy _site --project-name avianvisitors --branch avian-visitors`
+   (barrysbirds is a 301 stub since 07-02 — do NOT deploy the real site there). Frontend-only; no worker/D1/Pi deploy.
 
 ## What was built (2026-06-20) — steps 1–6 done; step 7 (deploy) pending
 - **Shared analysis:** `analyzeBuffer(audioBuffer)` (apt.js, beside `paintSpectrogram`) runs ONE STFT
@@ -263,9 +263,13 @@ node avian/scripts/build-signatures.mjs --all-art          # every species with 
 # 2. Assemble the static site.
 bash avian/build-site.sh
 
-# 3. Deploy.
-cd worker && npx wrangler pages deploy ../_site --project-name barrysbirds --branch production
-#   (use --branch spectro-preview for an unlisted PREVIEW URL that leaves production untouched)
+# 3. Deploy. (barrysbirds is a 301 stub since 2026-07-02 — the real site is the
+#    `avianvisitors` project, prod branch `avian-visitors`, served at
+#    indianridgeroad.com/birds/. build-site.sh now cache-busts signatures.json +
+#    clip URLs, so new signatures are visible immediately — no 24h wait.)
+npx wrangler pages deploy _site --project-name avianvisitors --branch avian-visitors
+#   (verify via avianvisitors.pages.dev ORIGIN before probing the /birds/ proxy —
+#    a premature proxy probe during the prod-alias flip cache-poisons the new URL.)
 ```
 Outputs (commit these): `avian/assets/signatures.json` + `avian/assets/songs/<slug>.mp3`. CI deploys
 never need the key or network — they just ship the committed artifacts.

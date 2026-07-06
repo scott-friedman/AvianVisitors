@@ -21,6 +21,27 @@ cp "$ROOT"/avian/frontend/index.html \
    "$ROOT"/avian/frontend/styles.css \
    "$OUT/"
 
+# Canonical song signatures + the bundled reference clips the bloom plays, WITH
+# cache-busting for the 24h zone/proxy edge cache (same trap as the shell assets
+# below; learned 2026-07-06). Two fixed-path fetches would otherwise serve stale
+# for a day:
+#   (a) apt.js fetches assets/signatures.json → a plain deploy hides newly added
+#       blooms even though the .mp3s (new files, fresh URLs) are already live.
+#   (b) each clip's fixed URL can hold a cached 200-HTML *negative* fallback if
+#       it was probed before it existed (seen on one Osprey clip) → tap-to-play
+#       404s. So version the clip URLs INSIDE the deployed json too.
+# Do this BEFORE the shell-asset loop so apt.js's own ?v= reflects the rewrite,
+# and hash the FINAL deployed json (AFTER clip-versioning) so its fetch URL
+# changes whenever the served bytes change. The committed source stays bare.
+if [ -f "$ROOT/avian/assets/signatures.json" ]; then
+  cp "$ROOT"/avian/assets/signatures.json "$OUT/assets/"
+  [ -d "$ROOT/avian/assets/songs" ] && cp -R "$ROOT"/avian/assets/songs "$OUT/assets/"
+  clipv="$( (md5 -q "$ROOT/avian/assets/signatures.json" 2>/dev/null || md5sum "$ROOT/avian/assets/signatures.json" | awk '{print $1}') | cut -c1-8)"
+  perl -pi -e "s#(assets/songs/[a-z0-9-]+\.mp3)#\$1?v=$clipv#g" "$OUT/assets/signatures.json"
+  sigh="$( (md5 -q "$OUT/assets/signatures.json" 2>/dev/null || md5sum "$OUT/assets/signatures.json" | awk '{print $1}') | cut -c1-8)"
+  [ -f "$OUT/apt.js" ] && perl -pi -e "s#assets/signatures\.json#assets/signatures.json?v=$sigh#g" "$OUT/apt.js"
+fi
+
 # Cache-bust the shell assets (learned 2026-07-03): the site sits behind
 # zone-cached hosts — the birds-origin custom domain AND the ridge /birds proxy
 # both cache assets for 24 h — and a Pages deploy purges neither, so a bare
@@ -50,16 +71,16 @@ ls "$OUT"/assets/illustrations/*.png \
   | awk 'BEGIN{printf "{\"slugs\":["} {printf "%s\"%s\"", (NR>1?",":""), $0} END{print "]}"}' \
   > "$OUT/assets/art-manifest.json"
 
-# Canonical song signatures (precomputed) + the bundled reference clips the
-# bloom plays. Both optional - the site degrades to a hidden bloom without them.
-[ -f "$ROOT/avian/assets/signatures.json" ] && cp "$ROOT"/avian/assets/signatures.json "$OUT/assets/"
-[ -d "$ROOT/avian/assets/songs" ] && cp -R "$ROOT"/avian/assets/songs "$OUT/assets/"
+# (Song signatures + clips are copied + cache-busted near the top, before the
+# shell-asset hashing loop — see that block.)
 
 # NOTE (2026-07-02): the public home is indianridgeroad.com/birds/. This
 # site deploys to the `avianvisitors` Pages project (origin:
 # birds-origin.indianridgeroad.com, proxied by the `ridge` worker). The old
 # `barrysbirds` project is now only a static 301 stub for legacy
 # barrysbirds.pages.dev links — do NOT deploy this site there.
-#   npx wrangler pages deploy _site --project-name avianvisitors --branch production
+#   npx wrangler pages deploy _site --project-name avianvisitors --branch avian-visitors
+#   (avian-visitors IS the project's Production branch → feeds birds-origin; a
+#    --branch production deploy would land on a preview URL the domain never sees.)
 
 echo "built $OUT  ($(find "$OUT" -type f | wc -l | tr -d ' ') files, $(du -sh "$OUT" | cut -f1))"

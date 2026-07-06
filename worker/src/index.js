@@ -178,10 +178,13 @@ async function dispatch(request, env, url, path) {
 
 // ---- Mojo, the resident dog-bird (easter egg) ---------------------------------
 // A fake species for dad: the family dog, drawn in the field-guide style and
-// "detected" on a cron so he has always been heard within the last hour — which
-// keeps him on the public collage AND on the e-ink frame (1-h window). The rows
-// are real D1 detections, so every view (stats, dial, rhythm, chorus, modal)
-// stays self-consistent, and every row's play button serves his actual bark.
+// "detected" on a cron. As of 2026-07-06 he no longer sits permanently in the
+// 1-h window: mojoVisit() gates his appearances on real recent bird activity and
+// caps them to a few a day (see that function), so he surfaces on the collage /
+// e-ink frame intermittently — around when other birds are actually singing, and
+// never on a dead hour. The rows are real D1 detections, so every view (stats,
+// dial, rhythm, chorus, modal) stays self-consistent, and every row's play
+// button serves his actual bark.
 // Full removal:
 //   1. delete this block, the scheduled() handler above, and [triggers] in
 //      wrangler.toml → `wrangler deploy`
@@ -194,7 +197,13 @@ const MOJO = {
   com: 'Mojo',
   file: 'Mojo-93-2026-07-03-birdnet-08:12:47.mp3', // R2 clip key (his bark)
   master: 'master/mojo-bark.mp3', // lifecycle-proof copy (outside clips/)
-  skipProb: 0.4,                  // fraction of cron ticks that stay silent
+  // Appearance shaping (see mojoVisit): he surfaces a few times a day, only when
+  // the yard is actually active, never on a dead hour. Tune these to taste.
+  activityWindowMin: 45, // "recent" window for judging real-bird activity
+  minRecentReal: 3,      // ≥ this many NON-Mojo detections in that window = active
+  minGapMin: 90,         // min minutes between his own appearances (spreads them out)
+  dailyCap: 4,           // at most this many per LOCAL day ("a few")
+  visitProb: 0.6,        // coin-flip on an otherwise-eligible tick (organic jitter)
   confLo: 0.82,
   confHi: 0.97,
   extract:
@@ -207,10 +216,41 @@ const MOJO = {
 };
 
 async function mojoVisit(env) {
-  // Random skips keep the cadence organic (a dog does not bark every 30:00).
-  if (Math.random() < MOJO.skipProb) return;
+  // Mojo now shows up a FEW times a day, and ONLY when the yard is actually
+  // busy — he barks at the other birds, not into a dead hour. On each cron tick
+  // (every 30 min, ET daylight) he must clear four gates, in order:
+  //   1. ACTIVITY — ≥ minRecentReal real (non-Mojo) detections in the last
+  //      activityWindowMin. No birds around ⇒ no Mojo, which both skips
+  //      otherwise-inactive hours and ties his timing to when other birds sing.
+  //   2. SPACING  — ≥ minGapMin since his own last appearance, so he doesn't
+  //      cluster on the dawn chorus and doesn't sit permanently in the 1-h window.
+  //   3. DAILY CAP — at most dailyCap per local day ("a few", not a fixture).
+  //   4. COIN-FLIP — even an eligible tick is only taken visitProb of the time,
+  //      so the cadence stays organic rather than firing the instant a gate opens.
+  const now = Math.floor(Date.now() / 1000);
+
+  // 1) Activity gate. Plain COUNT over a ts range (the `sci !=` is a cheap
+  //    post-filter); no GROUP BY/DISTINCT, so no index pin needed (cf. status()).
+  const active = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM detections WHERE sci != ? AND ts >= ?'
+  ).bind(MOJO.sci, now - MOJO.activityWindowMin * 60).first();
+  if (!active || active.n < MOJO.minRecentReal) return;
+
+  // 2)+3) His own recent rows (equality on sci + ts range ⇒ the (sci,ts) dedupe
+  //    index is exactly right). One read covers both the daily cap and the gap.
+  const dayStart = localDayStart(env, now);
+  const mine = await env.DB.prepare(
+    'SELECT ts FROM detections WHERE sci = ? AND ts >= ? ORDER BY ts DESC'
+  ).bind(MOJO.sci, Math.min(dayStart, now - MOJO.minGapMin * 60)).all();
+  const rows = (mine && mine.results) || [];
+  if (rows.filter((r) => r.ts >= dayStart).length >= MOJO.dailyCap) return; // capped today
+  if (rows.length && rows[0].ts >= now - MOJO.minGapMin * 60) return;       // too soon
+
+  // 4) Organic coin-flip.
+  if (Math.random() > MOJO.visitProb) return;
+
   const conf = MOJO.confLo + Math.random() * (MOJO.confHi - MOJO.confLo);
-  const ts = Math.floor(Date.now() / 1000);
+  const ts = now;
   await env.DB.prepare(
     'INSERT OR IGNORE INTO detections (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)'
   ).bind(MOJO.sci, MOJO.com, Math.round(conf * 1000) / 1000, ts, MOJO.file).run();
