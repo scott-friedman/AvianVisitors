@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.enabled == 'true'
         with:
-          node-version: 20
+          node-version: 22
       - run: bash avian/build-site.sh
         if: steps.gate.outputs.enabled == 'true'
       - run: npx wrangler@4 pages deploy _site --project-name avianvisitors --branch avian-visitors

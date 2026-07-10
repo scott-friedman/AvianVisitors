@@ -41,7 +41,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: steps.gate.outputs.enabled == 'true'
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: worker/package-lock.json
       - run: npm ci
