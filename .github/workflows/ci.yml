@@ -1,0 +1,59 @@
+# Fork-native CI for the avian-visitors branch (the only branch work happens
+# on). Replaces upstream's python-app.yml / python-ci.yml, which targeted
+# `main` and therefore NEVER ran on this fork — and whose pytest run can't even
+# collect here (upstream tests/ needs apprise/tensorflow). This covers the
+# custom code instead: the worker (vitest + syntax + dry-run bundle), the Pi
+# python (forwarder tests on the Mac's 3.9 and the Pi's 3.11), and the shell
+# scripts (hard errors only).
+name: CI
+
+on:
+  push:
+    branches: [avian-visitors]
+  pull_request:
+    branches: [avian-visitors]
+
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci
+      - run: node --check src/index.js
+      # Bundles with the real wrangler.toml but deploys nothing (no auth needed):
+      # catches config/bundle breakage before it reaches a real deploy.
+      - run: npx wrangler deploy --dry-run --outdir=.wrangler-dry
+      - run: npm test
+
+  pi:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.11'] # Mac system python / Pi Bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install pytest
+      - run: python -m py_compile pi/detection-forwarder.py frame/display.py
+      - run: python -m pytest pi/tests -q
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # severity=error keeps this high-signal (syntax-level breakage only);
+      # tighten once the existing scripts are shellcheck-clean at lower levels.
+      - run: shellcheck --severity=error pi/*.sh avian/build-site.sh newinstaller.sh

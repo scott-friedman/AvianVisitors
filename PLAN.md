@@ -20,12 +20,12 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 
 1. Read `CLAUDE.md` (architecture, hardware facts, constraints).
 2. Skim "Current state" and "Prerequisites" below.
-3. **Phases 0/1/3 live; Phase 4 CLOUD done (`/frame` view + `/frame.png` deployed + verified).** Read "Current state (snapshot)" for the live resources + the exact remaining steps. The remaining work is **Phase 4 Pi install** (Pi is reachable; needs Scott's OK to take the panel from inky-web), **Phase 2** (needs USB mic), and **Phase 5** (needs Scott's scoped CF token).
+3. **Phases 0–4 live end-to-end** (detection → D1 → collage site → e-ink panel; mic working, forwarder + frame client running on the Pi). Read "Current state (snapshot)" for the live resources. The one remaining line item is **Phase 5 CI auto-deploy** (needs Scott's bird-scoped CF token as the `CLOUDFLARE_API_TOKEN` repo secret — the workflows self-skip until then).
 4. Each phase has a **Goal → Steps → Done when → Needs Scott**. Stop and ask on anything marked OPEN or "Needs Scott".
 
 ---
 
-## Current state (snapshot) — updated 2026-06-19 (Cloudflare side DONE & verified; **Pi BirdNET-Pi hit a 512 MB memory crisis → see `PI-RECOVERY.md`**; USB mic + Phase 5 token still remain)
+## Current state (snapshot) — updated 2026-07-10 (Cloudflare side DONE & verified; Pi recovered from the 512 MB crisis via `pi/zero2w-tune.sh` — see `PI-RECOVERY.md`; **mic attached + working 2026-06-19, detections flowing**; only the Phase 5 CI-deploy token remains)
 
 **Deployed & verified on Cloudflare** (account `78b235c12ec2f4d437534392b48ed173`, via wrangler OAuth; isolated from foobos):
 
@@ -46,8 +46,8 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 **Phase 4 cloud — DONE (2026-06-19):** (a) `?frame=1` strips chrome to a pure-white, animation-free collage (inline script+`<style>` in `avian/frontend/index.html`; apt.js untouched) — Pages deployed. (b) Worker `GET /frame.png` Browser-Renders that view at 800×480, signature-caches the PNG in D1 `frame_cache`, FRAME_KEY-gated — deployed + verified (401 w/o key, miss→hit, dithers to exactly 7 colours). **Browser Rendering confirmed available on the Workers FREE plan** (10 min/day) — the "may need Paid" worry is resolved. Deps: `@cloudflare/puppeteer`, `nodejs_compat` flag, `FRAME_URL` var, `FRAME_KEY` secret (gitignored `worker/.avian-frame-key`).
 
 **Remaining work (cold-start pickup):**
-1. **USB mic + OTG adapter** (hardware — the only thing gating real birds): plug in → `arecord -l` shows a capture device → set the sound card at http://inky.local/ → enable detection (`sudo systemctl enable --now birdnet_analysis birdnet_recording`) → real detections flow (forwarder + frame already wired + tested). Then clear the demo data (`DELETE FROM detections`). *(Region → Sudbury 42.3834,-71.4162 and worker `TZ_OFFSET_HOURS=-4` already set 2026-06-19.)*
-2. **CI auto-deploy** (needs Scott's scoped CF token): GitHub secrets `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` (workflows already written: `.github/workflows/cf-deploy-{pages,worker}.yml`). *(The Phase 5 remote-admin tunnel is DONE and did NOT need this token — just a browser login.)*
+1. ~~**USB mic + OTG adapter**~~ **DONE 2026-06-19** — mic attached and working (`REC_CARD=default`, records through pulse; see CLAUDE.md "Hardware"), detection enabled, real detections flowing. *(Region → Sudbury 42.3834,-71.4162 set 2026-06-19. Worker timezone is `TZ_NAME="America/New_York"` — DST-correct; `TZ_OFFSET_HOURS` is only the fallback.)*
+2. **CI auto-deploy** (needs Scott's scoped CF token): the original workflows were deleted 2026-06 (never got repo secrets); **re-added 2026-07-10** as `.github/workflows/cf-deploy-{pages,worker}.yml` — they self-skip with a notice until the `CLOUDFLARE_API_TOKEN` repo secret exists (bird-scoped token: Workers Scripts + D1 + Pages Edit), so the only remaining step is `gh secret set CLOUDFLARE_API_TOKEN`. *(The Phase 5 remote-admin tunnel is DONE and did NOT need this token — just a browser login.)*
 
 **Deviation logged:** dithering runs on the Pi (Inky `set_image`), not the Worker as CLAUDE.md's diagram says — 7-colour dither in a Worker is impractical, so the Worker serves a clean 800×480 PNG and the Pi dithers. "No browser on the Pi" still honored (rendering is off-Pi).
 
@@ -98,7 +98,7 @@ What Scott will notice when it's done: visit a web link → see birds appear liv
 - **Done when**: `curl -X POST .../api/detection` with the secret inserts a row, and `GET /api/recent` returns it. Verify the row via MCP `d1_database_query`.
 - **Needs Scott**: Cloudflare token/auth for deploy (D1 create can be MCP-driven with his ok).
 
-## Phase 2 — Pi: detection engine + hook (needs Pi + mic)  ·  ⛔ BLOCKED (no mic)
+## Phase 2 — Pi: detection engine + hook  ·  ✅ DONE (mic attached + working 2026-06-19; forwarder live)
 
 - **Goal**: every real BirdNET detection POSTs to `/api/detection`.
 - **Steps**:

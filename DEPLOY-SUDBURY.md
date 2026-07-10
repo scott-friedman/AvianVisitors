@@ -36,7 +36,7 @@ The software is essentially done; the rest is the move. Status as of **2026-06-1
 
 ## D. Later / optional
 
-- ⬜ **CI auto-deploy** — add a scoped CF API token as GitHub secrets so future code changes deploy themselves (`.github/workflows/cf-deploy-{pages,worker}.yml` already written).
+- ⬜ **CI auto-deploy** — add a bird-scoped CF API token as the `CLOUDFLARE_API_TOKEN` repo secret so future code changes deploy themselves. The workflows (`.github/workflows/cf-deploy-{pages,worker}.yml`, re-added 2026-07-10 after the originals were deleted) self-skip until the secret exists.
 - ⬜ **Phone-only wifi portal** (AP fallback) — see Wifi plan below.
 - ⬜ Custom domain · per-bird audio playback (v2).
 

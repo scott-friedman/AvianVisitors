@@ -1852,9 +1852,146 @@
   var ICON_PLAY = '<svg viewBox="0 0 12 12" fill="currentColor"><path d="M3 2 L10 6 L3 10 Z"/></svg>';
   var ICON_PAUSE = '<svg viewBox="0 0 12 12" fill="currentColor"><rect x="3" y="2" width="2.5" height="8"/><rect x="6.5" y="2" width="2.5" height="8"/></svg>';
 
+  // ---- Atlas audio: ONE persistent controller ----
+  // State + listeners live OUTSIDE renderAtlas: the grid re-renders on every
+  // 30 s poll, and re-wiring inside the render stacked a fresh click delegate
+  // on the persistent #atlasGrid each time (~120/hour — a spectrogram click
+  // then fired N stale handlers → N play/stop toggles and N Audio loads). One
+  // delegated listener, attached once, survives innerHTML swaps; the per-card
+  // play buttons need no listeners of their own.
+  var atlasAudioEl = null;   // the playing Audio element
+  var atlasAudioBtn = null;  // its card's play button (detached after a re-render; compared by identity only)
+
+  function atlasSetBtnState(btn, state) {
+    btn.setAttribute('data-state', state);
+    if (state === 'playing') {
+      btn.setAttribute('data-active', 'true');
+      btn.innerHTML = ICON_PAUSE + '<span>stop</span>';
+    } else if (state === 'loading') {
+      btn.setAttribute('data-active', 'true');
+      btn.innerHTML = ICON_PLAY + '<span>...</span>';
+    } else if (state === 'missing') {
+      btn.setAttribute('data-active', 'false');
+      btn.innerHTML = ICON_PLAY + '<span>no audio</span>';
+      setTimeout(function () {
+        if (btn.getAttribute('data-state') === 'missing') {
+          btn.innerHTML = ICON_PLAY + '<span>play</span>';
+          btn.setAttribute('data-state', 'idle');
+        }
+      }, 2200);
+    } else {
+      btn.setAttribute('data-active', 'false');
+      btn.innerHTML = ICON_PLAY + '<span>play</span>';
+    }
+  }
+  function atlasClearProgress(card) {
+    if (!card) return;
+    var sw = card.querySelector('.spectro-wrap');
+    if (sw) sw.style.setProperty('--prog', '0%');
+    card.removeAttribute('data-playing');
+  }
+  function atlasStopCurrent() {
+    audioRelease(atlasStopCurrent);
+    if (atlasAudioEl) {
+      try { atlasAudioEl.pause(); } catch (e) {}
+      atlasAudioEl = null;
+    }
+    if (atlasAudioBtn) {
+      atlasClearProgress(atlasAudioBtn.closest('.bird-card'));
+      atlasSetBtnState(atlasAudioBtn, 'idle');
+      atlasAudioBtn = null;
+    }
+  }
+  function atlasPlay(btn) {
+    var card = btn.closest('.bird-card');
+    if (btn === atlasAudioBtn) { atlasStopCurrent(); return; }
+    atlasStopCurrent();
+    audioClaim(atlasStopCurrent);   // stop any modal-recording / live-stream audio
+    atlasSetBtnState(btn, 'loading');
+    atlasAudioBtn = btn;
+    // Render the spectrogram client-side from the recording's audio so it
+    // matches the active theme (same canvas path the modal recordings use).
+    // Decoded buffers are cached per URL.
+    var spectroWrap = card.querySelector('.spectro-wrap');
+    if (spectroWrap && !spectroWrap.firstChild) {
+      var canvas = document.createElement('canvas');
+      spectroWrap.appendChild(canvas);
+      var aurl = card.dataset.audio;
+      if (_decodedCache[aurl]) {
+        paintSpectrogram(canvas, _decodedCache[aurl]);
+      } else {
+        var actx = getSpecCtx();
+        if (actx) {
+          fetch(aurl)
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+            .then(function (b) { return actx.decodeAudioData(b); })
+            .then(function (buf) {
+              _decodedCache[aurl] = buf;
+              // Guard on document containment, not spectroWrap.contains:
+              // a 30s refreshAll() poll can rebuild the atlas and detach
+              // this card mid-decode. The detached wrap still "contains"
+              // its canvas, but a detached node measures 0x0, which would
+              // trap paintSpectrogram in its size-retry loop forever.
+              if (document.contains(canvas)) paintSpectrogram(canvas, buf);
+            })
+            .catch(function () { if (spectroWrap.contains(canvas)) spectroWrap.removeChild(canvas); });
+        } else {
+          spectroWrap.removeChild(canvas);
+        }
+      }
+    }
+    // Start audio.
+    var audio = new Audio(card.dataset.audio);
+    audio.addEventListener('canplay', function () {
+      if (atlasAudioBtn !== btn) return; // user clicked away
+      atlasSetBtnState(btn, 'playing');
+      card.setAttribute('data-playing', 'true');
+      audio.play();
+    });
+    // Progress bar on the spectrogram strip.
+    audio.addEventListener('timeupdate', function () {
+      if (atlasAudioBtn !== btn) return;
+      var pct = audio.duration ? (audio.currentTime / audio.duration * 100) : 0;
+      if (spectroWrap) spectroWrap.style.setProperty('--prog', pct.toFixed(1) + '%');
+    });
+    audio.addEventListener('ended', function () {
+      if (atlasAudioBtn === btn) atlasStopCurrent();
+    });
+    audio.addEventListener('error', function () {
+      if (atlasAudioBtn === btn) {
+        atlasSetBtnState(btn, 'missing');
+        atlasClearProgress(card);
+        atlasAudioEl = null; atlasAudioBtn = null;
+      }
+    });
+    atlasAudioEl = audio;
+    audio.load();
+  }
+  function wireAtlasAudio(grid) {
+    if (grid.__audioWired) return;   // once per page load — the delegate outlives every re-render
+    grid.__audioWired = true;
+    grid.addEventListener('click', function (ev) {
+      var btn = ev.target.closest && ev.target.closest('[data-action="play"]');
+      if (btn) { atlasPlay(btn); return; }
+      // Spectrogram click = scrub to that position (if playing) or start playback.
+      var sw = ev.target.closest && ev.target.closest('.spectro-wrap');
+      if (!sw || !sw.firstChild) return;
+      var card = sw.closest('.bird-card');
+      var pbtn = card.querySelector('[data-action="play"]');
+      if (atlasAudioBtn === pbtn && atlasAudioEl && atlasAudioEl.duration) {
+        var rect = sw.getBoundingClientRect();
+        var pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+        atlasAudioEl.currentTime = pct * atlasAudioEl.duration;
+      } else {
+        atlasPlay(pbtn);
+      }
+    });
+  }
+
   function renderAtlas(animate) {
     var grid = document.getElementById('atlasGrid');
     if (!grid) return;
+    wireAtlasAudio(grid);
 
     var lifelist = (DATA.lifelist && DATA.lifelist.species) || [];
     var recent = (DATA.recent && DATA.recent.species) || [];
@@ -1940,142 +2077,8 @@
         + '</article>';
     }).join('');
 
-    // Wire audio playback + spectrogram load.
-    // - Only one card plays at a time. Clicking play on a different card
-    //   stops the current one first.
-    // - The spectrogram is lazily fetched on first play (saves a Pi hit
-    //   for every card visible on initial render).
-    // - If the recording endpoint 404s (no detection yet for this
-    //   species), the button reverts and shows "no audio".
-    var currentAudio = null;
-    var currentBtn = null;
-    function setBtnState(btn, state) {
-      btn.setAttribute('data-state', state);
-      if (state === 'playing') {
-        btn.setAttribute('data-active', 'true');
-        btn.innerHTML = ICON_PAUSE + '<span>stop</span>';
-      } else if (state === 'loading') {
-        btn.setAttribute('data-active', 'true');
-        btn.innerHTML = ICON_PLAY + '<span>...</span>';
-      } else if (state === 'missing') {
-        btn.setAttribute('data-active', 'false');
-        btn.innerHTML = ICON_PLAY + '<span>no audio</span>';
-        setTimeout(function () {
-          if (btn.getAttribute('data-state') === 'missing') {
-            btn.innerHTML = ICON_PLAY + '<span>play</span>';
-            btn.setAttribute('data-state', 'idle');
-          }
-        }, 2200);
-      } else {
-        btn.setAttribute('data-active', 'false');
-        btn.innerHTML = ICON_PLAY + '<span>play</span>';
-      }
-    }
-    function clearProgressOn(card) {
-      if (!card) return;
-      var sw = card.querySelector('.spectro-wrap');
-      if (sw) sw.style.setProperty('--prog', '0%');
-      card.removeAttribute('data-playing');
-    }
-    function stopCurrent() {
-      audioRelease(stopCurrent);
-      if (currentAudio) {
-        try { currentAudio.pause(); } catch (e) {}
-        currentAudio = null;
-      }
-      if (currentBtn) {
-        var card = currentBtn.closest('.bird-card');
-        clearProgressOn(card);
-        setBtnState(currentBtn, 'idle');
-        currentBtn = null;
-      }
-    }
-    grid.querySelectorAll('[data-action="play"]').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var card = btn.closest('.bird-card');
-        if (btn === currentBtn) { stopCurrent(); return; }
-        stopCurrent();
-        audioClaim(stopCurrent);   // stop any modal-recording / live-stream audio
-        setBtnState(btn, 'loading');
-        currentBtn = btn;
-        // Render the spectrogram client-side from the recording's audio so
-        // it matches the active theme. paintSpectrogram paints with the
-        // --paper/--ink palette per data-theme (the same canvas the modal
-        // recordings use), instead of a fixed-colour PNG that can't follow
-        // light/dark mode. Decoded buffers are cached per URL.
-        var spectroWrap = card.querySelector('.spectro-wrap');
-        if (spectroWrap && !spectroWrap.firstChild) {
-          var canvas = document.createElement('canvas');
-          spectroWrap.appendChild(canvas);
-          var aurl = card.dataset.audio;
-          if (_decodedCache[aurl]) {
-            paintSpectrogram(canvas, _decodedCache[aurl]);
-          } else {
-            var actx = getSpecCtx();
-            if (actx) {
-              fetch(aurl)
-                .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
-                .then(function (b) { return actx.decodeAudioData(b); })
-                .then(function (buf) {
-                  _decodedCache[aurl] = buf;
-                  // Guard on document containment, not spectroWrap.contains:
-                  // a 30s refreshAll() poll can rebuild the atlas and detach
-                  // this card mid-decode. The detached wrap still "contains"
-                  // its canvas, but a detached node measures 0x0, which would
-                  // trap paintSpectrogram in its size-retry loop forever.
-                  if (document.contains(canvas)) paintSpectrogram(canvas, buf);
-                })
-                .catch(function () { if (spectroWrap.contains(canvas)) spectroWrap.removeChild(canvas); });
-            } else {
-              spectroWrap.removeChild(canvas);
-            }
-          }
-        }
-        // Start audio.
-        var audio = new Audio(card.dataset.audio);
-        audio.addEventListener('canplay', function () {
-          if (currentBtn !== btn) return; // user clicked away
-          setBtnState(btn, 'playing');
-          card.setAttribute('data-playing', 'true');
-          audio.play();
-        });
-        // Progress bar on the spectrogram strip.
-        audio.addEventListener('timeupdate', function () {
-          if (currentBtn !== btn) return;
-          var pct = audio.duration ? (audio.currentTime / audio.duration * 100) : 0;
-          if (spectroWrap) spectroWrap.style.setProperty('--prog', pct.toFixed(1) + '%');
-        });
-        audio.addEventListener('ended', function () {
-          if (currentBtn === btn) stopCurrent();
-        });
-        audio.addEventListener('error', function () {
-          if (currentBtn === btn) {
-            setBtnState(btn, 'missing');
-            clearProgressOn(card);
-            currentAudio = null; currentBtn = null;
-          }
-        });
-        currentAudio = audio;
-        audio.load();
-      });
-    });
+    // (audio wiring is the persistent delegate installed by wireAtlasAudio above)
 
-    // Spectrogram click = scrub to that position (if playing) or restart.
-    grid.addEventListener('click', function (ev) {
-      var sw = ev.target.closest && ev.target.closest('.spectro-wrap');
-      if (!sw || !sw.firstChild) return;
-      var card = sw.closest('.bird-card');
-      var btn = card.querySelector('[data-action="play"]');
-      // If this card is the active one, scrub.
-      if (currentBtn === btn && currentAudio && currentAudio.duration) {
-        var rect = sw.getBoundingClientRect();
-        var pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
-        currentAudio.currentTime = pct * currentAudio.duration;
-      } else {
-        // Otherwise start playback from the top.
-        btn.click();
-      }
-    });
     if (animate) playAtlasEntrance();
   }
 
@@ -2135,10 +2138,15 @@
       fetchJson(AV_API + '/api/birdnet-api.php?action=rhythm&days=14').catch(function () { return null; }),
       fetchChorus(),   // sets DATA.chorus itself; window-independent (fixed 12h)
     ]).then(function (parts) {
-      DATA.stats = parts[0];
-      DATA.lifelist = parts[1];
-      DATA.timeseries = parts[2];
-      DATA.firstseen = parts[3];
+      // EVERY slice is guarded: each fetch .catch()es to null, so one
+      // transient worker 500 (the 07-03 burst shape) must keep the last good
+      // data on screen — the first four used to assign unconditionally, which
+      // blanked the whole atlas to "No birds detected yet" until the next
+      // good tick.
+      if (parts[0]) DATA.stats = parts[0];
+      if (parts[1]) DATA.lifelist = parts[1];
+      if (parts[2]) DATA.timeseries = parts[2];
+      if (parts[3]) DATA.firstseen = parts[3];
       // Only accept the recent/hourly slices if the window hasn't changed
       // since this poll started - otherwise keep what's there.
       if (forHours === currentHours && parts[4]) DATA.recent = parts[4];

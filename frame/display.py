@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
@@ -132,6 +133,12 @@ def signature(species):
 def get_image(src, timeout, auth=None):
     if re.match(r"^https?://", src):
         req = urllib.request.Request(src, headers={"User-Agent": "AvianVisitors-frame/1.0"})
+        # Also send any ?k= frame key as X-Frame-Key: the worker prefers the
+        # header (a query-string key would land in request-URL logs once
+        # Workers Logs is enabled); ?k= keeps working during the transition.
+        k = urllib.parse.parse_qs(urllib.parse.urlparse(src).query).get("k")
+        if k:
+            req.add_header("X-Frame-Key", k[0])
         if auth:
             req.add_header("Authorization", auth)
         with urllib.request.urlopen(req, timeout=timeout) as r:

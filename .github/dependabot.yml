@@ -1,0 +1,25 @@
+# Weekly dependency watch for the custom code's three ecosystems. Upstream
+# BirdNET-Pi's root requirements.txt is deliberately NOT covered (theirs to
+# churn; our pip surface is the pinned files below).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /worker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: pip
+    directory: /avian/scripts
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: pip
+    directory: /frame
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

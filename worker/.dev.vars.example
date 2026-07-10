@@ -1,4 +1,16 @@
-# Copy to .dev.vars (gitignored) for `wrangler dev`. The Pi sends this same
-# value in the X-Avian-Secret header; in production set it via
-# `wrangler secret put AVIAN_INGEST_SECRET` (NOT committed).
+# Copy to .dev.vars (gitignored) for `wrangler dev`. Non-secret [vars]
+# (TZ_NAME, SITE_LAT/LON, FRAME_URL, PAGES_BASE, …) come from wrangler.toml
+# automatically; only the SECRETS need entries here.
+
+# The Pi sends this same value in the X-Avian-Secret header; in production set
+# it via `wrangler secret put AVIAN_INGEST_SECRET` (NOT committed).
 AVIAN_INGEST_SECRET = "dev-local-secret-not-for-prod"
+
+# Gates GET /frame.png (the metered Browser Rendering route; the Pi sends it as
+# X-Frame-Key, legacy ?k= also accepted). In production:
+# `wrangler secret put FRAME_KEY`. The route fails CLOSED when unset — either
+# set a dev value here, or open it locally with FRAME_DEV_OPEN.
+FRAME_KEY = "dev-frame-key-not-for-prod"
+
+# Uncomment to let /frame.png run with NO key in local dev (never set in prod).
+# FRAME_DEV_OPEN = "1"

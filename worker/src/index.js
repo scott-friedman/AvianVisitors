@@ -44,10 +44,11 @@ const JSON_HEADERS = {
 };
 
 function json(obj, status = 200, extra = {}) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: { ...JSON_HEADERS, ...extra },
-  });
+  const headers = { ...JSON_HEADERS, ...extra };
+  // Never let an error response inherit the public max-age (a cached 4xx/5xx
+  // would keep serving the failure after the cause clears).
+  if (status >= 400) headers['Cache-Control'] = 'no-store';
+  return new Response(JSON.stringify(obj), { status, headers });
 }
 
 // Local-time offset in hours from UTC. TZ_NAME (an IANA zone, "America/New_York")
@@ -112,13 +113,17 @@ export default {
         await new Promise((r) => setTimeout(r, 200 + 400 * attempt));
       }
     }
-    return json({ error: 'internal', detail: String((lastErr && lastErr.message) || lastErr) }, 500);
+    // Log path only, never url.search — /frame.png carries ?k=<FRAME_KEY>.
+    console.error(`[dispatch] ${request.method} ${path} failed after retries:`, lastErr);
+    return json({ error: 'internal' }, 500);
   },
 
   // Cron ([triggers] in wrangler.toml, ET daylight only): Mojo's periodic
   // "detections". See the MOJO block below for what/why/how-to-remove.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(mojoVisit(env));
+    // A transient D1 reset just loses this tick (self-heals in 30 min) — but
+    // log it, or cron failures vanish without a trace.
+    ctx.waitUntil(mojoVisit(env).catch((err) => console.error('[mojo] cron tick failed:', err)));
   },
 };
 
@@ -296,8 +301,17 @@ async function ingest(request, env) {
   if (!sci || !com || !Number.isFinite(conf) || !Number.isFinite(ts)) {
     return json({ error: 'need {sci, com, conf, ts}' }, 400);
   }
-  // Accept confidence as 0..1 or 0..100; store as 0..1.
-  const c = conf > 1 ? conf / 100 : conf;
+  // Hardening (secret-gated, but a Pi-side bug must not poison the DB): names
+  // bounded (longest real bird binomials/commons are well under 60 chars; a
+  // multi-MB string would be echoed by every GROUP BY endpoint), ts within a
+  // sane window (a far-future ts would permanently top `recent` and pin the
+  // poll-cache version; ±7 days covers any realistic forwarder replay backlog).
+  if (sci.length > 120 || com.length > 120) return json({ error: 'name too long' }, 400);
+  if (Math.abs(ts - Math.floor(Date.now() / 1000)) > 7 * 86400) {
+    return json({ error: 'ts out of range' }, 400);
+  }
+  // Accept confidence as 0..1 or 0..100; store clamped to 0..1.
+  const c = Math.max(0, Math.min(1, conf > 1 ? conf / 100 : conf));
 
   // INSERT OR IGNORE against UNIQUE(sci, ts) dedupes Pi restarts/replays.
   await env.DB.prepare(
@@ -309,7 +323,11 @@ async function ingest(request, env) {
   if (file && env.CLIPS && sci !== MOJO.sci) {
     try {
       await archiveRareClip(env, sci, file);
-    } catch { /* archive is a bonus; the detection row is what matters */ }
+    } catch (err) {
+      // Archive is a bonus — never fail the ingest — but log it: a silent
+      // failure here quietly erodes the forever-archive.
+      console.error('[ingest] rare-clip archive failed:', sci, file, err);
+    }
   }
 
   return new Response(null, { status: 204, headers: CORS });
@@ -512,13 +530,27 @@ async function getFrameWindow(env) {
 }
 
 // POST /api/frame-config {window_hours:N} — set the shared frame window. OPEN
-// (no auth) by design: it only writes one validated number and cannot trigger
-// the metered render (that stays FRAME_KEY-gated on /frame.png). json() carries
-// CORS. See FRAME-WINDOW-TOGGLE-PLAN.md "Optional hardening" to gate this later.
+// (no auth) by design — the public site's picker writes it — so abuse is kept
+// cheap instead (hardened 2026-07-10): a no-op write is skipped entirely (no
+// D1 write to burn the pooled quota on), and real changes are rate-limited per
+// isolate. Render burn is bounded structurally: frame_cache keeps one PNG per
+// window (migration 0006), so flipping the window serves the other window's
+// cached frame — a metered render happens only when that window's detection
+// signature actually changes. json() carries CORS.
+const FRAME_CONFIG_MIN_INTERVAL_MS = 3000;
+let _frameConfigLastWrite = 0;
+
 async function setFrameConfig(request, env) {
   const body = await request.json().catch(() => ({}));
   const h = Number(body.window_hours);
   if (!FRAME_WINDOWS.includes(h)) return json({ error: 'bad window_hours' }, 400);
+  const current = await getFrameWindow(env);
+  if (current === h) return json({ window_hours: h }); // no-op: skip the write
+  const nowMs = Date.now();
+  if (nowMs - _frameConfigLastWrite < FRAME_CONFIG_MIN_INTERVAL_MS) {
+    return json({ error: 'too many changes; retry shortly' }, 429, { 'Retry-After': '3' });
+  }
+  _frameConfigLastWrite = nowMs;
   await env.DB.prepare(
     'INSERT OR REPLACE INTO settings (id, frame_window_hours) VALUES (1, ?)'
   ).bind(h).run();
@@ -568,9 +600,15 @@ function pngResponse(body, sig, note) {
 }
 
 async function frame(request, env, url) {
-  // k=FRAME_KEY gate: only the Pi (and Scott) can trigger a render, which costs
-  // browser time. If FRAME_KEY is unset the route is open (dev convenience).
-  if (env.FRAME_KEY && url.searchParams.get('k') !== env.FRAME_KEY) {
+  // FRAME_KEY gate: only the Pi (and Scott) can trigger a render, which costs
+  // metered browser time. Accepted as X-Frame-Key header (preferred — a ?k=
+  // query would land in request-URL logs) or legacy ?k= during the Pi
+  // transition. Fails CLOSED when FRAME_KEY is unset, like every other gated
+  // route; set FRAME_DEV_OPEN=1 in .dev.vars to open it for local dev.
+  const provided = request.headers.get('X-Frame-Key') || url.searchParams.get('k') || '';
+  if (!env.FRAME_KEY) {
+    if (env.FRAME_DEV_OPEN !== '1') return json({ error: 'unauthorized' }, 401);
+  } else if (provided !== env.FRAME_KEY) {
     return json({ error: 'unauthorized' }, 401);
   }
 
@@ -583,14 +621,16 @@ async function frame(request, env, url) {
   const sig = await frameSignature(rows, windowHours);
 
   // Cache hit: this exact frame was already rendered → serve it, no browser.
-  const hit = await env.DB.prepare('SELECT png FROM frame_cache WHERE id = 1 AND sig = ?').bind(sig).first();
+  // One cached PNG per window (id = window hours, migration 0006), so a
+  // window flip serves the other window's frame instead of forcing a render.
+  const hit = await env.DB.prepare('SELECT png FROM frame_cache WHERE id = ? AND sig = ?').bind(windowHours, sig).first();
   if (hit && hit.png) return pngResponse(hit.png, sig, 'hit');
 
   // Miss: render off-Pi. On failure, fall back to the last good frame so the
   // panel keeps showing something (display.py likewise keeps its last image).
   let png;
   try {
-    png = await renderFrame(env, windowHours);
+    png = await renderFrame(env, windowHours, rows.length > 0);
     // Sanity-gate before caching: a catastrophically broken screenshot (empty,
     // truncated, not a PNG) must not be cached under this signature — it would
     // stick on the panel until the data next changes. The floor is deliberately
@@ -602,18 +642,20 @@ async function frame(request, env, url) {
       throw new Error(`render produced invalid png (${png ? png.length : 0} bytes)`);
     }
   } catch (err) {
-    const stale = await env.DB.prepare('SELECT png, sig FROM frame_cache WHERE id = 1').first();
+    console.error('[frame] render failed, falling back to stale:', err);
+    const stale = (await env.DB.prepare('SELECT png, sig FROM frame_cache WHERE id = ?').bind(windowHours).first())
+      || (await env.DB.prepare('SELECT png, sig FROM frame_cache ORDER BY ts DESC LIMIT 1').first());
     if (stale && stale.png) return pngResponse(stale.png, stale.sig, 'stale');
-    return json({ error: 'render failed', detail: String((err && err.message) || err) }, 502);
+    return json({ error: 'render failed' }, 502);
   }
 
   await env.DB.prepare(
-    'INSERT OR REPLACE INTO frame_cache (id, sig, png, ts) VALUES (1, ?, ?, ?)'
-  ).bind(sig, png.buffer, now).run();
+    'INSERT OR REPLACE INTO frame_cache (id, sig, png, ts) VALUES (?, ?, ?, ?)'
+  ).bind(windowHours, sig, png.buffer, now).run();
   return pngResponse(png, sig, 'miss');
 }
 
-async function renderFrame(env, windowHours) {
+async function renderFrame(env, windowHours, expectTiles) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
@@ -624,8 +666,14 @@ async function renderFrame(env, windowHours) {
     target.searchParams.set('window', String(windowHours));
     await page.goto(target.toString(), { waitUntil: 'load', timeout: 30000 });
     // The collage polls /api/recent on a timer, so networkidle never settles;
-    // wait for tiles to mount, then for their images to decode.
-    await page.waitForSelector('#collage .gtile', { timeout: 15000 }).catch(() => {});
+    // wait for tiles to mount, then for their images to decode. When the
+    // window HAS detections, tiles failing to appear means a broken page load
+    // — throw (→ the stale fallback) rather than cache a blank white 800×480
+    // under this signature, which would stick on the panel until the data
+    // next changes. An EMPTY window legitimately renders no tiles.
+    const tileWait = page.waitForSelector('#collage .gtile', { timeout: 15000 });
+    if (expectTiles) await tileWait;
+    else await tileWait.catch(() => {});
     await page.evaluate(async () => {
       const imgs = Array.from(document.querySelectorAll('#collage img'));
       await Promise.race([
@@ -690,7 +738,11 @@ async function wiki(url) {
     const com = (url.searchParams.get('com') || '').trim();
     if (com && /^[\p{L}][\p{L} .'-]{1,58}$/u.test(com)) hit = await wikiSummary(com);
   }
-  return json(hit || { extract: null, title: null }, 200, WIKI_DAY);
+  // A null can be a TRANSIENT Wikipedia failure, not just a missing article —
+  // cache it briefly so an outage doesn't pin "no description" for a day.
+  return hit
+    ? json(hit, 200, WIKI_DAY)
+    : json({ extract: null, title: null }, 200, { 'Cache-Control': 'public, max-age=300' });
 }
 
 // ---- read API (reimplements avian/api/birdnet-api.php over D1) ---------------
@@ -710,14 +762,46 @@ const POLL_CACHE_ACTIONS = new Set(['recent', 'stats', 'lifelist', 'timeseries',
 const POLL_CACHE_BUCKET_MS = 5 * 60 * 1000;
 const POLL_CACHE_MAX = 200; // bound ?hours=/?days= key variants; FIFO-evict beyond
 
+// Cache keys are built ONLY from the params each action actually reads, clamped
+// to the same bounds its handler applies — a junk or randomized query string
+// (?hours=1000000&x=<rand>) must collapse onto the canonical entry, not bypass
+// the cache (every bypass re-runs a whole-table GROUP BY: the 07-03 D1 overload,
+// attacker-triggerable on demand if the raw query string were the key). Bonus:
+// /api/recent?hours=24 and /api/birdnet-api.php?action=recent&hours=24 now share
+// one entry. KEEP IN SYNC with each handler's clampInt call (the tests lock it).
+const POLL_CACHE_PARAMS = {
+  recent:     [['hours', 24, 1, 1000000]],
+  stats:      [],
+  facts:      [],
+  lifelist:   [],
+  timeseries: [['days', 30, 1, 90]],
+  firstseen:  [['limit', 10, 1, 50]],
+  hourly:     [['hours', 24, 1, 1000000]],
+  rhythm:     [['days', 14, 1, 90], ['top', 12, 1, 40]],
+  chorus:     [['hours', 12, 1, 48], ['interval', 30, 10, 120], ['top', 24, 1, 60]],
+};
+function pollKey(action, url) {
+  const parts = (POLL_CACHE_PARAMS[action] || [])
+    .map(([name, dflt, lo, hi]) => `${name}=${clampInt(url.searchParams.get(name), dflt, lo, hi)}`);
+  return action + '?' + parts.join('&');
+}
+
 async function queryApi(request, env, url) {
   if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405);
 
   // action from ?action=, else inferred from the path's last segment, so both
-  // /api/recent and /api/birdnet-api.php?action=recent resolve the same.
+  // /api/recent and /api/birdnet-api.php?action=recent resolve the same. The
+  // action-less default to 'recent' is the PHP-shim contract — but only for
+  // birdnet-api.php / the bare /api root; an unknown path is a real 404 (it
+  // used to silently serve `recent`, masking typos from monitors and probes).
   const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config', 'chorus'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
-  const action = url.searchParams.get('action') || (known.includes(seg) ? seg : 'recent');
+  let action = url.searchParams.get('action');
+  if (!action) {
+    if (known.includes(seg)) action = seg;
+    else if (seg === 'birdnet-api.php' || seg === 'api') action = 'recent';
+    else return json({ error: 'not found' }, 404);
+  }
 
   const tz = tzMod(env);
   const now = Math.floor(Date.now() / 1000);
@@ -740,7 +824,7 @@ async function queryApi(request, env, url) {
   };
 
   if (!POLL_CACHE_ACTIONS.has(action)) return run();
-  return pollCached(env, action + '?' + url.searchParams.toString(), run);
+  return pollCached(env, pollKey(action, url), run);
 }
 
 // The micro-cache core, shared by queryApi and /api/coverage (which the HA
@@ -911,9 +995,14 @@ async function facts(env, tz, now) {
   }
 
   // 6) RETURN — heard today after a ≥3-day absence (activates as the dataset ages)
+  // NO index pin here (removed 2026-07-10): this is the one windowed query where
+  // idx_detections_dedupe is the RIGHT index — the outer side runs as per-species
+  // (sci=?, ts>?) seeks off the join, ~4× faster than forcing idx_detections_ts
+  // (verified with EXPLAIN QUERY PLAN + benchmark; the full-scan trap doesn't
+  // fire on this shape).
   const back = await first(
     `SELECT d.sci, d.com, MIN(d.ts) AS firstToday, p.prev AS prev
-       FROM detections d INDEXED BY idx_detections_ts
+       FROM detections d
        JOIN (SELECT sci, MAX(ts) AS prev FROM detections WHERE ts < ? GROUP BY sci) p ON p.sci = d.sci
       WHERE d.ts >= ?
       GROUP BY d.sci
@@ -1010,7 +1099,9 @@ async function fetchJsonAsset(u) {
 }
 
 async function coverage(env) {
-  const base = (env.PAGES_BASE || 'https://barrysbirds.pages.dev').replace(/\/+$/, '');
+  // Fallback matches wrangler.toml's PAGES_BASE — NOT the retired barrysbirds
+  // stub, which only "worked" by chasing its 301 (the loop CLAUDE.md warns about).
+  const base = (env.PAGES_BASE || 'https://birds-origin.indianridgeroad.com').replace(/\/+$/, '');
 
   // Detected species (life list), heaviest hitters first so the gap lists read
   // "most-heard missing bird" at the top.
@@ -1337,7 +1428,7 @@ async function species(env, url, tz) {
        FROM detections WHERE sci = ?`
   ).bind(tz, tz, sci).first();
 
-  return json({ sci, summary, detections });
+  return json({ sci, summary, detections, as_of: new Date().toISOString() });
 }
 
 async function firstseen(env, url, tz) {
@@ -1354,3 +1445,9 @@ function clampInt(raw, dflt, lo, hi) {
   if (!Number.isFinite(n)) return dflt;
   return Math.max(lo, Math.min(hi, n));
 }
+
+// Exposed for unit tests only (worker/test/*) — not part of any runtime contract.
+export {
+  tzOffsetHours, tzMod, localDayStart, clampInt, clipKey, parseRange,
+  isTransientD1, pollKey, frameSignature, POLL_CACHE, FRAME_WINDOWS, RARE_MAX,
+};

@@ -44,7 +44,9 @@ if [[ ! -z $PACKAGES_MISSING ]] ; then
 fi
 
 branch=avian-visitors
-git clone -b $branch --depth=1 https://github.com/Twarner491/AvianVisitors.git ${HOME}/BirdNET-Pi &&
+# The FORK, not upstream Twarner491: a disaster-recovery reinstall must get the
+# pi/ glue (forwarder, mandatory 512 MB tuning, update path), which upstream lacks.
+git clone -b $branch --depth=1 https://github.com/scott-friedman/AvianVisitors.git ${HOME}/BirdNET-Pi &&
 
 $HOME/BirdNET-Pi/scripts/install_birdnet.sh
 if [ ${PIPESTATUS[0]} -eq 0 ];then

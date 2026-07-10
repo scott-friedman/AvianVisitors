@@ -1,0 +1,52 @@
+# Deploy the static collage site to the `avianvisitors` Pages project on
+# avian/ changes (PLAN.md item 4; the foobos pattern).
+#
+# GATED on the CLOUDFLARE_API_TOKEN repo secret — no-ops with a notice until
+# it exists (see cf-deploy-worker.yml's header; the token additionally needs
+# Cloudflare Pages: Edit).
+#
+# Deploy target gotchas (CLAUDE.md): avian-visitors IS the project's
+# Production branch → feeds birds-origin.indianridgeroad.com. NEVER deploy to
+# the old `barrysbirds` project (it's a 301 stub — the ridge proxy would loop).
+# Do NOT add post-deploy URL probes through indianridgeroad.com here: probing
+# a new ?v= asset URL through the proxy during the ~1-min production-alias
+# flip cache-poisons it for 24 h (the 2026-07-06 incident). Verify manually
+# via avianvisitors.pages.dev first.
+name: Deploy Pages site
+
+on:
+  push:
+    branches: [avian-visitors]
+    paths: ['avian/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: cf-deploy-pages
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Gate on the deploy token
+        id: gate
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN secret not set — skipping deploy (see cf-deploy-worker.yml header to enable)"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          node-version: 20
+      - run: bash avian/build-site.sh
+        if: steps.gate.outputs.enabled == 'true'
+      - run: npx wrangler@4 pages deploy _site --project-name avianvisitors --branch avian-visitors
+        if: steps.gate.outputs.enabled == 'true'

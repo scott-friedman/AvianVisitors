@@ -8,9 +8,16 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply avian-detections --local",
-    "migrate:remote": "wrangler d1 migrations apply avian-detections --remote"
+    "migrate:remote": "wrangler d1 migrations apply avian-detections --remote",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "node --check src/index.js && wrangler deploy --dry-run"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.1.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.7",
+    "wrangler": "^4.110.0"
   }
 }

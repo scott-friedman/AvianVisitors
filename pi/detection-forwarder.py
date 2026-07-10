@@ -35,8 +35,13 @@ Config via env (set in the systemd unit):
     AVIAN_EXTRACTED    BirdNET-Pi's EXTRACTED dir (default ~/BirdSongs/Extracted)
     AVIAN_AUDIOFMT     extracted clip extension (default mp3; matches AUDIOFMT)
 
-Note: the ingest secret is read once at startup, so rotating it requires a
-forwarder restart (otherwise every POST 401s and is dropped).
+Outage behavior: a detection POST that still fails after ~20 s of backoff makes
+the process exit(1) WITHOUT advancing the offset — systemd (Restart=always)
+relaunches it and it resumes at the saved offset, so BirdDB.txt acts as the
+spool through any multi-minute worker outage. Only a worker-rejected payload
+(4xx other than auth/429) is skipped, so one poison line can't wedge the queue.
+A side benefit: the secret is read once at startup, and the exit/restart cycle
+re-reads it — so rotating the secret self-heals within a retry cycle.
 """
 from __future__ import annotations
 
@@ -44,6 +49,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -187,21 +193,34 @@ def handle_line(secret: str, line: str) -> None:
     # Retries with growing backoff (3/6/12 s ≈ 20 s covered) ride out a transient
     # blip — DNS, a momentary wifi drop, a D1 storage reset (2026-07-03: back-to-
     # back 500 bursts dropped ~30 detections on the old 3×2 s schedule; the worker
-    # now also retries D1 internally). A sustained outage still drops the line:
-    # acceptable for a species collage (common birds re-detect constantly; the
-    # worker dedupes), and not worth a persistent spool. Offset persistence covers
-    # the *restart* case.
+    # now also retries D1 internally). A SUSTAINED outage no longer drops the
+    # line: we exit(1) WITHOUT advancing the offset, systemd (Restart=always)
+    # relaunches us, and follow() resumes at the saved offset — BirdDB.txt itself
+    # is the spool, and the worker's (sci,ts) INSERT OR IGNORE absorbs any
+    # replays. Head-of-line blocking during an outage is exactly what we want.
+    # The one exception: a payload the worker REJECTED (4xx) can never succeed —
+    # exiting would wedge the spool forever on one poison line, so those are
+    # logged and skipped. 401/403/429 stay in the exit path on purpose: a restart
+    # re-reads the secret file, so a secret rotation now self-heals.
     last = None
     for attempt in range(4):
         try:
             status = post(secret, sci, com, conf, ts, file_key)
             print(f"posted {sci} ({com}) conf={conf:.3f} ts={ts} file={file_key or '-'} -> {status}", flush=True)
             return
-        except Exception as e:  # HTTPError (4xx/5xx) or URLError (network) — retry then give up
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500 and e.code not in (401, 403, 429):
+                print(f"POST rejected ({e.code}) for {sci} — skipping this line: {e}",
+                      file=sys.stderr, flush=True)
+                return
             last = e
-            if attempt < 3:
-                time.sleep(3 * 2 ** attempt)
-    print(f"POST failed for {sci} after retries: {last}", file=sys.stderr, flush=True)
+        except Exception as e:  # URLError (network/DNS), timeout — retry then spool
+            last = e
+        if attempt < 3:
+            time.sleep(3 * 2 ** attempt)
+    print(f"POST failed for {sci} after retries: {last} — exiting; systemd restarts us "
+          f"at the saved offset so nothing is lost", file=sys.stderr, flush=True)
+    sys.exit(1)
 
 
 def follow(path: str):
