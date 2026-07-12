@@ -1,3 +1,19 @@
+> ## About this fork
+>
+> This is **scott-friedman's fork** of AvianVisitors, and it runs a **different
+> architecture** than the upstream README below describes. Here the Pi (a Zero 2 W)
+> is **detection-only**: BirdNET hears a bird, a hook POSTs it to a Cloudflare
+> Worker (`avian-worker`, D1 + R2), the public collage is served from Cloudflare
+> Pages, and the Worker renders an 800×480 PNG that an e-ink picture frame pulls.
+> Nothing public is served from the Pi — the on-Pi Caddy/PHP path below is **not
+> used** in this deployment.
+>
+> Start here: **[`CLAUDE.md`](CLAUDE.md)** (architecture + gotchas) ·
+> **[`PLAN.md`](PLAN.md)** (build plan) · **[`DEPLOYING.md`](DEPLOYING.md)** (deploy runbook).
+> License: **CC-BY-NC-SA-4.0** (non-commercial). Everything below is upstream's README, unmodified.
+
+---
+
 # AvianVisitors
 
 *A live bird collage from your window.*

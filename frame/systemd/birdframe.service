@@ -12,4 +12,5 @@ WorkingDirectory=/home/monalisa/AvianVisitors/frame
 ExecStart=/home/monalisa/AvianVisitors/frame/.venv/bin/python /home/monalisa/AvianVisitors/frame/display.py --config /home/monalisa/.birdframe/config.toml
 Environment=PYTHONUNBUFFERED=1
 Nice=10
-TimeoutStartSec=180
+# Worst case ~175 s+ (three 45 s-timeout fetches + ~40 s ACeP push) — keep headroom.
+TimeoutStartSec=300

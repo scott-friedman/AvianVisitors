@@ -14,7 +14,9 @@
 set -uo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "ERROR: run as root (sudo bash pi/zero2w-tune.sh)"; exit 1; }
 
-BNHOME=/home/inky/BirdNET-Pi
+# Runs under sudo (root's $HOME) — derive the invoking user's home instead of
+# hardcoding /home/inky so a rebuild under a different username works.
+BNHOME="$(eval echo "~${SUDO_USER:-$(id -un)}")/BirdNET-Pi"
 VENV_LIB="$BNHOME/birdnet/lib"
 CONF="$BNHOME/birdnet.conf"
 

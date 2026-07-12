@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chorus — mockup</title>
+<style>
+  /* ---- palette + type lifted from the real site (avian/frontend/styles.css) ---- */
+  :root{
+    --paper:#fcfcfb; --paper-2:#f3f2ee; --paper-3:#e8e6df;
+    --ink:#1a1612; --ink-2:#4a3f31; --ink-soft:#908576;
+    --hairline:rgba(26,22,18,.14); --accent:#4a3f31;
+    /* muted "field watercolor" ribbon palette (CHORUS-PLAN §11.3) */
+    --ch-1:#b9836f; --ch-2:#c9a25a; --ch-3:#8a9a5b; --ch-4:#7faa8e;
+    --ch-5:#6f8aa8; --ch-6:#c08aa0; --ch-7:#9a8f4f; --ch-8:#9a8e7e;
+    --ch-9:#8c7194; --ch-10:#88a7bd; --ch-11:#a96a4f; --ch-12:#7d9a86;
+    --serif:ui-serif,"Iowan Old Style","Apple Garamond",Georgia,serif;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  :root[data-theme="dark"]{
+    --paper:#17181c; --paper-2:#212329; --paper-3:#2c2f36;
+    --ink:#ece8e1; --ink-2:#b7afa2; --ink-soft:#837c70;
+    --hairline:rgba(236,232,225,.20); --accent:#d8d2c6;
+    --ch-1:#cf9683; --ch-2:#dcb56e; --ch-3:#9eae6c; --ch-4:#92bda1;
+    --ch-5:#85a0bd; --ch-6:#d29fb4; --ch-7:#b1a45f; --ch-8:#b0a392;
+    --ch-9:#a486ac; --ch-10:#9dbcd2; --ch-11:#c07e62; --ch-12:#92af9b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--paper); color:var(--ink); font-family:var(--serif);
+    -webkit-font-smoothing:antialiased; min-height:100vh;
+    display:flex; flex-direction:column; align-items:center;
+    padding:24px 18px 120px;
+  }
+  .head{width:100%;max-width:1000px;display:flex;justify-content:space-between;align-items:flex-start}
+  .pre{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+       color:var(--ink-soft);background:none;border:0;cursor:default}
+  h1{font-weight:600;font-size:clamp(24px,3.2vw,38px);margin:.1em 0 0;letter-spacing:.01em}
+  .sub{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+       color:var(--ink-soft);margin-top:6px}
+  .theme{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+         color:var(--ink-soft);background:none;border:1px solid var(--hairline);border-radius:20px;
+         padding:6px 12px;cursor:pointer}
+  .theme:hover{color:var(--ink);border-color:var(--ink-soft)}
+
+  /* ---- controls (segmented pills, cloned from the site's .stats-chart-toggle) ---- */
+  .controls{width:100%;max-width:1000px;display:flex;gap:14px;flex-wrap:wrap;
+            margin:22px 0 6px;align-items:center}
+  .seg{position:relative;display:inline-flex;background:var(--paper-2);border-radius:999px;
+       padding:3px;border:1px solid var(--hairline)}
+  .seg button{position:relative;z-index:1;font-family:var(--mono);font-size:10.5px;
+       letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);
+       background:none;border:0;padding:7px 14px;border-radius:999px;cursor:pointer;transition:color .2s}
+  .seg button[aria-current="true"]{color:var(--ink)}
+  .seg .pill{position:absolute;z-index:0;top:3px;bottom:3px;border-radius:999px;background:var(--paper);
+       box-shadow:0 1px 3px rgba(26,22,18,.12);transition:left .26s cubic-bezier(.7,.05,.2,1),width .26s cubic-bezier(.7,.05,.2,1)}
+  :root[data-theme="dark"] .seg .pill{background:#3a3e48}
+  .seg.toggle button[aria-pressed="true"]{color:var(--ink)}
+  .spacer{flex:1}
+  .legend-note{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+       color:var(--ink-soft)}
+
+  /* ---- chart stage ---- */
+  .stage{position:relative;width:100%;max-width:1000px;margin-top:6px;
+         touch-action:none;user-select:none}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .ch-daylight{fill:var(--ch-2);opacity:.07}
+  .ch-night-label,.ch-day-label{font-family:var(--mono);font-size:9px;letter-spacing:.12em;
+       text-transform:uppercase;fill:var(--ink-soft)}
+  .ch-sun{stroke:var(--ink-soft);stroke-width:1;stroke-dasharray:2 3;opacity:.6}
+  .ch-axis text{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;fill:var(--ink-soft)}
+  .ch-axis line{stroke:var(--hairline);stroke-width:1}
+  .ch-now line{stroke:var(--ink);stroke-width:1.2;opacity:.5}
+  .ch-now text{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;fill:var(--ink-2)}
+
+  .ribbon{transition:opacity .22s ease,fill-opacity .22s ease;cursor:pointer}
+  .ribbon path.fill{fill-opacity:.62}
+  .ribbon path.crest{fill:none;stroke-width:1.1;opacity:.5}
+  .ribbon.others path.fill{fill:var(--ink-soft);fill-opacity:.22}
+  .ribbon.others path.crest{stroke:var(--ink-soft)}
+
+  .ch-variety{fill:none;stroke:var(--ink);stroke-width:1.3;stroke-dasharray:1.5 3.5;opacity:.55;stroke-linecap:round}
+  .ch-variety-label{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;fill:var(--ink-soft)}
+
+  /* floating illustrations overlay */
+  .birds{position:absolute;inset:0;pointer-events:none}
+  .bird{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;cursor:pointer;
+        transition:transform .2s ease,filter .2s ease,opacity .22s ease;will-change:transform}
+  .bird img{width:100%;height:auto;display:block;
+        filter:drop-shadow(0 2px 6px rgba(26,22,18,.18))}
+  .bird:hover{transform:translate(-50%,-50%) scale(1.06)}
+  .bird .nm{position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:2px;white-space:nowrap;
+        font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;
+        color:var(--ink-2);opacity:0;transition:opacity .2s}
+  .bird:hover .nm{opacity:1}
+  .bird.noart{pointer-events:auto}
+  .bird.noart .nm{opacity:1;position:static;transform:none;margin:0;
+        background:var(--paper);padding:2px 6px;border:1px solid var(--hairline);border-radius:10px}
+
+  /* isolate / dim */
+  .stage.has-active .ribbon:not(.is-active){opacity:.1}
+  .stage.has-active .bird:not(.is-active){opacity:.12}
+  .stage.has-active .bird.is-active{transform:translate(-50%,-50%) scale(1.12)}
+
+  /* scrub readout */
+  .scrubline{position:absolute;top:0;bottom:0;width:1px;background:var(--ink);opacity:.35;
+       pointer-events:none;display:none}
+  .tip{position:absolute;z-index:9;min-width:140px;max-width:230px;pointer-events:none;display:none;
+       background:var(--paper);border:1px solid var(--hairline);border-radius:12px;padding:9px 11px;
+       box-shadow:0 6px 22px rgba(26,22,18,.16);transform:translate(-50%,0)}
+  .tip .hd{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+       color:var(--ink-soft);margin-bottom:6px}
+  .tip .row{display:flex;align-items:center;gap:7px;margin:3px 0}
+  .tip .row img{width:22px;height:22px;object-fit:contain;flex:0 0 22px}
+  .tip .row .c{flex:1;font-size:12.5px;line-height:1.1}
+  .tip .row .n{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+  .tip .empty{font-size:12px;color:var(--ink-soft)}
+
+  .read{width:100%;max-width:1000px;margin-top:14px;font-size:13.5px;line-height:1.5;color:var(--ink-2)}
+  .read b{color:var(--ink);font-weight:600}
+
+  /* faux bottom nav, to show it as a 4th tab */
+  .slider{position:fixed;left:50%;bottom:max(18px,env(safe-area-inset-bottom));transform:translateX(-50%);
+       display:inline-flex;background:var(--paper-2);border:1px solid var(--hairline);border-radius:999px;
+       padding:4px;box-shadow:0 4px 18px rgba(26,22,18,.12);z-index:20}
+  .slider button{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:lowercase;
+       color:var(--ink-soft);background:none;border:0;padding:8px 16px;border-radius:999px;cursor:pointer}
+  .slider button[aria-current="true"]{color:var(--ink);background:var(--paper);box-shadow:0 1px 3px rgba(26,22,18,.12)}
+  :root[data-theme="dark"] .slider button[aria-current="true"]{background:#3a3e48}
+  @media(max-width:560px){ h1{font-size:24px} .controls{gap:10px} }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div>
+      <button class="pre">barry's birds</button>
+      <h1>The Last Twelve Hours</h1>
+      <div class="sub" id="subline">rolling window · 2:00 am → now</div>
+    </div>
+    <button class="theme" id="themeBtn">dark</button>
+  </div>
+
+  <div class="controls">
+    <div class="seg" id="ivSeg" role="tablist" aria-label="time detail">
+      <i class="pill"></i>
+      <button data-iv="30" aria-current="true">30 min</button>
+      <button data-iv="60">1 hr</button>
+    </div>
+    <div class="seg" id="modeSeg" role="tablist" aria-label="view mode">
+      <i class="pill"></i>
+      <button data-mode="volume" aria-current="true">volume</button>
+      <button data-mode="mix">mix</button>
+    </div>
+    <div class="seg toggle" id="varSeg" role="group" aria-label="variety line">
+      <i class="pill" style="opacity:0"></i>
+      <button data-var="1" aria-pressed="true">variety line</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="legend-note">hover / drag to read · tap a bird to follow it</div>
+  </div>
+
+  <div class="stage" id="stage">
+    <svg id="svg" viewBox="0 0 1000 460" preserveAspectRatio="xMidYMid meet" role="img"
+         aria-label="Stream of bird calls over the last twelve hours"></svg>
+    <div class="birds" id="birds"></div>
+    <div class="scrubline" id="scrubline"></div>
+    <div class="tip" id="tip"></div>
+  </div>
+
+  <div class="read" id="read"></div>
+
+  <nav class="slider" aria-label="View (mockup)">
+    <button>collage</button><button>stats</button><button>atlas</button>
+    <button aria-current="true">chorus</button>
+  </nav>
+
+<script>
+(function(){
+  "use strict";
+  var ASSET = "avian/assets/illustrations/";
+  var FALLBACK = "avian/assets/cutouts/";
+  function slug(sci){ return sci.toLowerCase().replace(/[^a-z]+/g,"-").replace(/^-|-$/g,""); }
+
+  // ---- species config: a believable Sudbury dawn-chorus arc (clock hours) ----
+  // peak = clock hour of peak activity; spread = hours; amp = peak calls / 30-min bin.
+  var SPECIES = [
+    {sci:"Bubo virginianus",       com:"Great Horned Owl",      peak:3.4,  spread:1.3, amp:6},
+    {sci:"Turdus migratorius",     com:"American Robin",        peak:5.4,  spread:1.4, amp:36},
+    {sci:"Melospiza melodia",      com:"Song Sparrow",          peak:5.6,  spread:1.6, amp:19},
+    {sci:"Cardinalis cardinalis",  com:"Northern Cardinal",     peak:6.0,  spread:1.3, amp:24},
+    {sci:"Agelaius phoeniceus",    com:"Red-winged Blackbird",  peak:6.6,  spread:1.9, amp:16},
+    {sci:"Zenaida macroura",       com:"Mourning Dove",         peak:6.4,  spread:3.0, amp:9},
+    {sci:"Poecile atricapillus",   com:"Black-capped Chickadee",peak:7.6,  spread:2.5, amp:21},
+    {sci:"Baeolophus bicolor",     com:"Tufted Titmouse",       peak:8.2,  spread:2.3, amp:12},
+    {sci:"Dryobates pubescens",    com:"Downy Woodpecker",      peak:8.7,  spread:2.4, amp:7},
+    {sci:"Spinus tristis",         com:"American Goldfinch",    peak:9.6,  spread:2.1, amp:11},
+    {sci:"Cyanocitta cristata",    com:"Blue Jay",              peak:11.4, spread:2.2, amp:14},
+    {sci:"Corvus brachyrhynchos",  com:"American Crow",         peak:12.1, spread:1.8, amp:11}
+  ];
+  var START = 2;          // window starts at 2:00 am
+  var SPAN = 12;          // 12 hours
+  var SUNRISE = 5.15, SUNSET = 20.4;   // Sudbury, mid-June
+
+  // deterministic jitter so it's stable across renders
+  function jit(a,b){ var x=Math.sin(a*127.1 + b*311.7)*43758.5453; x-=Math.floor(x); return 0.84 + x*0.32; }
+
+  function build(ivMin){
+    var ivH = ivMin/60, nB = Math.round(SPAN/ivH), scale = ivMin/30; // 60min bins ~2x counts
+    var binClock=[], totals=new Array(nB).fill(0), variety=new Array(nB).fill(0);
+    var sp = SPECIES.map(function(s,si){
+      var counts=new Array(nB).fill(0), total=0, peakBin=0, peakN=-1;
+      for(var i=0;i<nB;i++){
+        var c = START + (i+0.5)*ivH; if(si===0) binClock[i]=c;
+        var g = s.amp*scale*Math.exp(-0.5*Math.pow((c-s.peak)/s.spread,2))*jit(i,si);
+        var n = Math.max(0, Math.round(g));
+        counts[i]=n; total+=n; totals[i]+=n;
+        if(n>0) variety[i]++;
+        if(n>peakN){peakN=n;peakBin=i;}
+      }
+      return {sci:s.sci, com:s.com, counts:counts, total:total, peakBin:peakBin};
+    }).filter(function(s){return s.total>0;});
+    return {nB:nB, ivH:ivH, binClock:binClock, sp:sp, totals:totals, variety:variety};
+  }
+
+  // ---- layout ----
+  var W=1000,H=460, plotL=10,plotR=990,plotT=46,plotB=414, midY=(plotT+plotB)/2;
+  var plotW=plotR-plotL;
+  function xClock(c){ return plotL + ((c-START)/SPAN)*plotW; }
+  function f(x){ return (Math.round(x*100)/100); }
+
+  // Catmull-Rom -> cubic bezier segments (tension 1/6), reused from the rhythm chart
+  function seg(pts){
+    var d="";
+    for(var i=0;i<pts.length-1;i++){
+      var p0=pts[i-1]||pts[i],p1=pts[i],p2=pts[i+1],p3=pts[i+2]||pts[i+1];
+      var c1x=p1[0]+(p2[0]-p0[0])/6, c1y=p1[1]+(p2[1]-p0[1])/6;
+      var c2x=p2[0]-(p3[0]-p1[0])/6, c2y=p2[1]-(p3[1]-p1[1])/6;
+      d+="C"+f(c1x)+" "+f(c1y)+" "+f(c2x)+" "+f(c2y)+" "+f(p2[0])+" "+f(p2[1]);
+    }
+    return d;
+  }
+
+  var state={iv:30, mode:"volume", variety:true, active:null, data:null};
+  var rootStyle = getComputedStyle(document.documentElement);
+  function hue(i){ return rootStyle.getPropertyValue("--ch-"+((i%12)+1)).trim(); }
+
+  function order(sp){
+    // inside-out by peak: earliest peaks toward the centre, alternating outward
+    var byPeak = sp.slice().sort(function(a,b){return a.peakBin-b.peakBin;});
+    var top=[],bot=[];
+    byPeak.forEach(function(s,i){ if(i%2) top.unshift(s); else bot.push(s); });
+    return top.concat(bot); // rendered top -> bottom of the stack
+  }
+
+  function render(){
+    var D=state.data, nB=D.nB, sp=D.sp;
+    // assign a stable colour per species (distinct in render order for the demo)
+    var ord = order(sp);
+    ord.forEach(function(s,i){ s._hue = hue(i); s._idx = i; });
+
+    // y-scale
+    var maxStack=1; for(var i=0;i<nB;i++) maxStack=Math.max(maxStack, D.totals[i]);
+    var bandH=(plotB-plotT)*0.60;
+    var fixedH=bandH;                 // mix mode: every bin sums to this
+    // build top/bottom boundaries per species
+    ord.forEach(function(s){ s.top=new Array(nB); s.bot=new Array(nB); });
+    for(var b=0;b<nB;b++){
+      var tot=D.totals[b];
+      var totalH = state.mode==="mix" ? (tot>0?fixedH:0) : tot*(bandH/maxStack);
+      var cursor = midY - totalH/2;
+      for(var k=0;k<ord.length;k++){
+        var s=ord[k], v=s.counts[b];
+        var h = state.mode==="mix" ? (tot>0 ? (v/tot)*fixedH : 0) : v*(bandH/maxStack);
+        s.top[b]=cursor; cursor+=h; s.bot[b]=cursor;
+      }
+    }
+
+    var svg=["<defs></defs>"];
+
+    // daylight band + sunrise tick
+    var dx=xClock(SUNRISE);
+    svg.push('<rect class="ch-daylight" x="'+f(dx)+'" y="'+plotT+'" width="'+f(plotR-dx)+'" height="'+(plotB-plotT)+'"/>');
+    svg.push('<line class="ch-sun" x1="'+f(dx)+'" y1="'+plotT+'" x2="'+f(dx)+'" y2="'+plotB+'"/>');
+    svg.push('<text class="ch-night-label" x="'+f((plotL+dx)/2)+'" y="'+(plotT-14)+'" text-anchor="middle">night</text>');
+    svg.push('<text class="ch-day-label" x="'+f(dx+8)+'" y="'+(plotT-14)+'">☀ daylight</text>');
+
+    // ribbons
+    function ribbon(s){
+      var top=[],bot=[];
+      top.push([plotL, s.top[0]]); bot.push([plotL, s.bot[0]]);
+      for(var i=0;i<nB;i++){ var x=xClock(D.binClock[i]); top.push([x,s.top[i]]); bot.push([x,s.bot[i]]); }
+      top.push([plotR, s.top[nB-1]]); bot.push([plotR, s.bot[nB-1]]);
+      var botR=bot.slice().reverse();
+      var d="M"+f(top[0][0])+" "+f(top[0][1])+seg(top)+"L"+f(botR[0][0])+" "+f(botR[0][1])+seg(botR)+"Z";
+      var crest="M"+f(top[0][0])+" "+f(top[0][1])+seg(top);
+      return '<g class="ribbon" data-sci="'+s.sci+'">'
+           + '<path class="fill" d="'+d+'" style="fill:'+s._hue+'"/>'
+           + '<path class="crest" d="'+crest+'" style="stroke:'+s._hue+'"/></g>';
+    }
+    ord.forEach(function(s){ svg.push(ribbon(s)); });
+
+    // variety line (own scale, top strip)
+    if(state.variety){
+      var maxV=1; for(var i2=0;i2<nB;i2++) maxV=Math.max(maxV,D.variety[i2]);
+      var vp=[[plotL, 92-(D.variety[0]/maxV)*46]];
+      for(var i3=0;i3<nB;i3++) vp.push([xClock(D.binClock[i3]), 92-(D.variety[i3]/maxV)*46]);
+      vp.push([plotR, 92-(D.variety[nB-1]/maxV)*46]);
+      svg.push('<path class="ch-variety" d="M'+f(vp[0][0])+" "+f(vp[0][1])+seg(vp)+'"/>');
+      svg.push('<text class="ch-variety-label" x="'+(plotL+2)+'" y="40" text-anchor="start">variety · up to '+
+               Math.max.apply(null,D.variety)+' kinds at once</text>');
+    }
+
+    // axis ticks every 2h
+    svg.push('<g class="ch-axis">');
+    for(var c=START;c<=START+SPAN+0.01;c+=2){
+      var x=xClock(c), hr=((Math.round(c)%24)+24)%24, ap=hr<12?"a":"p", h12=(hr%12)||12;
+      svg.push('<line x1="'+f(x)+'" y1="'+plotB+'" x2="'+f(x)+'" y2="'+(plotB+5)+'"/>');
+      svg.push('<text x="'+f(x)+'" y="'+(plotB+18)+'" text-anchor="middle">'+h12+ap+'</text>');
+    }
+    svg.push('</g>');
+
+    // now edge
+    svg.push('<g class="ch-now"><line x1="'+plotR+'" y1="'+plotT+'" x2="'+plotR+'" y2="'+plotB+'"/>'
+           + '<text x="'+plotR+'" y="'+(plotT-4)+'" text-anchor="end">now ▾</text></g>');
+
+    document.getElementById("svg").innerHTML=svg.join("");
+
+    // ---- floating illustrations ----
+    var totals = ord.map(function(s){return s.total;}).sort(function(a,b){return b-a;});
+    var flightCut = totals[Math.min(4, totals.length-1)]; // top ~5 fly
+    var birds=document.getElementById("birds"); birds.innerHTML="";
+    ord.forEach(function(s){
+      var pb=s.peakBin, x=xClock(D.binClock[pb]), y=(s.top[pb]+s.bot[pb])/2;
+      var sizeV=Math.max(40, Math.min(100, 10.5*Math.sqrt(s.total)));
+      var pose = s.total>=flightCut ? 2 : 1;
+      var el=document.createElement("div");
+      el.className="bird"; el.dataset.sci=s.sci;
+      el.style.left=(x/W*100)+"%"; el.style.top=(y/H*100)+"%"; el.style.width=(sizeV/W*100)+"%";
+      var src=ASSET+slug(s.sci)+(pose===2?"-2":"")+".png";
+      el.innerHTML='<img src="'+src+'" alt="'+s.com+'"><span class="nm">'+s.com+'</span>';
+      var img=el.querySelector("img");
+      img.onerror=function(){ if(!img.dataset.fb){img.dataset.fb=1; img.src=FALLBACK+slug(s.sci)+".png";}
+                              else{ el.classList.add("noart"); img.remove(); } };
+      birds.appendChild(el);
+    });
+
+    wire();
+    caption();
+  }
+
+  // ---- caption (a plain-English read of the current data) ----
+  function caption(){
+    var D=state.data, sp=D.sp.slice().sort(function(a,b){return b.total-a.total;});
+    var loud=sp[0], total=D.totals.reduce(function(a,b){return a+b;},0);
+    var peakBin=0,pn=-1; for(var i=0;i<D.totals.length;i++) if(D.totals[i]>pn){pn=D.totals[i];peakBin=i;}
+    var pc=D.binClock[peakBin], hr=Math.floor(pc), m=Math.round((pc-hr)*60), ap=hr<12?"am":"pm",h12=(hr%12)||12;
+    document.getElementById("read").innerHTML =
+      "<b>"+sp.length+" species</b> · <b>"+total+" calls</b> in the last 12 hours. "+
+      "The yard was busiest around <b>"+h12+":"+(m<10?"0":"")+m+" "+ap+"</b> — the dawn chorus — led by the "+
+      "<b>"+loud.com+"</b>. Each bird floats above its own ribbon at the moment it was loudest; "+
+      "the river is widest when the most birds were calling at once.";
+  }
+
+  // ---- interactivity ----
+  function wire(){
+    var stage=document.getElementById("stage");
+    document.querySelectorAll(".ribbon, .bird").forEach(function(el){
+      el.addEventListener("click", function(e){
+        e.stopPropagation();
+        var sci=el.dataset.sci;
+        if(state.active===sci){ clearActive(); return; }
+        state.active=sci; stage.classList.add("has-active");
+        document.querySelectorAll(".ribbon,.bird").forEach(function(n){
+          n.classList.toggle("is-active", n.dataset.sci===sci);
+        });
+      });
+    });
+  }
+  function clearActive(){
+    state.active=null;
+    document.getElementById("stage").classList.remove("has-active");
+    document.querySelectorAll(".is-active").forEach(function(n){n.classList.remove("is-active");});
+  }
+
+  // scrub readout
+  var svgEl=document.getElementById("svg"), tip=document.getElementById("tip"),
+      line=document.getElementById("scrubline"), stageEl=document.getElementById("stage");
+  function scrub(clientX){
+    var D=state.data, box=svgEl.getBoundingClientRect();
+    var vx = ((clientX-box.left)/box.width)*W;
+    var c = START + ((vx-plotL)/plotW)*SPAN;
+    var bi = Math.max(0, Math.min(D.nB-1, Math.floor((c-START)/D.ivH)));
+    var px = ((clientX-box.left)/box.width)*stageEl.getBoundingClientRect().width;
+    line.style.left=px+"px"; line.style.display="block";
+    var rows = D.sp.map(function(s){return {com:s.com,sci:s.sci,n:s.counts[bi]};})
+                   .filter(function(r){return r.n>0;}).sort(function(a,b){return b.n-a.n;}).slice(0,5);
+    var c0=D.binClock[bi]-D.ivH/2, c1=c0+D.ivH;
+    function lab(x){var hr=Math.floor(x)%24,ap=hr<12?"a":"p",h=(hr%12)||12,mm=Math.round((x-Math.floor(x))*60);return h+(mm?":"+(mm<10?"0":"")+mm:"")+ap;}
+    var html='<span class="hd">'+lab(c0)+'–'+lab(c1)+' · '+D.variety[bi]+' kinds</span>';
+    if(!rows.length) html+='<span class="empty">— quiet —</span>';
+    rows.forEach(function(r){
+      html+='<div class="row"><img src="'+ASSET+slug(r.sci)+'.png" onerror="this.style.visibility=\'hidden\'">'+
+            '<span class="c">'+r.com+'</span><span class="n">'+r.n+'</span></div>';
+    });
+    tip.innerHTML=html; tip.style.display="block";
+    var tw=tip.offsetWidth, sw=stageEl.getBoundingClientRect().width;
+    tip.style.left=Math.max(tw/2+4, Math.min(sw-tw/2-4, px))+"px";
+    tip.style.top=Math.max(0, (box.top-stageEl.getBoundingClientRect().top)+10)+"px";
+  }
+  function hideScrub(){ line.style.display="none"; tip.style.display="none"; }
+  svgEl.addEventListener("mousemove",function(e){scrub(e.clientX);});
+  svgEl.addEventListener("mouseleave",hideScrub);
+  stageEl.addEventListener("touchstart",function(e){if(e.touches[0])scrub(e.touches[0].clientX);},{passive:true});
+  stageEl.addEventListener("touchmove",function(e){if(e.touches[0])scrub(e.touches[0].clientX);},{passive:true});
+  document.addEventListener("click",function(e){ if(!e.target.closest(".ribbon,.bird")) clearActive(); });
+
+  // controls
+  function movePill(seg){
+    var pill=seg.querySelector(".pill"), cur=seg.querySelector('[aria-current="true"]');
+    if(!cur||pill.style.opacity==="0")return;
+    pill.style.left=(cur.offsetLeft)+"px"; pill.style.width=(cur.offsetWidth)+"px";
+  }
+  var ivSeg=document.getElementById("ivSeg"), modeSeg=document.getElementById("modeSeg"), varSeg=document.getElementById("varSeg");
+  ivSeg.addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;
+    [].forEach.call(ivSeg.querySelectorAll("button"),function(x){x.setAttribute("aria-current",x===b?"true":"false");});
+    state.iv=+b.dataset.iv; state.data=build(state.iv); movePill(ivSeg); clearActive(); render();});
+  modeSeg.addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;
+    [].forEach.call(modeSeg.querySelectorAll("button"),function(x){x.setAttribute("aria-current",x===b?"true":"false");});
+    state.mode=b.dataset.mode; movePill(modeSeg); render();});
+  varSeg.addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;
+    state.variety=!state.variety; b.setAttribute("aria-pressed",state.variety?"true":"false");
+    b.style.color=state.variety?"":"var(--ink-soft)"; render();});
+
+  // theme
+  document.getElementById("themeBtn").addEventListener("click",function(){
+    var dark=document.documentElement.getAttribute("data-theme")==="dark";
+    if(dark){document.documentElement.removeAttribute("data-theme"); this.textContent="dark";}
+    else{document.documentElement.setAttribute("data-theme","dark"); this.textContent="light";}
+    rootStyle=getComputedStyle(document.documentElement); render();
+  });
+
+  // boot
+  state.data=build(state.iv);
+  render();
+  setTimeout(function(){movePill(ivSeg);movePill(modeSeg);},30);
+  window.addEventListener("resize",function(){movePill(ivSeg);movePill(modeSeg);});
+})();
+</script>
+</body>
+</html>

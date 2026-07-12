@@ -15,14 +15,14 @@
      7-colour dither doesn't speckle the warm-white page background. The class
      is set before first paint so no chrome flashes. The collage (#v0) is the
      default view, so apt.js needs no change — we only hide UI and force white. -->
-<script>try{if(new URLSearchParams(location.search).has('frame'))document.documentElement.classList.add('frame');}catch(e){}</script>
+<script>try{var _fr=new URLSearchParams(location.search).get('frame');if(_fr!==null&&_fr!=='0')document.documentElement.classList.add('frame');}catch(e){}</script>
 <link rel="stylesheet" href="./styles.css">
 <style>
   html.frame, html.frame body { background: #fff !important; }
   html.frame { --paper: #fff; --paper-2: #fff; --paper-3: #fff; }
   /* Strip interactive chrome; the frame is just the collage. */
   html.frame .top, html.frame .slider, html.frame #menu-dd,
-  html.frame #returnToAtlas, html.frame .static-head,
+  html.frame .static-head,
   html.frame #detail-modal, html.frame #about-modal { display: none !important; }
   /* Pin to the collage view and let it fill the panel (no slider gutter). */
   html.frame .views { transform: none !important; }
@@ -32,16 +32,6 @@
 </style>
 </head>
 <body class="av-local">
-<!-- Pill in the top-left slot, only visible on admin overlays
-     (body.admin-on); CSS in styles.css hides it everywhere else.
-     href="/" returns to the collage view via a full reload, which is
-     fine for an off-hot-path control. -->
-<a class="return-to-atlas" id="returnToAtlas" href="/" aria-label="back to collage">
-  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M10 3 L4 8 L10 13"/>
-  </svg>
-  collage
-</a>
 <header class="top">
   <div class="window-pick" id="winPick" role="tablist">
     <i class="seg-pill" aria-hidden="true"></i>
@@ -55,9 +45,9 @@
 </header>
 
 <aside id="menu-dd" aria-hidden="true">
-  <!-- Shared control for the PHYSICAL e-ink frame's time window. Always visible:
-       NOT behind the dead #dd-locked unlock, NOT in #dd-items (which only fills
-       after that unlock succeeds). See FRAME-WINDOW-TOGGLE-PLAN.md. -->
+  <!-- Shared control for the PHYSICAL e-ink frame's time window. The drawer's
+       old password-unlock flow + admin tools targeted on-Pi PHP endpoints the
+       Cloudflare deployment never serves - removed. See FRAME-WINDOW-TOGGLE-PLAN.md. -->
   <div id="frameCtl">
     <h3 class="frame-ctl-title">picture frame</h3>
     <p class="frame-ctl-sub">window shown on the panel · shared by everyone</p>
@@ -71,14 +61,6 @@
     </div>
     <p class="frame-ctl-note" id="frameNote" aria-live="polite"></p>
   </div>
-  <div id="dd-locked">
-    <form class="lock-row" id="unlockForm">
-      <input id="lockPass" type="password" placeholder="password" autocomplete="current-password">
-      <button type="submit" aria-label="unlock">→</button>
-    </form>
-    <p class="lock-hint" id="lockHint">enter password to unlock tools.</p>
-  </div>
-  <nav class="menu-items" id="dd-items"></nav>
   <p class="built-by">built by <a href="https://scottfriedman.ooo" target="_blank" rel="noopener">scott</a> · <a href="https://github.com/scott-friedman" target="_blank" rel="noopener">github</a></p>
 </aside>
 
@@ -320,17 +302,6 @@
   <button type="button" data-i="3">chorus</button>
 </nav>
 
-
-<!-- AvianVisitors: empty admin-screen stub. The live JS expects this
-     element to exist (openAdmin/closeAdmin call setAttribute on it).
-     Menu items navigate to BirdNET-Pi's stock pages instead of opening
-     in-app admin views, so this stays empty. -->
-<section class="admin-screen" id="adminScreen" aria-hidden="true">
-  <div class="admin-frame">
-    <header class="admin-title"><h1 id="adminTitle"></h1></header>
-    <div class="admin-body" id="adminBody"></div>
-  </div>
-</section>
 
 <script src="./config.js"></script>
 <script src="./spectral-core.js"></script>

@@ -63,3 +63,7 @@ avian/assets/_legacy/
 /node_modules/
 # Wrangler local state/cache (created by `wrangler pages deploy` etc.)
 .wrangler/
+# Created inside the clone by pi/update.sh (BirdNET-Pi disk_check backstop) —
+# explicit entry (beyond scripts/*.txt above) so a future upstream commit of
+# this path can't collide with the untracked file and abort the Pi's pull.
+scripts/disk_check_exclude.txt

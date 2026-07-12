@@ -57,3 +57,8 @@ jobs:
       # severity=error keeps this high-signal (syntax-level breakage only);
       # tighten once the existing scripts are shellcheck-clean at lower levels.
       - run: shellcheck --severity=error pi/*.sh avian/build-site.sh newinstaller.sh
+      # apt.js ships as-authored (no bundler) — a syntax error is a blank site.
+      - run: node --check avian/frontend/apt.js
+      # Fixture test locking build-site.sh's cache-hash rewrites (the
+      # clip-version → json-hash ordering burned two deploy cycles).
+      - run: bash avian/tests/build-site.test.sh

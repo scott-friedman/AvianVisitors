@@ -44,8 +44,22 @@ else
   # a new backstop file) silently doesn't apply — bit us 2026-07-03 when the
   # freshly-added avian-prune units weren't installed by the very pull that
   # added them. The env guard prevents a re-exec loop.
-  AVIAN_UPDATE_REEXEC=1 exec bash "$REPO/pi/update.sh"
+  # AVIAN_UPDATE_PREV carries the pre-pull SHA across the re-exec for the
+  # rollback hint in the failure trap below.
+  AVIAN_UPDATE_REEXEC=1 AVIAN_UPDATE_PREV="$before" exec bash "$REPO/pi/update.sh"
 fi
+
+# From here on any failure must be FATAL and LOUD (set -e): a swallowed unit-render
+# failure would let daemon-reload restart the OLD units while the run reads clean.
+# (Deliberately NOT set above — the pull/re-exec block handles its errors explicitly,
+# and the re-exec behaviour must be preserved exactly.)
+set -e
+trap 'st=$?; if [ "$st" -ne 0 ]; then
+  echo "ERROR: update did NOT complete (exit $st)." >&2
+  if [ -n "${AVIAN_UPDATE_PREV:-}" ] && [ "$AVIAN_UPDATE_PREV" != "none" ]; then
+    echo "       To roll back: git -C $REPO reset --hard $AVIAN_UPDATE_PREV && bash $REPO/pi/update.sh" >&2
+  fi
+fi' EXIT
 
 # Render the units this repo owns from their templates (deterministic; picks up any
 # template change in the pull) and reinstall. Forwarder + heartbeat run from the
@@ -56,8 +70,11 @@ HOME_DIR="$(eval echo "~$USER_NAME")"
 echo "==> re-syncing systemd units"
 for svc in avian-forwarder.service avian-heartbeat.service avian-mic-watchdog.service avian-net-watchdog.service avian-prune.service; do
   [ -f "$REPO/pi/systemd/$svc" ] || continue
-  sed "s|REPLACE_USER|$USER_NAME|; s|REPLACE_HOME|$HOME_DIR|g" "$REPO/pi/systemd/$svc" \
-    | sudo tee "/etc/systemd/system/$svc" >/dev/null
+  if ! sed "s|REPLACE_USER|$USER_NAME|g; s|REPLACE_HOME|$HOME_DIR|g" "$REPO/pi/systemd/$svc" \
+    | sudo tee "/etc/systemd/system/$svc" >/dev/null; then
+    echo "ERROR: failed to render/install $svc — aborting before daemon-reload." >&2
+    exit 1
+  fi
 done
 [ -f "$REPO/pi/systemd/avian-heartbeat.timer" ] && \
   sudo cp "$REPO/pi/systemd/avian-heartbeat.timer" /etc/systemd/system/avian-heartbeat.timer
@@ -79,16 +96,22 @@ sudo systemctl daemon-reload
 echo "==> restarting services"
 # enable --now arms a newly-added unit (e.g. the heartbeat on an older box); the
 # explicit restart picks up new code / a new schedule on an already-running one.
-sudo systemctl enable --now avian-forwarder.service 2>/dev/null || true
-sudo systemctl restart avian-forwarder.service 2>/dev/null || echo "   !! avian-forwarder not installed"
-sudo systemctl enable --now avian-heartbeat.timer 2>/dev/null || true
-sudo systemctl restart avian-heartbeat.timer 2>/dev/null || echo "   !! avian-heartbeat.timer not installed"
-sudo systemctl enable --now avian-mic-watchdog.timer 2>/dev/null || true
-sudo systemctl restart avian-mic-watchdog.timer 2>/dev/null || echo "   !! avian-mic-watchdog.timer not installed"
-sudo systemctl enable --now avian-net-watchdog.timer 2>/dev/null || true
-sudo systemctl restart avian-net-watchdog.timer 2>/dev/null || echo "   !! avian-net-watchdog.timer not installed"
-sudo systemctl enable --now avian-prune.timer 2>/dev/null || true
-sudo systemctl restart avian-prune.timer 2>/dev/null || echo "   !! avian-prune.timer not installed"
+# "not installed" = no unit file (skip); a REAL restart failure prints systemctl's
+# own error (stderr not suppressed) and fails the run — the two must not conflate
+# on the box's only update path.
+RESTART_FAILED=0
+for unit in avian-forwarder.service avian-heartbeat.timer avian-mic-watchdog.timer avian-net-watchdog.timer avian-prune.timer; do
+  if [ ! -f "/etc/systemd/system/$unit" ]; then
+    echo "   !! $unit not installed (no unit file) — skipped"
+    continue
+  fi
+  sudo systemctl enable --now "$unit" 2>/dev/null || true
+  if ! sudo systemctl restart "$unit"; then
+    echo "   !! $unit FAILED to restart (see error above)" >&2
+    RESTART_FAILED=1
+  fi
+done
+[ "$RESTART_FAILED" -eq 0 ] || { echo "ERROR: one or more units failed to restart." >&2; exit 1; }
 
 # The frame unit owns its own venv + path (frame/install.sh), so update.sh doesn't
 # re-render it — it just re-arms the timer to pick up a pulled display.py. That only

@@ -1,4 +1,6 @@
 <?php
+// UNREFERENCED since the 2026-07-12 dead-admin strip (the Cloudflare frontend
+// no longer fetches this shim); kept as upstream on-Pi reference only.
 // AvianVisitors - system / service / log JSON facade for the admin
 // overlay (settings/system/logs/tools sections). Fetched by the
 // frontend at /avian/api/birdnet-status.php?action=...

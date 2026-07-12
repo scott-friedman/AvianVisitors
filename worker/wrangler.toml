@@ -62,7 +62,8 @@ PAGES_BASE = "https://birds-origin.indianridgeroad.com"
 HEARTBEAT_MAX_AGE_SECONDS = "2700"
 
 # Mojo the dog-bird (easter egg): daytime-only "detections" of the family dog,
-# every 30 min with random skips — 10:00–23:30 UTC = 6:00–19:30 ET. Quiet at
+# every 30 min with random skips — 10:00–23:30 UTC = 6:00–19:30 EDT /
+# 5:00–18:30 EST. Quiet at
 # night (believable, and no nighttime /frame.png re-renders). Remove this block
 # together with the MOJO section + scheduled() in src/index.js to retire him.
 [triggers]

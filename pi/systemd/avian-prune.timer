@@ -3,7 +3,11 @@ Description=Daily prune of extracted clips older than 30 days
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=24h
+# Calendar trigger, not OnUnitActiveSec=24h: Persistent= is inert on monotonic
+# timers, so a box that was off at the 24 h mark never caught up. With
+# OnCalendar the missed daily run fires on the next boot instead.
+OnCalendar=daily
+RandomizedDelaySec=5min
 Persistent=true
 
 [Install]

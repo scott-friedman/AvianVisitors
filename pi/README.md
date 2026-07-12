@@ -26,7 +26,7 @@ mkdir -p ~/.avian && umask 077 && printf '%s' '<SECRET>' > ~/.avian/ingest-secre
 
 # 2. systemd service (rewrite User/paths for this Pi; ExecStart runs the script
 #    from this clone, so `git pull` + restart is the whole update — see below)
-sed "s|REPLACE_USER|$USER|; s|REPLACE_HOME|$HOME|g" pi/systemd/avian-forwarder.service \
+sed "s|REPLACE_USER|$USER|g; s|REPLACE_HOME|$HOME|g" pi/systemd/avian-forwarder.service \
   | sudo tee /etc/systemd/system/avian-forwarder.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now avian-forwarder.service
@@ -67,7 +67,7 @@ Install (reuses the same ingest secret as the forwarder; units run from the
 `~/BirdNET-Pi` clone — see "Updating the Pi" below):
 
 ```sh
-sed "s|REPLACE_USER|$USER|; s|REPLACE_HOME|$HOME|g" pi/systemd/avian-heartbeat.service \
+sed "s|REPLACE_USER|$USER|g; s|REPLACE_HOME|$HOME|g" pi/systemd/avian-heartbeat.service \
   | sudo tee /etc/systemd/system/avian-heartbeat.service >/dev/null
 sudo cp pi/systemd/avian-heartbeat.timer /etc/systemd/system/avian-heartbeat.timer
 sudo systemctl daemon-reload

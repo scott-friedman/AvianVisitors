@@ -1,29 +1,17 @@
 (function () {
-  var PLACEHOLDER = [{"sci":"Calypte anna","com":"Anna's Hummingbird","featured":true},{"sci":"Passer domesticus","com":"House Sparrow"},{"sci":"Haemorhous mexicanus","com":"House Finch"},{"sci":"Turdus migratorius","com":"American Robin"},{"sci":"Zenaida macroura","com":"Mourning Dove"},{"sci":"Spinus psaltria","com":"Lesser Goldfinch"},{"sci":"Zonotrichia leucophrys","com":"White-crowned Sparrow"},{"sci":"Aphelocoma californica","com":"California Scrub-Jay"},{"sci":"Mimus polyglottos","com":"Northern Mockingbird"},{"sci":"Sayornis nigricans","com":"Black Phoebe"},{"sci":"Larus occidentalis","com":"Western Gull"},{"sci":"Corvus brachyrhynchos","com":"American Crow"}];
-  // Bumped whenever the offline sketch build changes, so the browser
-  // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r17'; // r17: +Broad-winged Hawk (Buteo platypterus) — last detected Sudbury-gap land bird.
-                              // r16: +Mojo (Canis volaticus) — the resident dog-bird.
-                              // r15: +Rose-br.Grosbeak, N.Parula, Pine Warbler, Chestnut-sided Warbler, Chimney Swift, Field Sparrow, Winter Wren, Bobolink, BT Blue Warbler, Least Flycatcher (Sudbury gap batch 4).
-                              // r14: +E.Wood-Pewee, Ruby-cr.Kinglet, Gt Crested Flycatcher, Wood Thrush, Veery, Scarlet Tanager, BT Green Warbler, YB Sapsucker, Blue-headed Vireo, WT Sparrow (Sudbury gap batch 3).
-                              // r13: +Blue Jay, Common Grackle, Tufted Titmouse, Ovenbird, E.Phoebe, E.Kingbird, RT Hummingbird, Red-bellied WP, E.Bluebird, Carolina Wren (Sudbury gap batch 2).
-                              // r12: +Gray Catbird, Red-eyed Vireo, Black-capped Chickadee (Sudbury gap).
-                              // r11: +Northern Cardinal (first Sudbury-gap bird).
-                              // r10 was the full library restyle (perched + flight, clean cutouts).
-  // Cache-bust for /api/img - bump whenever a bird gets re-rendered via
-  // /api/regen or whenever you need every CF DC to drop its cached copy.
-  // Cloudflare keys on the full URL incl. query, so bumping this is
-  // equivalent to a global cache purge for /api/img. (caches.default
-  // .delete() in the worker only affects ONE colo at a time, so a
-  // versioned URL is the only reliable way to invalidate everywhere.)
-  var IMG_VERSION = 'r17'; // r17: +Broad-winged Hawk (Buteo platypterus).
-                           // r16: +Mojo (Canis volaticus) — the resident dog-bird.
-                           // r15: +Rose-br.Grosbeak, N.Parula, Pine Warbler, Chestnut-sided Warbler, Chimney Swift, Field Sparrow, Winter Wren, Bobolink, BT Blue Warbler, Least Flycatcher (Sudbury gap batch 4).
-                           // r14: +E.Wood-Pewee, Ruby-cr.Kinglet, Gt Crested Flycatcher, Wood Thrush, Veery, Scarlet Tanager, BT Green Warbler, YB Sapsucker, Blue-headed Vireo, WT Sparrow (Sudbury gap batch 3).
-                           // r13: +Blue Jay, Common Grackle, Tufted Titmouse, Ovenbird, E.Phoebe, E.Kingbird, RT Hummingbird, Red-bellied WP, E.Bluebird, Carolina Wren (Sudbury gap batch 2).
-                           // r12: +Gray Catbird, Red-eyed Vireo, Black-capped Chickadee (Sudbury gap).
-                           // r11: +Northern Cardinal (first Sudbury-gap bird).
-                           // r10 was the full library restyle, clean cutouts.
+  // ---- HTML escaping ----
+  // Every API-derived string interpolated into innerHTML goes through esc()
+  // (attribute-safe: escapes double quotes too). Detection rows come only
+  // from the secret-gated Pi today, but one bad row - leaked secret, worker
+  // bug, a BirdNET label containing markup - must never become stored XSS.
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  // The "ALL" window sentinel - matches the data-h attribute in index.html's
+  // pickers and the hours clamp in the worker.
+  var ALL_HOURS = 1000000;
 
   // ---- Sliding pill helper ----
   // Each segmented control has a single .seg-pill element that we move via
@@ -160,9 +148,6 @@
     // for the new palette. Safe no-op when no modal is open.
     repaintSpectral();
   }
-  function currentTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-  }
   applyTheme(readLS('bird:theme', 'light'));
   var winBtns = [].slice.call(winPick.querySelectorAll('button'));
   // ?window=N forces the collage to that window. The e-ink frame's off-Pi
@@ -172,7 +157,7 @@
   function urlWindow() {
     try {
       var w = +new URLSearchParams(location.search).get('window');
-      return [1, 12, 24, 168, 1000000].indexOf(w) >= 0 ? w : 0;
+      return [1, 12, 24, 168, ALL_HOURS].indexOf(w) >= 0 ? w : 0;
     } catch (e) { return 0; }
   }
   var currentHours = urlWindow() || +readLS('bird:window', '24') || 24;
@@ -553,14 +538,25 @@
     return placed;
   }
 
+  // Cheap change signature (chorus's _chorusSig is the model): the silent 30 s
+  // poll usually returns identical data, and re-running the whole mask-pack +
+  // DOM rebuild for it killed the hovered tile under the cursor and burned
+  // real main-thread time on phones. Interactions (animate) always render.
+  var _collageSig = null;
   function renderCollage(items, animate) {
-    collage.innerHTML = '';
     if (!items.length) {
       collage.innerHTML = '<p class="empty">no birds heard in this window.</p>';
+      _collageSig = null;
+      collagePlaced = [];
       return;
     }
     var W = collage.clientWidth, H = collage.clientHeight;
     if (!W || !H) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
+    var sig = W + 'x' + H + '|' + currentHours + '|' +
+      items.map(function (s) { return s.sci + ':' + s.n; }).join(',');
+    if (!animate && sig === _collageSig && collage.querySelector('.gtile')) return;
+    _collageSig = sig;
+    collage.innerHTML = '';
 
     // Tuning depends on bird count - same viewport, very different
     // pack densities for 6 vs 48 birds.
@@ -680,9 +676,6 @@
 
     placed.forEach(function (r) {
       var s = r.data;
-      // com flows through so the worker's JIT Gemini job uses the right
-      // common name in its prompt for a freshly-detected species.
-      // &v=IMG_VERSION busts CF edge cache when we re-render any species.
       var img = avImg(s.sci, r.pose === 2 ? 2 : 1);
       var btn = document.createElement('button');
       btn.className = 'gtile';
@@ -700,7 +693,7 @@
       btn.style.top    = r.y + 'px';
       btn.style.width  = r.fullW + 'px';
       btn.style.height = r.fullH + 'px';
-      btn.innerHTML = '<img loading="lazy" decoding="async" src="' + img + '" alt="' + s.com + '">';
+      btn.innerHTML = '<img loading="lazy" decoding="async" src="' + img + '" alt="' + esc(s.com) + '">';
       r.el = btn;
       collage.appendChild(btn);
     });
@@ -905,7 +898,7 @@
         var s = hit.data;
         var n = +s.n || 0;
         var noun = (n === 1) ? 'call' : 'calls';
-        tip.innerHTML = '<span class="ct-name">' + (s.com || s.sci) + '</span>'
+        tip.innerHTML = '<span class="ct-name">' + esc(s.com || s.sci) + '</span>'
           + '<span class="ct-w"> - </span>'
           + '<span class="ct-n">' + fmtN(n) + '</span>'
           + '<span class="ct-w"> ' + noun + ' ' + windowLabel(currentHours) + '</span>';
@@ -936,7 +929,9 @@
   // touching the source.
   window.__layout = function (opts) {
     opts = opts || {};
-    var allSlugs = Object.keys({"acanthis-flammea":[560,372],"accipiter-cooperii":[558,560],"accipiter-gentilis":[558,560],"accipiter-striatus":[375,560],"actitis-macularius":[560,409],"aechmophorus-occidentalis":[525,560],"aegolius-acadicus":[560,558],"aeronautes-saxatalis":[560,439],"agelaius-phoeniceus":[276,560],"aix-sponsa":[560,378],"ammodramus-savannarum":[560,436],"amphispiza-bilineata":[560,559],"anas-crecca":[560,288],"anas-platyrhynchos":[558,560],"anser-albifrons":[560,439],"anthus-rubescens":[375,560],"aphelocoma-californica":[560,373],"aphelocoma-woodhouseii":[468,560],"aquila-chrysaetos":[437,560],"archilochus-alexandri":[560,344],"ardea-alba":[560,465],"ardea-herodias":[560,373],"artemisiospiza-belli":[560,435],"asio-flammeus":[560,560],"asio-otus":[404,560],"athene-cunicularia":[560,373],"aythya-affinis":[560,372],"aythya-americana":[560,553],"aythya-collaris":[560,373],"aythya-valisineria":[560,373],"baeolophus-inornatus":[560,311],"bombycilla-cedrorum":[339,560],"bombycilla-garrulus":[560,559],"branta-canadensis":[560,559],"bubo-virginianus":[373,560],"bubulcus-ibis":[267,560],"bucephala-albeola":[560,408],"bucephala-clangula":[560,242],"buteo-jamaicensis":[560,374],"buteo-lagopus":[560,244],"buteo-lineatus":[463,560],"buteo-regalis":[408,560],"buteo-swainsoni":[560,408],"butorides-virescens":[555,560],"calamospiza-melanocorys":[560,374],"calidris-alba":[560,371],"calidris-alpina":[560,374],"callipepla-californica":[560,372],"calothorax-lucifer":[465,560],"calypte-anna":[560,344],"calypte-costae":[560,409],"cardellina-pusilla":[560,281],"cardellina-rubrifrons":[527,560],"cathartes-aura":[376,560],"catharus-guttatus":[560,333],"catharus-ustulatus":[560,408],"catherpes-mexicanus":[320,560],"certhia-americana":[201,560],"chaetura-vauxi":[560,374],"charadrius-vociferus":[560,408],"chondestes-grammacus":[560,559],"chordeiles-minor":[560,319],"cinclus-mexicanus":[560,465],"circus-hudsonius":[372,560],"cistothorus-palustris":[437,560],"coccothraustes-vespertinus":[560,466],"colaptes-auratus":[560,560],"columba-livia":[560,327],"columbina-passerina":[560,559],"contopus-sordidulus":[560,502],"coragyps-atratus":[560,557],"corvus-brachyrhynchos":[560,503],"corvus-corax":[343,560],"cyanocitta-stelleri":[363,560],"cygnus-buccinator":[560,370],"cypseloides-niger":[560,356],"dryobates-nuttallii":[560,321],"dryobates-pubescens":[560,558],"dryobates-villosus":[268,560],"dryocopus-pileatus":[492,560],"egretta-caerulea":[560,321],"egretta-thula":[560,374],"elanus-leucurus":[560,378],"empidonax-difficilis":[268,560],"empidonax-hammondii":[558,560],"empidonax-oberholseri":[495,560],"empidonax-traillii":[371,560],"empidonax-wrightii":[560,527],"eremophila-alpestris":[560,529],"euphagus-cyanocephalus":[560,371],"falco-columbarius":[560,408],"falco-mexicanus":[349,560],"falco-peregrinus":[465,560],"falco-sparverius":[560,370],"gavia-immer":[560,374],"geothlypis-tolmiei":[560,406],"geothlypis-trichas":[560,316],"glaucidium-gnoma":[560,560],"gymnogyps-californianus":[466,560],"haemorhous-mexicanus":[523,560],"haemorhous-purpureus":[560,387],"haliaeetus-leucocephalus":[560,434],"himantopus-mexicanus":[458,560],"hirundo-rustica":[560,410],"hydroprogne-caspia":[560,373],"icteria-virens":[560,293],"icterus-bullockii":[560,214],"icterus-cucullatus":[391,560],"icterus-galbula":[560,528],"icterus-parisorum":[560,266],"ixoreus-naevius":[560,558],"junco-hyemalis":[560,320],"lanius-ludovicianus":[408,560],"larus-californicus":[560,437],"larus-delawarensis":[560,376],"larus-glaucescens":[560,374],"larus-heermanni":[560,436],"larus-occidentalis":[560,412],"leiothlypis-celata":[522,560],"leiothlypis-lucidae":[351,560],"leucophaeus-atricilla":[560,373],"leucophaeus-pipixcan":[560,560],"leucosticte-tephrocotis":[560,465],"limosa-fedoa":[560,556],"lophodytes-cucullatus":[560,409],"loxia-curvirostra":[560,319],"mareca-americana":[560,375],"mareca-strepera":[560,372],"megaceryle-alcyon":[560,409],"megascops-kennicottii":[560,374],"melanerpes-formicivorus":[351,560],"melanerpes-lewis":[372,560],"meleagris-gallopavo":[560,373],"melospiza-georgiana":[320,560],"melospiza-lincolnii":[560,245],"melospiza-melodia":[560,352],"melozone-aberti":[560,268],"melozone-crissalis":[560,538],"melozone-fusca":[560,495],"mergus-merganser":[560,374],"mimus-polyglottos":[560,310],"mniotilta-varia":[560,351],"molothrus-ater":[560,505],"myadestes-townsendi":[560,436],"myiarchus-cinerascens":[560,532],"nucifraga-columbiana":[560,373],"numenius-americanus":[558,560],"nycticorax-nycticorax":[560,465],"oreothlypis-ruficapilla":[372,560],"pandion-haliaetus":[560,371],"passer-domesticus":[560,444],"passerculus-sandwichensis":[560,542],"passerella-iliaca":[560,350],"passerina-amoena":[560,465],"passerina-cyanea":[560,560],"patagioenas-fasciata":[560,500],"pelecanus-erythrorhynchos":[560,316],"pelecanus-occidentalis":[560,406],"perisoreus-canadensis":[560,349],"petrochelidon-pyrrhonota":[558,560],"phainopepla-nitens":[560,464],"phalacrocorax-auritus":[490,560],"phalaenoptilus-nuttallii":[560,373],"phasianus-colchicus":[560,409],"pheucticus-melanocephalus":[559,560],"pica-nuttalli":[560,320],"picoides-arcticus":[374,560],"pinicola-enucleator":[560,372],"pipilo-chlorurus":[560,318],"pipilo-erythrophthalmus":[352,560],"pipilo-maculatus":[443,560],"piranga-ludoviciana":[293,560],"piranga-rubra":[560,495],"plegadis-chihi":[560,372],"podiceps-nigricollis":[560,374],"podilymbus-podiceps":[560,374],"poecile-gambeli":[560,350],"poecile-rufescens":[560,339],"polioptila-caerulea":[560,557],"pooecetes-gramineus":[560,436],"progne-subis":[313,560],"psaltriparus-minimus":[560,428],"quiscalus-mexicanus":[560,269],"recurvirostra-americana":[268,560],"regulus-calendula":[496,560],"regulus-satrapa":[464,560],"riparia-riparia":[560,494],"rynchops-niger":[560,374],"salpinctes-obsoletus":[560,465],"sayornis-nigricans":[308,560],"sayornis-saya":[463,560],"selasphorus-platycercus":[560,497],"selasphorus-rufus":[560,436],"selasphorus-sasin":[434,560],"setophaga-coronata":[461,560],"setophaga-magnolia":[560,268],"setophaga-nigrescens":[560,350],"setophaga-occidentalis":[560,367],"setophaga-palmarum":[438,560],"setophaga-petechia":[560,268],"setophaga-ruticilla":[560,293],"setophaga-townsendi":[560,416],"sialia-currucoides":[558,560],"sialia-mexicana":[560,371],"sitta-canadensis":[560,379],"sitta-carolinensis":[436,560],"sitta-pygmaea":[560,407],"spatula-clypeata":[560,408],"spatula-discors":[560,493],"sphyrapicus-ruber":[560,558],"sphyrapicus-thyroideus":[374,560],"spinus-lawrencei":[560,373],"spinus-pinus":[560,516],"spinus-psaltria":[560,548],"spinus-tristis":[536,560],"spizella-atrogularis":[246,560],"spizella-breweri":[560,557],"spizella-passerina":[560,320],"spizelloides-arborea":[560,436],"stelgidopteryx-serripennis":[558,560],"sterna-forsteri":[560,373],"sterna-hirundo":[560,411],"streptopelia-decaocto":[560,393],"strix-occidentalis":[560,553],"sturnella-neglecta":[320,560],"sturnus-vulgaris":[560,545],"tachycineta-bicolor":[375,560],"tachycineta-thalassina":[560,435],"thalasseus-elegans":[560,407],"thryomanes-bewickii":[560,263],"toxostoma-redivivum":[560,298],"tringa-semipalmata":[560,464],"troglodytes-aedon":[560,494],"troglodytes-pacificus":[560,407],"turdus-migratorius":[560,402],"tyrannus-verticalis":[559,560],"tyrannus-vociferans":[495,560],"tyto-alba":[560,464],"urile-penicillatus":[296,560],"vireo-bellii":[560,559],"vireo-cassinii":[560,319],"vireo-gilvus":[464,560],"vireo-huttoni":[410,560],"xanthocephalus-xanthocephalus":[293,560],"zenaida-asiatica":[560,558],"zenaida-macroura":[522,560],"zonotrichia-atricapilla":[560,238],"zonotrichia-leucophrys":[560,313],"zonotrichia-querula":[560,294]});
+    // Live table (the old inline copy here went stale); drop the -2 flight
+    // keys so each species appears once.
+    var allSlugs = Object.keys(DIMS).filter(function (s) { return !/-2$/.test(s); });
     var slugs = opts.slugs || allSlugs.slice(0, opts.n || 12);
     var weights = opts.weights;
     var items = slugs.map(function (slug, i) {
@@ -971,13 +966,9 @@
   });
 
   // ---- Stats / Atlas data ----
-  function setRow(id, label, val) {
-    var el = document.getElementById(id);
-    if (el) el.innerHTML = '<span>' + label + '</span><span>' + (val == null || val === '' ? '-' : val) + '</span>';
-  }
   function liRow(yr, label, ct, sci) {
-    var attr = sci ? ' data-sci="' + sci.replace(/"/g, '&quot;') + '"' : '';
-    return '<li' + attr + '><span class="yr">' + yr + '</span><span>' + label + '</span><span class="ct">' + (ct == null ? '-' : ct) + '</span></li>';
+    var attr = sci ? ' data-sci="' + esc(sci) + '"' : '';
+    return '<li' + attr + '><span class="yr">' + esc(yr) + '</span><span>' + esc(label) + '</span><span class="ct">' + (ct == null ? '-' : esc(ct)) + '</span></li>';
   }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function fmtN(n) {
@@ -1001,79 +992,51 @@
     return 'all time';
   }
 
-  // ---- Live Pi data layer ----
-  // All views read from this DATA object. Populated by fetchAll() on page
-  // load and by refreshRecent() when the window picker changes.
-  var STATS_DAYS = 30;
+  // ---- Live data layer (avian-worker /api/*) ----
+  // All views read from this DATA object. Populated by refreshAll() on page
+  // load + the 30 s poll, and by refreshRecent() when the window picker
+  // changes. (The old timeseries slice + its derived STATS arrays fed the
+  // removed 30-day timeline and are gone - one fewer fetch per tick.)
   var DATA = {
-    stats: null,        // ./avian/api/birdnet-api.php?action=stats (totals/today/week/last_hour/started)
-    lifelist: null,     // ./avian/api/birdnet-api.php?action=lifelist (every species ever detected)
-    timeseries: null,   // ./avian/api/birdnet-api.php?action=timeseries (daily + hourly aggregates)
-    firstseen: null,    // ./avian/api/birdnet-api.php?action=firstseen (newest lifelist additions)
-    recent: null,       // ./avian/api/birdnet-api.php?action=recent&hours=N (refetched on picker change)
+    stats: null,        // ?action=stats (totals/today/week/last_hour/started)
+    lifelist: null,     // ?action=lifelist (every species ever detected)
+    firstseen: null,    // ?action=firstseen (newest lifelist additions)
+    recent: null,       // ?action=recent&hours=N (refetched on picker change)
     hourly: null,       // ?action=hourly&hours=N - per-clock-hour bins for the Day Dial (refetched on picker change)
     facts: null,        // ?action=facts - ordered Field Notes for the right cell (refetched on poll)
     rhythm: null,       // ?action=rhythm&days=N - per-species 24h bins for the Day Rhythm (FIXED lookback, NOT the picker)
     chorus: null,       // ?action=chorus&hours=12&interval=N - per-species interval bins for the Chorus streamgraph (FIXED 12h, NOT the picker)
   };
 
-  // Derived chart arrays, backfilled so 30 buckets always exist.
-  var STATS = {
-    detPerDay:  new Array(STATS_DAYS).fill(0), // [day] total detections
-    specPerDay: new Array(STATS_DAYS).fill(0), // [day] unique species
-    byHour:     new Array(24).fill(0),         // [hour-of-day] detections
-  };
-
-  // Map sci -> all-time detection count, populated from lifelist for atlas.
-  var speciesTotals = {};
-
   function fetchJson(url) {
-    return fetch(url, { cache: 'no-store' })
+    var opts = { cache: 'no-store' };
+    // A hung request must not wedge a poll tick forever; 15 s is far beyond
+    // any healthy worker response. (Guarded for the odd old WebView.)
+    try {
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(15000);
+    } catch (e) {}
+    return fetch(url, opts)
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); });
-  }
-
-  function backfillDaily(daily, days) {
-    // Build a continuous array of (days) length, ending today.
-    var byDate = {};
-    (daily || []).forEach(function (row) { byDate[row.date] = row; });
-    var out = new Array(days).fill(null).map(function () { return { detections: 0, species: 0 }; });
-    var today = new Date();
-    for (var i = 0; i < days; i++) {
-      var d = new Date(today);
-      d.setDate(today.getDate() - (days - 1 - i));
-      var key = d.toISOString().slice(0, 10);
-      if (byDate[key]) {
-        out[i].detections = +byDate[key].detections || 0;
-        out[i].species    = +byDate[key].species    || 0;
-      }
-    }
-    return out;
-  }
-
-  function recomputeDerived() {
-    var ts = DATA.timeseries || { daily: [], by_hour: [] };
-    var ll = DATA.lifelist || { species: [] };
-    var rows = backfillDaily(ts.daily, STATS_DAYS);
-    STATS.detPerDay  = rows.map(function (r) { return r.detections; });
-    STATS.specPerDay = rows.map(function (r) { return r.species; });
-    var byHour = new Array(24).fill(0);
-    (ts.by_hour || []).forEach(function (r) { byHour[+r.hour] = +r.detections; });
-    STATS.byHour = byHour;
-    speciesTotals = {};
-    (ll.species || []).forEach(function (s) { speciesTotals[s.sci] = +s.n; });
   }
 
   // ---- Day Dial: 24h radial histogram of detections by clock hour ----
   // angle = time of day (midnight top, clockwise); radius = detections that hour.
   // Daylight arc + "now" hand are tz-correct from the Worker (DATA.hourly), never
   // the viewer's clock. Monochrome; per-hour species shown on hover.
+  var _dialSig = null;
   function drawDayDial(animate) {
     var host = document.getElementById('statsDial');
     if (!host) return;
     var HD = DATA.hourly || {};
     var src = HD.bins || [];
     var total = +HD.total || 0;
-    if (!total) { host.innerHTML = '<div class="stats-tl-empty">no detections in this window</div>'; return; }
+    if (!total) { host.innerHTML = '<div class="stats-tl-empty">no detections in this window</div>'; _dialSig = null; return; }
+    // Skip no-op re-renders on the silent poll (keeps an open petal tooltip
+    // alive). now_local's minute is in the signature, so the now-hand still
+    // advances every minute.
+    var sig = currentHours + '|' + JSON.stringify([src, HD.now_local || 0, HD.sun || 0]);
+    if (!animate && sig === _dialSig && host.querySelector('.dial-svg')) return;
+    _dialSig = sig;
 
     var bins = new Array(24).fill(0).map(function (_, h) {
       var r = src[h] || {}; return { hour: h, n: +r.detections || 0, species: +r.species || 0, top: r.top || [] };
@@ -1134,7 +1097,7 @@
         var b = bins[+el.dataset.hour];
         host.querySelectorAll('.dial-petal.is-hover').forEach(function (x) { x.classList.remove('is-hover'); });
         el.classList.add('is-hover');
-        var top = (b.top || []).map(function (t) { return '<span class="t"><span class="c">' + (t.com || t.sci) + '</span><span class="n">' + t.n + '</span></span>'; }).join('');
+        var top = (b.top || []).map(function (t) { return '<span class="t"><span class="c">' + esc(t.com || t.sci) + '</span><span class="n">' + esc(t.n) + '</span></span>'; }).join('');
         tip.innerHTML = '<span class="hd">' + label(b.hour) + '-' + label((b.hour + 1) % 24) + ' · ' + b.n + (b.n === 1 ? ' call' : ' calls') + '</span>' + (top || '<span class="t">—</span>');
         tip.hidden = false;
       }
@@ -1195,10 +1158,10 @@
     function fresh(f) { return !animate && _lastFactKeys && prev.indexOf(key(f)) === -1; }
 
     var rows = shown.map(function (f) {
-      var sci = f.sci ? ' data-sci="' + String(f.sci).replace(/"/g, '&quot;') + '"' : '';
+      var sci = f.sci ? ' data-sci="' + esc(f.sci) + '"' : '';
       return '<li class="fact' + (fresh(f) ? ' is-new' : '') + '"' + sci + '>'
-        +   '<span class="fact-tag">' + (f.tag || '·') + '</span>'
-        +   '<span class="fact-text">' + f.text + '</span>'
+        +   '<span class="fact-tag">' + esc(f.tag || '·') + '</span>'
+        +   '<span class="fact-text">' + esc(f.text) + '</span>'
         + '</li>';
     }).join('');
 
@@ -1249,14 +1212,21 @@
     return d;
   }
 
+  var _rhythmSig = null;
   function drawDayRhythm(animate) {
     var host = document.getElementById('statsRhythm');
     if (!host) return;
     var RY = DATA.rhythm || {};
     var sp = RY.species || [];
-    if (!sp.length) { host.innerHTML = '<div class="stats-tl-empty">no detections yet</div>'; return; }
+    if (!sp.length) { host.innerHTML = '<div class="stats-tl-empty">no detections yet</div>'; _rhythmSig = null; return; }
 
     var isMobile = (window.innerWidth || 800) <= 700;
+    // Skip no-op re-renders on the silent poll (keeps the scrub readout
+    // alive). isMobile is in the signature so a resize across the 700px
+    // breakpoint still re-renders at the new lane height.
+    var sig = (isMobile ? 'm|' : 'd|') + JSON.stringify([sp, RY.now_local || 0, RY.sun || 0, RY.days_covered || RY.days || 0]);
+    if (!animate && sig === _rhythmSig && host.querySelector('.rhythm-svg')) return;
+    _rhythmSig = sig;
     var N = sp.length;
 
     var W = 320, padL = 12, padR = 12, padT = 12, padB = 18;
@@ -1293,12 +1263,11 @@
       pts.push([xForH(24), base]);
       var crest = smoothPath(pts);
       var area = crest + 'L' + f(xForH(24)) + ' ' + f(base) + 'L' + f(xForH(0)) + ' ' + f(base) + 'Z';
-      var esc = String(row.sci).replace(/"/g, '&quot;');
-      s.push('<g class="rhythm-lane" data-sci="' + esc + '" data-i="' + i + '">');
+      s.push('<g class="rhythm-lane" data-sci="' + esc(row.sci) + '" data-i="' + i + '">');
       s.push('<path class="rhythm-area" d="' + area + '"/>');
       s.push('<path class="rhythm-crest" d="' + crest + '"/>');
       s.push('<text class="rhythm-name" x="' + (plotL + 2) + '" y="' + f(base - 3) + '">'
-        + (row.com || row.sci) + '<tspan class="rhythm-total" dx="5">' + fmtNK(row.total) + '</tspan></text>');
+        + esc(row.com || row.sci) + '<tspan class="rhythm-total" dx="5">' + fmtNK(row.total) + '</tspan></text>');
       s.push('</g>');
     });
 
@@ -1347,7 +1316,7 @@
       var ranked = species.map(function (s) { return { com: s.com || s.sci, n: (s.bins || [])[h] || 0 }; })
         .filter(function (r) { return r.n > 0; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 4);
       var rows = ranked.length
-        ? ranked.map(function (r) { return '<span class="t"><span class="c">' + r.com + '</span><span class="n">' + r.n + '</span></span>'; }).join('')
+        ? ranked.map(function (r) { return '<span class="t"><span class="c">' + esc(r.com) + '</span><span class="n">' + esc(r.n) + '</span></span>'; }).join('')
         : '<span class="t">—</span>';
       tip.innerHTML = '<span class="hd">' + lab(h) + '–' + lab((h + 1) % 24) + '</span>' + rows;
       tip.hidden = false;
@@ -1390,8 +1359,8 @@
     if (!v1) return;
     function setHi(sci, on) {
       if (!sci) return;
-      var esc = sci.replace(/"/g, '\"');
-      v1.querySelectorAll('.rhythm-lane[data-sci="' + esc + '"], .stats-side li[data-sci="' + esc + '"]')
+      var sel = CSS.escape(sci);
+      v1.querySelectorAll('.rhythm-lane[data-sci="' + sel + '"], .stats-side li[data-sci="' + sel + '"]')
         .forEach(function (el) { el.classList.toggle('sync-hi', on); });
     }
     v1.addEventListener('mouseover', function (ev) {
@@ -1549,8 +1518,7 @@
     ordered.forEach(function (s) {
       var p = ribbonPath(s);
       var cls = 'chorus-ribbon ' + (s.isOthers ? 'is-others' : 'chorus-h' + chorusHue(s.sci));
-      var esc = String(s.sci).replace(/"/g, '&quot;');
-      svg.push('<g class="' + cls + '" data-sci="' + esc + '">'
+      svg.push('<g class="' + cls + '" data-sci="' + esc(s.sci) + '">'
         + '<path class="chorus-fill" d="' + p.area + '"/>'
         + '<path class="chorus-crest" d="' + p.crest + '"/></g>');
     });
@@ -1605,10 +1573,9 @@
       var size = Math.max(lo, Math.min(hi, base * Math.sqrt(s.total)));
       var pose = s.total >= flightCut ? 2 : 1;
       var src = avImg(s.sci, pose);
-      var esc = String(s.sci).replace(/"/g, '&quot;');
-      birds.push('<div class="chorus-bird" data-sci="' + esc + '" style="left:' + f(x / CH_W * 100) + '%;top:' + f(y / CH_H * 100) + '%;width:' + f(size / CH_W * 100) + '%">'
-        + '<img src="' + src + '" alt="' + String(s.com || s.sci).replace(/"/g, '&quot;') + '" data-av-fb="1" loading="lazy">'
-        + '<span class="chorus-bird-nm">' + (s.com || s.sci) + '</span></div>');
+      birds.push('<div class="chorus-bird" data-sci="' + esc(s.sci) + '" style="left:' + f(x / CH_W * 100) + '%;top:' + f(y / CH_H * 100) + '%;width:' + f(size / CH_W * 100) + '%">'
+        + '<img src="' + src + '" alt="' + esc(s.com || s.sci) + '" data-av-fb="1" loading="lazy">'
+        + '<span class="chorus-bird-nm">' + esc(s.com || s.sci) + '</span></div>');
     });
     birds.push('</div>');
 
@@ -1650,7 +1617,7 @@
     var lastHM = chorusHM(CH, N - 1), endMin = lastHM[0] * 60 + lastHM[1] + (CH.interval_minutes || 30);
     var endT = endsNow ? 'now' : chorusClock(Math.floor(endMin / 60), endMin % 60);
     cap.innerHTML = '<b>' + nSpecies + ' species</b> · <b>' + fmtN(total) + (total === 1 ? ' call' : ' calls') + '</b> from <b>' + startT + '</b> to <b>' + endT + '</b>. '
-      + 'Busiest around <b>' + when + '</b>' + dawn + (loud ? ', led by the <b>' + (loud.com || loud.sci) + '</b>' : '') + '.' + (endsNow ? '' : ' Quiet since then.') + ' '
+      + 'Busiest around <b>' + when + '</b>' + dawn + (loud ? ', led by the <b>' + esc(loud.com || loud.sci) + '</b>' : '') + '.' + (endsNow ? '' : ' Quiet since then.') + ' '
       + 'Each bird floats above its ribbon at the moment it was loudest; the river is widest when the most birds were calling at once.';
   }
 
@@ -1679,7 +1646,7 @@
       else if (CH.ends_at_now !== false && CH.now_local) { endH = CH.now_local.hour; endM = CH.now_local.minute; }
       else { var add = hm0[1] + (CH.interval_minutes || 30); endH = hm0[0] + Math.floor(add / 60); endM = add % 60; }
       var rows = ranked.length
-        ? ranked.map(function (r) { return '<div class="row"><img src="' + avImg(r.sci, 1) + '" data-av-fb="1" onerror="this.style.visibility=\'hidden\'" alt=""><span class="c">' + r.com + '</span><span class="n">' + r.n + '</span></div>'; }).join('')
+        ? ranked.map(function (r) { return '<div class="row"><img src="' + avImg(r.sci, 1) + '" data-av-fb="1" onerror="this.style.visibility=\'hidden\'" alt=""><span class="c">' + esc(r.com) + '</span><span class="n">' + esc(r.n) + '</span></div>'; }).join('')
         : '<div class="empty">— quiet —</div>';
       tip.innerHTML = '<span class="hd">' + chorusClock(hm0[0], hm0[1]) + '–' + chorusClock(endH, endM) + ' · ' + (variety[bi] || 0) + ' kinds</span>' + rows;
       tip.hidden = false;
@@ -1774,10 +1741,17 @@
   }
 
   // ---- Side text lists (real Pi data) ----
+  var _statsListsSig = null;
   function renderStatsLists() {
     var stats = DATA.stats || {};
     var recent = DATA.recent || { species: [] };
     var firstseen = DATA.firstseen || { species: [] };
+    // Skip no-op re-renders on the silent poll. The 5-min bucket keeps the
+    // "Xd ago" labels honest without rebuilding every 30 s.
+    var sig = JSON.stringify([stats.last_hour, stats.today, stats.week, stats.totals,
+      recent.species, firstseen.species, currentHours, Math.floor(Date.now() / 300000)]);
+    if (sig === _statsListsSig) return;
+    _statsListsSig = sig;
 
     // By Period - pulled directly from ./avian/api/birdnet-api.php?action=stats so the numbers
     // are authoritative (BirdNET-Pi's own counts).
@@ -1821,31 +1795,14 @@
   }
 
   // ---- Atlas: field-guide card grid ----
-  // eBird species codes for placeholder birds. eBird's URL scheme is
-  // https://ebird.org/species/<code>/, where <code> is a stable 6-char
-  // taxonomy code. Hardcoded here for the local-California demo set;
-  // a real implementation can look these up via the eBird taxon API.
-  var EBIRD_CODES = {
-    'Calypte anna':           'annhum',
-    'Passer domesticus':      'houspa',
-    'Haemorhous mexicanus':   'houfin',
-    'Turdus migratorius':     'amerob',
-    'Zenaida macroura':       'moudov',
-    'Spinus psaltria':        'lesgol',
-    'Zonotrichia leucophrys': 'whcspa',
-    'Aphelocoma californica': 'cascj1',
-    'Mimus polyglottos':      'normoc',
-    'Sayornis nigricans':     'blkpho',
-    'Larus occidentalis':     'wegull',
-    'Corvus brachyrhynchos':  'amecro'
-  };
-
   function wikiUrl(sci) {
     return 'https://en.wikipedia.org/wiki/' + encodeURIComponent(sci.replace(/ /g, '_'));
   }
   function ebirdUrl(sci) {
-    var code = EBIRD_CODES[sci];
-    return code ? 'https://ebird.org/species/' + code : 'https://ebird.org/explore';
+    // eBird species pages need eBird's own 6-char taxonomy code, which we
+    // don't track - land on Explore (search) rather than guessing. (The old
+    // hardcoded code map covered only the pre-launch California demo set.)
+    return 'https://ebird.org/explore';
   }
 
   // Tiny inline icons - monochrome, ink-only, match the page palette.
@@ -1926,7 +1883,7 @@
             .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
             .then(function (b) { return actx.decodeAudioData(b); })
             .then(function (buf) {
-              _decodedCache[aurl] = buf;
+              cacheDecoded(aurl, buf);
               // Guard on document containment, not spectroWrap.contains:
               // a 30s refreshAll() poll can rebuild the atlas and detach
               // this card mid-decode. The detached wrap still "contains"
@@ -1988,6 +1945,7 @@
     });
   }
 
+  var _atlasSig = null;
   function renderAtlas(animate) {
     var grid = document.getElementById('atlasGrid');
     if (!grid) return;
@@ -2004,12 +1962,13 @@
         '<p>No birds detected yet.</p>' +
         '<p class="hint">The atlas fills up as BirdNET-Pi identifies new species.</p>' +
         '</div>';
+      _atlasSig = null;
       return;
     }
 
     // Time-window filter: when a windowed view is selected, only show
     // species heard in that window. ALL preserves the full lifelist.
-    var isAllWindow = currentHours >= 1000000;
+    var isAllWindow = currentHours >= ALL_HOURS;
     var filtered = isAllWindow
       ? lifelist
       : lifelist.filter(function (s) { return (winBySci[s.sci] || 0) > 0; });
@@ -2018,8 +1977,19 @@
         '<p>No detections in this window.</p>' +
         '<p class="hint">Try a longer time window.</p>' +
         '</div>';
+      _atlasSig = null;
       return;
     }
+
+    // Skip no-op re-renders on the silent 30 s poll: the innerHTML wipe used
+    // to break the playing card's button state mid-playback (clicking it
+    // *restarted* instead of stopping) and killed the hovered card. The 5-min
+    // bucket lets lifer badges age out of a window without a data change.
+    var atlasSig = JSON.stringify([window.__atlasSort || 'count', currentHours,
+      Math.floor(Date.now() / 300000),
+      filtered.map(function (s) { return [s.sci, s.n, winBySci[s.sci] || 0, s.last_seen || '', s.first_seen || '']; })]);
+    if (!animate && atlasSig === _atlasSig && grid.querySelector('.bird-card')) return;
+    _atlasSig = atlasSig;
 
     // Sort by the atlas-sort segmented control (defaults to "count" =
     // most-heard all time).
@@ -2053,19 +2023,19 @@
       // The "all time" window makes the windowed count identical to the
       // all-time count - collapse to a single stat rather than print the
       // same number twice. Otherwise label the count with its span.
-      var statRows = currentHours >= 1000000
+      var statRows = currentHours >= ALL_HOURS
         ? '<div><span class="n">' + fmtNK(total) + '</span><span class="lbl-inline">all time</span></div>'
         : '<div><span class="n">' + fmtNK(win) + '</span><span class="lbl-inline">' + windowLabel(currentHours) + '</span></div>'
           + '<div><span class="n">' + fmtNK(total) + '</span><span class="lbl-inline">all time</span></div>';
       return ''
-        + '<article class="bird-card" data-sci="' + s.sci + '" data-audio="' + audioSrc + '">'
+        + '<article class="bird-card" data-sci="' + esc(s.sci) + '" data-audio="' + esc(audioSrc) + '">'
         +   (isLifer ? '<span class="lifer-badge" title="new to the life list in this window">lifer</span>' : '')
         +   '<div class="stat">' + statRows + '</div>'
         +   '<div class="img-wrap">'
-        +     '<img loading="lazy" decoding="async" src="' + sketchSrc + '" alt="' + s.com + '">'
+        +     '<img loading="lazy" decoding="async" src="' + sketchSrc + '" alt="' + esc(s.com) + '">'
         +   '</div>'
-        +   '<h3>' + s.com + '</h3>'
-        +   '<div class="sci">' + s.sci + '</div>'
+        +   '<h3>' + esc(s.com) + '</h3>'
+        +   '<div class="sci">' + esc(s.sci) + '</div>'
         +   '<div class="spectro-wrap" aria-hidden="true"></div>'
         +   '<div class="actions">'
         +     '<button type="button" class="chip play" data-action="play" aria-label="play recording">'
@@ -2125,12 +2095,13 @@
       renderWindowDependent(animate);
     }).catch(function (e) { console.warn('recent/hourly fetch failed', e); });
   }
+  var _pollSeq = 0;
   function refreshAll(animate) {
     var forHours = currentHours;
+    var seq = ++_pollSeq;
     return Promise.all([
       fetchJson(AV_API + '/api/birdnet-api.php?action=stats').catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=lifelist').catch(function () { return null; }),
-      fetchJson(AV_API + '/api/birdnet-api.php?action=timeseries&days=30').catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=firstseen&limit=10').catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=recent&hours=' + forHours).catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=hourly&hours=' + forHours).catch(function () { return null; }),
@@ -2138,25 +2109,25 @@
       fetchJson(AV_API + '/api/birdnet-api.php?action=rhythm&days=14').catch(function () { return null; }),
       fetchChorus(),   // sets DATA.chorus itself; window-independent (fixed 12h)
     ]).then(function (parts) {
+      // A slow old tick must never overwrite a newer tick's data/render.
+      if (seq !== _pollSeq) return;
       // EVERY slice is guarded: each fetch .catch()es to null, so one
       // transient worker 500 (the 07-03 burst shape) must keep the last good
-      // data on screen — the first four used to assign unconditionally, which
-      // blanked the whole atlas to "No birds detected yet" until the next
-      // good tick.
+      // data on screen — the first slices used to assign unconditionally,
+      // which blanked the whole atlas to "No birds detected yet" until the
+      // next good tick.
       if (parts[0]) DATA.stats = parts[0];
       if (parts[1]) DATA.lifelist = parts[1];
-      if (parts[2]) DATA.timeseries = parts[2];
-      if (parts[3]) DATA.firstseen = parts[3];
+      if (parts[2]) DATA.firstseen = parts[2];
       // Only accept the recent/hourly slices if the window hasn't changed
       // since this poll started - otherwise keep what's there.
-      if (forHours === currentHours && parts[4]) DATA.recent = parts[4];
-      if (forHours === currentHours && parts[5]) DATA.hourly = parts[5];
+      if (forHours === currentHours && parts[3]) DATA.recent = parts[3];
+      if (forHours === currentHours && parts[4]) DATA.hourly = parts[4];
       // Facts are today/all-time scoped (not window-dependent), so accept
       // regardless of the window; a failed fetch keeps the last good sheet.
-      if (parts[6]) DATA.facts = parts[6];
+      if (parts[5]) DATA.facts = parts[5];
       // Rhythm is a FIXED multi-day lookback (D3) - also window-independent.
-      if (parts[7]) DATA.rhythm = parts[7];
-      recomputeDerived();
+      if (parts[6]) DATA.rhythm = parts[6];
       renderTimeIndependent(animate);
       renderCollageFromData(animate);
     });
@@ -2174,11 +2145,12 @@
   });
 
   // ---- Realtime polling ----
-  // Every POLL_MS the page refetches the live data set so the collage,
+  // Every POLL_MS the page refetches the live data set (8 small JSON
+  // fetches, all served by the worker's poll micro-cache) so the collage,
   // stats, and atlas reflect new detections without a manual reload.
-  // We use refreshAll() (cheap: 5 small JSON fetches) so the dependent
-  // text/charts update too. Polling pauses when the tab is hidden and
-  // resumes (with an immediate fetch) when it becomes visible again.
+  // Per-view change signatures make a no-change tick render-free. Polling
+  // pauses when the tab is hidden and resumes (with an immediate fetch)
+  // when it becomes visible again.
   var POLL_MS = 30 * 1000;
   var pollTimer = null;
   function startPolling() {
@@ -2202,16 +2174,16 @@
   startPolling();
 
   // ---- Menu dropdown ----
+  // The drawer holds the frame-window picker + the built-by line. (The old
+  // password-unlock flow, live-audio player, and settings cards targeted
+  // BirdNET-Pi's on-Pi PHP endpoints, which the Cloudflare deployment never
+  // serves - the whole cluster was production-dead and is gone.)
   var dd = document.getElementById('menu-dd');
   var menuBtn = document.getElementById('menuBtn');
-  var locked  = document.getElementById('dd-locked');
-  var items   = document.getElementById('dd-items');
-  var lockHint= document.getElementById('lockHint');
   function openDd()  {
     dd.classList.add('open'); dd.setAttribute('aria-hidden','false');
     syncPill(framePick);   // position the frame-window pill now the drawer is laid out
     loadFrameWindow();     // refresh the shared window (another device may have changed it)
-    setTimeout(function () { document.getElementById('lockPass').focus(); }, 100);
   }
   function closeDd() { dd.classList.remove('open'); dd.setAttribute('aria-hidden','true'); }
   function toggleDd(){ dd.classList.contains('open') ? closeDd() : openDd(); }
@@ -2267,405 +2239,6 @@
     });
   });
 
-  // Probe menu.php with no Authorization header. On a LAN deploy
-  // (AV_REQUIRE_AUTH=0) it returns 200 immediately so the drawer
-  // renders directly. On a forwarded deploy with Caddy basic_auth in
-  // front, Caddy will already have validated credentials before this
-  // request reaches PHP - so a 200 here means we're authed, a 401
-  // means Caddy rejected and we need the lock-screen flow.
-  function tryAutoUnlock() {
-    fetch('./avian/api/menu.php', { credentials: 'same-origin' }).then(function (r) {
-      if (r.status === 200) {
-        return r.json().then(function (j) { renderMenu(j.items || []); });
-      }
-    }).catch(function () {});
-  }
-  tryAutoUnlock();
-
-  document.getElementById('unlockForm').addEventListener('submit', function (e) {
-    e.preventDefault();
-    // BirdNET-Pi's upstream Caddyfile basicauth user is `birdnet`.
-    // If your install changed it (custom Caddyfile), set window.AV_AUTH_USER
-    // before this script loads - e.g. an inline <script> in index.html.
-    var u = (window.AV_AUTH_USER || 'birdnet');
-    var p = document.getElementById('lockPass').value;
-    var hdr = 'Basic ' + btoa(u + ':' + p);
-    // POST to menu.php with the header so the browser caches the basic
-    // creds for every subsequent request. If Caddy basic_auth accepts
-    // them we get a 200 and the drawer renders; 401 means wrong password.
-    fetch('./avian/api/menu.php', {
-      method: 'POST',
-      headers: { 'Authorization': hdr },
-      credentials: 'same-origin',
-    }).then(function (r) {
-      if (r.status === 200) {
-        return r.json().then(function (j) { renderMenu(j.items || []); });
-      } else if (r.status === 401) {
-        lockHint.textContent = 'wrong password.';
-        lockHint.classList.add('lock-err');
-      } else {
-        lockHint.textContent = 'auth unavailable.';
-        lockHint.classList.add('lock-err');
-      }
-    }).catch(function () {
-      lockHint.textContent = 'network error.';
-      lockHint.classList.add('lock-err');
-    });
-  });
-
-  // Render the unlocked drawer:
-  //   - inline LIVE AUDIO player (streams icecast through the worker tunnel)
-  //   - collapsible SETTINGS section (closed by default to avoid mis-clicks)
-  //   - small ADVANCED TOOLS grid for the rest of BirdNET-Pi (still
-  //     opens externally; rebuilding all of these in our design is on
-  //     the follow-up list)
-  function renderMenu(menu) {
-    locked.style.display = 'none';
-    items.classList.add('show');
-    var liveAudioIcon = '<svg viewBox="0 0 12 12" fill="currentColor"><path d="M3 2 L10 6 L3 10 Z"/></svg>';
-    var stopIcon = '<svg viewBox="0 0 12 12" fill="currentColor"><rect x="3" y="3" width="6" height="6"/></svg>';
-    var specOnIcon = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 9 L4 5 L6 8 L8 3 L10 7"/></svg>';
-    // Build the diagnostic shortcuts (system / logs / tools). With
-    // native:true they navigate in-page; otherwise they keep the old
-    // open-in-new-tab behavior for the legacy BirdNET-Pi screens.
-    var linksHtml = menu.map(function (it) {
-      var label = (it.label || '');
-      var attrs = it.native ? '' : ' target="_blank" rel="noopener"';
-      var cls = it.native ? '' : ' class="ext"';
-      return '<a' + cls + ' href="' + it.href + '"' + attrs + '><span>' + label + '</span></a>';
-    }).join('');
-    items.innerHTML =
-      '<div class="live-audio" id="liveAudio" data-on="false">'
-      + '  <div class="pulse"></div>'
-      + '  <div class="label">Live audio<span class="hint">stream from the mic</span></div>'
-      + '  <button type="button" id="liveAudioBtn">'
-      +     liveAudioIcon + '<span>listen</span>'
-      + '  </button>'
-      + '</div>'
-      // Spectrogram canvas is always present; it stays a dark inert
-      // strip until the stream is on, then the FFT loop paints it in
-      // real time. No separate toggle.
-      + '<canvas class="live-spectro" id="liveSpectro" width="600" height="120" aria-label="live spectrogram"></canvas>'
-      + '<div class="live-status" id="liveStatus"></div>'
-      + '<div class="menu-links">' + linksHtml + '</div>';
-
-    // Clicking a nav link (settings / system / logs / tools) collapses the
-    // menu back into the button - it has opened (or navigated to) its page,
-    // so leaving the drawer open is just clutter. The listen button and the
-    // built-by / GitHub links deliberately DON'T close it (you stay in the
-    // drawer to keep the stream going; those links open a new tab).
-    var menuLinks = items.querySelector('.menu-links');
-    if (menuLinks) menuLinks.addEventListener('click', function (ev) {
-      if (ev.target.closest('a')) closeDd();
-    });
-
-    // Live audio + realtime spectrogram. The audio element and the
-    // FFT analyser share one AudioContext; once .play() is called the
-    // analyser starts painting the canvas via rAF. No timeout - we
-    // surface the natural error event or success ("playing") only.
-    var liveBox = document.getElementById('liveAudio');
-    var liveBtn = document.getElementById('liveAudioBtn');
-    var spectroEl = document.getElementById('liveSpectro');
-    var statusEl = document.getElementById('liveStatus');
-    var liveEl = null, audioCtx = null, srcNode = null, analyser = null;
-    var specRaf = null;
-
-    function setStatus(msg, isErr) {
-      statusEl.textContent = msg || '';
-      statusEl.className = 'live-status' + (isErr ? ' err' : '');
-    }
-    function startAudio() {
-      // Create the Audio element and resolve on the first "playing"
-      // event (success). The browser will hang the network request
-      // open for an icecast stream - that's normal - and "playing"
-      // fires as soon as the first audio frame is decoded. We don't
-      // race a timeout because icecast can take 1-10s to warm up
-      // depending on tunnel + bitrate.
-      return new Promise(function (resolve, reject) {
-        liveEl = new Audio('/stream?t=' + Date.now());
-        // No crossOrigin - the stream is same-origin via the worker
-        // and crossOrigin='anonymous' would require CORS headers
-        // icecast doesn't send.
-        var settled = false;
-        liveEl.addEventListener('playing', function () {
-          if (settled) return;
-          settled = true; resolve();
-        });
-        liveEl.addEventListener('error', function () {
-          if (settled) return;
-          settled = true;
-          reject(new Error('stream error - check /#admin=system'));
-        });
-        audioClaim(stopAudio);   // stop any card / modal-recording audio
-        liveEl.play().catch(function (e) {
-          if (settled) return;
-          settled = true; reject(e);
-        });
-      });
-    }
-    function stopAudio() {
-      audioRelease(stopAudio);
-      if (specRaf) { cancelAnimationFrame(specRaf); specRaf = null; }
-      if (liveEl) { try { liveEl.pause(); } catch (e) {} liveEl.src = ''; liveEl = null; }
-      if (srcNode) { try { srcNode.disconnect(); } catch (e) {} srcNode = null; }
-      if (analyser) { try { analyser.disconnect(); } catch (e) {} analyser = null; }
-      liveBox.setAttribute('data-on', 'false');
-      liveBtn.innerHTML = liveAudioIcon + '<span>listen</span>';
-      // Clear the spectrogram canvas so it returns to its quiet state.
-      var ctx = spectroEl.getContext('2d');
-      ctx.fillStyle = getComputedStyle(document.documentElement)
-        .getPropertyValue('--paper-2').trim() || '#efe8d8';
-      ctx.fillRect(0, 0, spectroEl.width, spectroEl.height);
-    }
-    function attachSpectrogram() {
-      if (!liveEl) return;
-      if (!audioCtx) {
-        var Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return;
-        audioCtx = new Ctx();
-      }
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      try {
-        srcNode = audioCtx.createMediaElementSource(liveEl);
-      } catch (e) {
-        // MediaElementSource throws if the Audio is already wired up
-        // (e.g. user toggled listen off then on). Best effort - let
-        // the audio still play, just skip the spectrogram.
-        return;
-      }
-      analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.7;
-      srcNode.connect(analyser);
-      analyser.connect(audioCtx.destination);
-      drawSpectrogram();
-    }
-    // Convert a CSS colour token (hex or rgb()) to [r,g,b] by letting the 2d
-    // context normalise whatever form the variable is authored in.
-    function toRGB(str, fallback) {
-      var c = spectroEl.getContext('2d');
-      c.fillStyle = fallback; c.fillStyle = str;   // invalid str leaves fallback
-      var s = c.fillStyle;
-      if (s.charAt(0) === '#') return [parseInt(s.substr(1, 2), 16), parseInt(s.substr(3, 2), 16), parseInt(s.substr(5, 2), 16)];
-      var m = s.match(/(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
-      return m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
-    }
-    function drawSpectrogram() {
-      var ctx = spectroEl.getContext('2d');
-      var W = spectroEl.width, H = spectroEl.height;
-      // Read palette tokens so the live spectrogram follows the theme - a
-      // charcoal ground with a light trace in dark mode, not a hardcoded
-      // light-mode ramp - matching the recording-row + card spectrograms.
-      var cs = getComputedStyle(document.documentElement);
-      var paper = cs.getPropertyValue('--paper-2').trim() || '#efe8d8';
-      var bg = toRGB(paper, '#efe8d8');
-      var fg = toRGB(cs.getPropertyValue('--ink').trim() || '#1a1612', '#1a1612');
-      ctx.fillStyle = paper;
-      ctx.fillRect(0, 0, W, H);
-      var bins = new Uint8Array(analyser.frequencyBinCount);
-      function tick() {
-        if (!analyser) return;
-        var img = ctx.getImageData(1, 0, W - 1, H);
-        ctx.putImageData(img, 0, 0);
-        ctx.clearRect(W - 1, 0, 1, H);
-        analyser.getByteFrequencyData(bins);
-        var n = bins.length;
-        var lo = Math.floor(n * 250 / 24000);
-        var hi = Math.floor(n * 12000 / 24000);
-        for (var y = 0; y < H; y++) {
-          var t = 1 - y / H;
-          var idx = Math.round(lo + (hi - lo) * Math.pow(t, 1.6));
-          var v = (bins[idx] || 0) / 255;
-          var e = v * v * (3 - 2 * v);
-          // Ground (paper) -> trace (ink) ramp, per the active theme.
-          var r = bg[0] + Math.round((fg[0] - bg[0]) * e);
-          var g = bg[1] + Math.round((fg[1] - bg[1]) * e);
-          var b = bg[2] + Math.round((fg[2] - bg[2]) * e);
-          ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
-          ctx.fillRect(W - 1, y, 1, 1);
-        }
-        specRaf = requestAnimationFrame(tick);
-      }
-      tick();
-    }
-
-    // Paint the spectrogram in its quiet/initial state.
-    (function () {
-      var ctx = spectroEl.getContext('2d');
-      var paper = getComputedStyle(document.documentElement)
-        .getPropertyValue('--paper-2').trim() || '#efe8d8';
-      ctx.fillStyle = paper;
-      ctx.fillRect(0, 0, spectroEl.width, spectroEl.height);
-    })();
-
-    liveBtn.addEventListener('click', function (ev) {
-      // Important: stop the click from propagating up to the
-      // document-level "click outside drawer" handler, which would
-      // close the dropdown.
-      ev.stopPropagation();
-      var on = liveBox.getAttribute('data-on') === 'true';
-      if (on) { setStatus(''); stopAudio(); return; }
-      liveBox.setAttribute('data-on', 'true');
-      liveBtn.innerHTML = stopIcon + '<span>stop</span>';
-      setStatus('connecting...');
-      startAudio()
-        .then(function () { setStatus('streaming from pi'); attachSpectrogram(); })
-        .catch(function (err) {
-          stopAudio();
-          var msg = (err && err.message) || 'stream unavailable';
-          if (msg.indexOf('NotAllowed') !== -1 || msg.indexOf('user') !== -1) {
-            setStatus('browser blocked autoplay - tap listen again', true);
-          } else {
-            setStatus(msg, true);
-          }
-        });
-    });
-  }
-
-  // Pending changes (key -> value), saved on click of the Save button.
-  var pending = {};
-
-  function setSaveState(msg, cls) {
-    var el = document.getElementById('saveState');
-    if (el) { el.textContent = msg || ''; el.className = 'save-state' + (cls ? ' ' + cls : ''); }
-    var btn = document.getElementById('saveBtn');
-    if (btn) btn.disabled = Object.keys(pending).length === 0;
-  }
-
-  function loadSettings() {
-    fetch('./avian/api/config.php', { credentials: 'same-origin', cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (cfg) {
-        var v = cfg.values || {};
-        var preserve = cfg.preserve;
-        var html = ''
-          + settingsToggle('preserve', 'Preserve all recordings', "don't auto-delete", preserve)
-          + settingsSlider('CONFIDENCE',  'Confidence threshold', 'min score to log a detection', v.CONFIDENCE,  0.1, 0.95, 0.05, 2)
-          + settingsSlider('SENSITIVITY', 'Sensitivity',          'analyzer sensitivity',          v.SENSITIVITY, 0.5, 1.5,  0.05, 2)
-          + settingsSlider('OVERLAP',     'Chunk overlap',        'seconds analyzed per pass',     v.OVERLAP,     0,   2.5,  0.1,  1)
-          + settingsSegmented('FULL_DISK', 'When disk fills', '', v.FULL_DISK, [
-              { v: 'keep',  label: 'keep' },
-              { v: 'purge', label: 'purge' },
-            ])
-          + '<div class="menu-save-row">'
-          + '  <span class="save-state" id="saveState"></span>'
-          + '  <button type="button" id="saveBtn" disabled>save</button>'
-          + '</div>';
-        var body = document.getElementById('settingsBody');
-        if (body) body.innerHTML = html;
-        wireSettingsControls();
-        var saveBtn = document.getElementById('saveBtn');
-        if (saveBtn) saveBtn.addEventListener('click', saveSettings);
-      })
-      .catch(function (err) {
-        var body = document.getElementById('settingsBody');
-        if (body) body.innerHTML =
-          '<div class="menu-row"><span class="label">Failed to load <small class="hint">' + err + '</small></span></div>';
-      });
-  }
-
-  function settingsToggle(key, label, hint, on) {
-    return ''
-      + '<div class="menu-row">'
-      + '  <div><span class="label">' + label + '</span>'
-      +     (hint ? '<span class="hint">' + hint + '</span>' : '')
-      + '  </div>'
-      + '  <button type="button" class="switch" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" data-key="' + key + '"></button>'
-      + '</div>';
-  }
-  function settingsSlider(key, label, hint, val, min, max, step, digits) {
-    return ''
-      + '<div class="slider-row">'
-      + '  <div class="head">'
-      + '    <div class="label-block">'
-      + '      <span class="label">' + label + '</span>'
-      +       (hint ? '<span class="hint">' + hint + '</span>' : '')
-      + '    </div>'
-      + '    <span class="value" data-value-for="' + key + '">' + (+val).toFixed(digits) + '</span>'
-      + '  </div>'
-      + '  <div class="slider-track">'
-      + '    <input type="range" min="' + min + '" max="' + max + '" step="' + step + '" value="' + val + '" data-key="' + key + '" data-digits="' + digits + '">'
-      + '  </div>'
-      + '</div>';
-  }
-  function settingsSegmented(key, label, hint, val, opts) {
-    var btns = opts.map(function (o) {
-      return '<button type="button" data-v="' + o.v + '" aria-current="' + (o.v === val ? 'true' : 'false') + '">' + o.label + '</button>';
-    }).join('');
-    return ''
-      + '<div class="menu-row">'
-      + '  <div><span class="label">' + label + '</span>'
-      +     (hint ? '<span class="hint">' + hint + '</span>' : '')
-      + '  </div>'
-      + '  <div class="seg" data-key="' + key + '">' + btns + '</div>'
-      + '</div>';
-  }
-  // Client-side theme switcher row. Reuses the .seg look but is tagged
-  // data-theme-seg so wireSettingsControls skips it - it applies instantly
-  // and is NOT part of the Pi config save flow.
-  function themeRow() {
-    var cur = currentTheme();
-    var btn = function (v, label) {
-      return '<button type="button" data-theme="' + v + '" aria-current="' + (cur === v ? 'true' : 'false') + '">' + label + '</button>';
-    };
-    return ''
-      + '<div class="menu-row">'
-      + '  <div><span class="label">Theme</span><span class="hint">saved on this device</span></div>'
-      + '  <div class="seg" data-theme-seg>' + btn('light', 'light') + btn('dark', 'dark') + '</div>'
-      + '</div>';
-  }
-  function wireSettingsControls(scope) {
-    scope = scope || document;
-    scope.querySelectorAll('.switch').forEach(function (sw) {
-      sw.addEventListener('click', function () {
-        var on = sw.getAttribute('aria-checked') !== 'true';
-        sw.setAttribute('aria-checked', on ? 'true' : 'false');
-        pending[sw.dataset.key] = on;
-        setSaveState('change pending');
-      });
-    });
-    scope.querySelectorAll('input[type="range"]').forEach(function (sl) {
-      sl.addEventListener('input', function () {
-        var v = +sl.value;
-        var digits = +sl.dataset.digits || 2;
-        var label = scope.querySelector('[data-value-for="' + sl.dataset.key + '"]');
-        if (label) label.textContent = v.toFixed(digits);
-        pending[sl.dataset.key] = v;
-        setSaveState('change pending');
-      });
-    });
-    scope.querySelectorAll('.seg:not([data-theme-seg])').forEach(function (seg) {
-      seg.querySelectorAll('button').forEach(function (b) {
-        b.addEventListener('click', function () {
-          seg.querySelectorAll('button').forEach(function (x) { x.setAttribute('aria-current', x === b ? 'true' : 'false'); });
-          pending[seg.dataset.key] = b.dataset.v;
-          setSaveState('change pending');
-        });
-      });
-    });
-  }
-
-  function saveSettings() {
-    if (Object.keys(pending).length === 0) return;
-    var body = JSON.stringify(pending);
-    setSaveState('saving...');
-    fetch('./avian/api/config.php', {
-      method: 'POST', body: body,
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-    })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
-      .then(function (res) {
-        if (res.ok && res.j.ok) {
-          pending = {};
-          setSaveState('saved ✓', 'ok');
-          setTimeout(function () { setSaveState(''); }, 1800);
-        } else {
-          setSaveState('save failed', 'err');
-        }
-      })
-      .catch(function () { setSaveState('network error', 'err'); });
-  }
 
   // ---- Hash routing + atlas detail modal ----
   // When a collage tile or stats row is clicked it sets
@@ -2686,7 +2259,7 @@
     if (!sci) return;
     var attempts = 0;
     (function find() {
-      var card = grid.querySelector('.bird-card[data-sci="' + sci.replace(/"/g, '\"') + '"]');
+      var card = grid.querySelector('.bird-card[data-sci="' + CSS.escape(sci) + '"]');
       if (!card) {
         if (attempts++ < 10) return setTimeout(find, 80);
         return;
@@ -2703,10 +2276,15 @@
 
   // ---- Detail modal ----
   // Caches per-sci species info so opening the same modal twice doesn't
-  // re-fetch. Wikipedia + per-species endpoints are slow over the
-  // tunnel; one fetch per session is plenty.
+  // re-fetch. Each species entry is keyed on its lifelist row (last_seen +
+  // count), so reopening a bird after it's been heard again refetches fresh
+  // recordings/counts instead of serving hours-stale data all session.
+  // Wikipedia extracts don't change with detections - cached for the session.
   var SPECIES_CACHE = {};
   var WIKI_CACHE = {};
+  // Guards against an open(A) -> quickly open(B) race: only the newest
+  // open's fetches may write into the modal (mirrors _vpToken for the bloom).
+  var _modalTok = 0;
   var modalAudio = null;
   var modalRecBtn = null;
   // Song-signature bloom state (the canvas under the portrait). Holds the
@@ -2854,8 +2432,7 @@
     var poseBtns = [].slice.call(poseToggle.querySelectorAll('button'));
 
     // Reset the toggle: assume nothing's available, set pose 1 (perched
-    // cutout - every species has it) as the optimistic default. HEAD
-    // probes below toggle each button on/off and pick the best default.
+    // cutout) as the optimistic default; availability below overrides.
     poseToggle.removeAttribute('data-unavailable');
     poseBtns.forEach(function (b) {
       b.setAttribute('data-unavailable', 'true');
@@ -2869,43 +2446,39 @@
     img.src = sketchSrc(sci, 1);
     img.alt = sci;
 
-    // Probe each pose's image with HEAD. Build a list of available
-    // poses, then pick the highest-numbered as the default (in-flight
-    // > perched, etc.). When only one pose remains, hide the toggle
-    // entirely - no choice means no UI.
-    var probes = poseBtns.map(function (b) {
+    // Pose availability comes from the inline DIMS table (the same source
+    // the collage trusts) - zero network, no open-A/open-B race, and immune
+    // to Pages' 200-HTML fallback for missing PNGs, which made the old HEAD
+    // probes report every pose "available". Pick the highest-numbered
+    // available pose as the default (in-flight > perched) unless the species
+    // asks for a specific one (MODAL_POSE). One option => hide the chrome.
+    var baseSlug = slugify(sci);
+    var poseInfo = poseBtns.map(function (b) {
       var pose = +b.dataset.pose;
-      return fetch(sketchSrc(sci, pose), { method: 'HEAD', cache: 'no-store' })
-        .then(function (r) { return { pose: pose, btn: b, ok: r.ok }; })
-        .catch(function () { return { pose: pose, btn: b, ok: false }; });
+      var slug = pose > 1 ? baseSlug + '-' + pose : baseSlug;
+      return { pose: pose, btn: b, ok: !!DIMS[slug] };
     });
-    Promise.all(probes).then(function (results) {
-      var available = results.filter(function (r) { return r.ok; });
-      available.forEach(function (r) { r.btn.removeAttribute('data-unavailable'); });
-      results.filter(function (r) { return !r.ok; }).forEach(function (r) {
-        r.btn.setAttribute('data-unavailable', 'true');
+    var available = poseInfo.filter(function (r) { return r.ok; });
+    available.forEach(function (r) { r.btn.removeAttribute('data-unavailable'); });
+    poseInfo.filter(function (r) { return !r.ok; }).forEach(function (r) {
+      r.btn.setAttribute('data-unavailable', 'true');
+    });
+    var pick = available.sort(function (a, b) { return b.pose - a.pose; })[0];
+    if (MODAL_POSE[sci]) {
+      var want = available.filter(function (r) { return r.pose === MODAL_POSE[sci]; })[0];
+      if (want) pick = want;
+    }
+    if (pick) {
+      poseBtns.forEach(function (b) {
+        b.setAttribute('aria-current', b === pick.btn ? 'true' : 'false');
       });
-      // Default to the highest-numbered available pose (in-flight if
-      // present, else fall back to perched) - unless the species asks
-      // for a specific default (MODAL_POSE).
-      var pick = available.sort(function (a, b) { return b.pose - a.pose; })[0];
-      if (MODAL_POSE[sci]) {
-        var want = available.filter(function (r) { return r.pose === MODAL_POSE[sci]; })[0];
-        if (want) pick = want;
-      }
-      if (pick) {
-        poseBtns.forEach(function (b) {
-          b.setAttribute('aria-current', b === pick.btn ? 'true' : 'false');
-        });
-        img.src = sketchSrc(sci, pick.pose);
-      }
-      // Single-option => hide the chrome.
-      if (available.length <= 1) {
-        poseToggle.setAttribute('data-unavailable', 'true');
-      }
-      // Slide the white pill to the active button.
-      syncPill(poseToggle);
-    });
+      img.src = sketchSrc(sci, pick.pose);
+    }
+    if (available.length <= 1) {
+      poseToggle.setAttribute('data-unavailable', 'true');
+    }
+    // Slide the white pill to the active button.
+    syncPill(poseToggle);
     document.getElementById('modalSci').textContent = sci;
     document.getElementById('modalGenus').textContent = (sci.split(' ')[0] || '-');
     document.getElementById('modalCommon').textContent = '-';
@@ -2914,7 +2487,7 @@
     // Window stat label tracks the picker; the whole stat is hidden for
     // the "all time" window since it would just echo the all-time count.
     var modalWinStat = document.getElementById('modalWindowStat');
-    if (currentHours >= 1000000) {
+    if (currentHours >= ALL_HOURS) {
       modalWinStat.style.display = 'none';
     } else {
       modalWinStat.style.display = '';
@@ -2943,7 +2516,7 @@
     // layout for opacity-0 trees, which would freeze the morph at the
     // starting frame.
     var sourceCard = atlasGridEl
-      ? atlasGridEl.querySelector('.bird-card[data-sci="' + sci.replace(/"/g, '\"') + '"]')
+      ? atlasGridEl.querySelector('.bird-card[data-sci="' + CSS.escape(sci) + '"]')
       : null;
     modal.setAttribute('aria-hidden', 'false');
     document.body.style.overflow = 'hidden';
@@ -2954,14 +2527,22 @@
     modalMorphDone = false;
     setTimeout(function () { modalMorphDone = true; maybeStartBloom(); }, 340);
 
-    // Species detail (lifelist row + every detection).
-    var loadSpecies = SPECIES_CACHE[sci]
-      ? Promise.resolve(SPECIES_CACHE[sci])
+    // Species detail (lifelist row + every detection). The cache entry is
+    // valid only while the species' lifelist row (last_seen + count) is
+    // unchanged - hear the bird again and the next open refetches.
+    var tok = ++_modalTok;
+    var llRow = ((DATA.lifelist && DATA.lifelist.species) || [])
+      .filter(function (x) { return x.sci === sci; })[0];
+    var llVer = llRow ? (llRow.last_seen || '') + '|' + (llRow.n || '') : '';
+    var cached = SPECIES_CACHE[sci];
+    var loadSpecies = (cached && cached.ver === llVer)
+      ? Promise.resolve(cached.data)
       : fetchJson(AV_API + '/api/birdnet-api.php?action=species&sci=' + encodeURIComponent(sci)).then(function (j) {
-          SPECIES_CACHE[sci] = j;
+          SPECIES_CACHE[sci] = { ver: llVer, data: j };
           return j;
         });
     loadSpecies.then(function (j) {
+      if (tok !== _modalTok) return;   // modal moved on to another bird
       var s = j.summary || {};
       document.getElementById('modalCommon').textContent = s.com || sci;
       document.getElementById('modalAllTime').textContent = (+s.total || 0).toLocaleString();
@@ -2976,9 +2557,9 @@
       document.getElementById('modalRecCount').textContent = dets.length + ' captured';
       document.getElementById('modalRecordings').innerHTML = dets.length
         ? dets.map(function (d) {
-            return '<li class="rec-row" data-file="' + (d.file || '') + '" data-date="' + (d.d || '') + '">'
+            return '<li class="rec-row" data-file="' + esc(d.file || '') + '" data-date="' + esc(d.d || '') + '">'
               + '<button class="play" type="button" aria-label="play">' + ICON_PLAY + '</button>'
-              + '<span class="when">' + fmtRecTime(d.d, d.t) + '<small>' + fmtDateLine(d.d, d.t) + '</small></span>'
+              + '<span class="when">' + esc(fmtRecTime(d.d, d.t)) + '<small>' + esc(fmtDateLine(d.d, d.t)) + '</small></span>'
               + '<span class="conf">' + ((+d.conf || 0) * 100).toFixed(0) + '%</span>'
               + '<div class="rec-spectro" aria-hidden="true">'
               +   '<div class="rec-spectro-loading">rendering...</div>'
@@ -2992,6 +2573,7 @@
       // Build the song-signature bloom from the representative clip.
       setupVoiceprint(sci, dets);
     }).catch(function () {
+      if (tok !== _modalTok) return;
       document.getElementById('modalRecordings').innerHTML = '<li class="rec-empty">Failed to load recordings.</li>';
     });
 
@@ -3008,10 +2590,12 @@
           WIKI_CACHE[sci] = j; return j;
         });
     loadWiki.then(function (j) {
+      if (tok !== _modalTok) return;
       var desc = document.getElementById('modalDesc');
       desc.textContent = j.extract || 'No description available.';
       desc.classList.toggle('placeholder', !j.extract);
     }).catch(function () {
+      if (tok !== _modalTok) return;
       var desc = document.getElementById('modalDesc');
       desc.textContent = 'No description available.';
       desc.classList.add('placeholder');
@@ -3029,7 +2613,7 @@
     // since opening the modal, so the source card may have moved.
     var sci = (document.getElementById('modalSci').textContent || '').trim();
     var sourceCard = sci && atlasGridEl
-      ? atlasGridEl.querySelector('.bird-card[data-sci="' + sci.replace(/"/g, '\"') + '"]')
+      ? atlasGridEl.querySelector('.bird-card[data-sci="' + CSS.escape(sci) + '"]')
       : null;
     morphModalClose(modal.querySelector('.modal-card'), sourceCard, function () {
       modal.setAttribute('aria-hidden', 'true');
@@ -3180,374 +2764,18 @@
     });
   })();
 
-  // ===== Admin overlay (settings / system / logs / tools) =====
-  // Lives in the same shell as the rest of the app - the menu button
-  // and return-to-atlas pill stay put. The slider hides; this overlay
-  // takes over the body. Navigation is via the drawer menu, NOT
-  // internal tabs (the drawer is the canonical nav surface).
-  var adminEl = document.getElementById('adminScreen');
-  var adminBody = document.getElementById('adminBody');
-  var adminTitle = document.getElementById('adminTitle');
-  var adminPollT = null;
-  var adminSect = null;
-  var ADMIN_TITLES = {
-    settings: 'Settings',
-    system: 'System',
-    logs: 'Logs',
-    tools: 'Tools',
-  };
-  function adminEsc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-  function adminFmtBytes(n) {
-    if (!n) return '0 B';
-    var u = ['B','KB','MB','GB','TB'];
-    var i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-    return n.toFixed(n < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
-  }
-  function adminFmtAge(s) {
-    if (s == null) return '-';
-    if (s < 60) return s + 's';
-    if (s < 3600) return Math.round(s / 60) + 'm';
-    if (s < 86400) return Math.round(s / 3600) + 'h';
-    return Math.round(s / 86400) + 'd';
-  }
-  // Admin endpoints rely on the session cookie set by /api/auth/login -
-  // no Authorization header needed (and nothing sensitive in JS-readable
-  // storage). credentials: 'same-origin' is the default but spelled out
-  // for clarity.
-  function adminApi(url) {
-    return fetch(url, { credentials: 'same-origin', cache: 'no-store' });
-  }
-  function openAdmin(section) {
-    document.body.classList.add('admin-on');
-    adminEl.setAttribute('aria-hidden', 'false');
-    adminTitle.textContent = ADMIN_TITLES[section] || section;
-    if (adminPollT) { clearInterval(adminPollT); adminPollT = null; }
-    adminSect = section;
-    if (section === 'settings') renderAdminSettings();
-    else if (section === 'system') renderAdminSystem();
-    else if (section === 'logs') renderAdminLogs();
-    else if (section === 'tools') renderAdminTools();
-  }
-  function closeAdmin() {
-    document.body.classList.remove('admin-on');
-    adminEl.setAttribute('aria-hidden', 'true');
-    if (adminPollT) { clearInterval(adminPollT); adminPollT = null; }
-    adminSect = null;
-  }
-
-  function adminCard(title, value, sub, cls) {
-    return '<div class="admin-card ' + (cls || '') + '">'
-      + '<h3>' + adminEsc(title) + '</h3>'
-      + '<div class="v">' + adminEsc(value) + '</div>'
-      + (sub ? '<div class="sub">' + adminEsc(sub) + '</div>' : '')
-      + '</div>';
-  }
-  function adminUnreachableHtml(reason) {
-    return '<div class="admin-unreachable">Pi unreachable - ' + adminEsc(reason || 'no data') + '</div>';
-  }
-
-  function renderAdminSettings() {
-    adminBody.innerHTML = '<p style="font:11px ui-monospace,monospace;color:var(--ink-soft);text-align:center">loading settings...</p>';
-    fetch('./avian/api/config.php', { credentials: 'same-origin', cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (cfg) {
-        var v = cfg.values || {};
-        var preserve = cfg.preserve;
-        adminBody.innerHTML =
-          '<div class="admin-settings">'
-          + themeRow()
-          + settingsToggle('preserve', 'Preserve all recordings', "don't auto-delete", preserve)
-          + settingsSlider('CONFIDENCE',  'Confidence threshold', 'min score to log a detection', v.CONFIDENCE,  0.1, 0.95, 0.05, 2)
-          + settingsSlider('SENSITIVITY', 'Sensitivity',          'analyzer sensitivity',          v.SENSITIVITY, 0.5, 1.5,  0.05, 2)
-          + settingsSlider('OVERLAP',     'Chunk overlap',        'seconds analyzed per pass',     v.OVERLAP,     0,   2.5,  0.1,  1)
-          + settingsSegmented('FULL_DISK', 'When disk fills', '', v.FULL_DISK, [
-              { v: 'keep',  label: 'keep' },
-              { v: 'purge', label: 'purge' },
-            ])
-          + '<div class="menu-save-row">'
-          + '  <span class="save-state" id="saveState"></span>'
-          + '  <button type="button" id="saveBtn" disabled>save</button>'
-          + '</div>'
-          + '</div>';
-        wireSettingsControls(adminBody);
-        adminBody.querySelectorAll('.seg').forEach(wireToggleAdvance);   // open-space advance
-        // Theme switcher applies + persists immediately (separate from the
-        // Pi config save below).
-        var themeSeg = adminBody.querySelector('[data-theme-seg]');
-        if (themeSeg) themeSeg.addEventListener('click', function (ev) {
-          var b = ev.target.closest('button[data-theme]');
-          if (!b) return;
-          applyTheme(b.getAttribute('data-theme'));
-          [].forEach.call(themeSeg.querySelectorAll('button'), function (x) {
-            x.setAttribute('aria-current', x === b ? 'true' : 'false');
-          });
-        });
-        var saveBtn = document.getElementById('saveBtn');
-        if (saveBtn) saveBtn.addEventListener('click', saveSettings);
-      })
-      .catch(function (err) {
-        adminBody.innerHTML = adminUnreachableHtml('settings load failed (' + err + ')');
-      });
-  }
-
-  function renderAdminSystem() {
-    adminBody.innerHTML = '<p style="font:11px ui-monospace,monospace;color:var(--ink-soft);text-align:center">loading...</p>';
-    function tick() {
-      adminApi('./avian/api/birdnet-status.php?action=diag')
-        .then(function (r) { return r.text().then(function (raw) { return { status: r.status, raw: raw }; }); })
-        .then(function (res) {
-          var j = null;
-          try { j = JSON.parse(res.raw); } catch (e) {}
-          if (res.status !== 200 || !j) {
-            adminBody.innerHTML = adminUnreachableHtml(
-              !j ? 'birdnet-status.php not installed on the pi' : (j.error || 'HTTP ' + res.status)
-            );
-            return;
-          }
-          adminBody.innerHTML = adminSystemMarkup(j);
-          wireAdminRestarts();
-        })
-        .catch(function (e) { adminBody.innerHTML = adminUnreachableHtml(e.message); });
-    }
-    tick();
-    adminPollT = setInterval(tick, 6000);
-  }
-  function adminSystemMarkup(j) {
-    var sys = j.system || {}, svc = j.services || {}, recLogs = j.recent_logs || {};
-    var stream = sys.stream_data || {}, db = sys.birds_db || {};
-    var streamAlert = !stream.exists || stream.newest_age_s == null || stream.newest_age_s > 600;
-    var dbAlert = db.exists && db.modified_s > 3600;
-    var keySvcs = ['birdnet_recording', 'birdnet_analysis', 'birdnet_log'];
-    var dead = keySvcs.filter(function (n) { return svc[n] && svc[n].active !== 'active'; });
-    var html = '<div class="admin-grid">';
-    html += adminCard('recording pipeline', dead.length === 0 ? 'live' : (dead.length + ' down'),
-      dead.length === 0 ? 'all services active' : dead.join(', '),
-      dead.length === 0 ? '' : 'alert');
-    html += adminCard('newest live audio',
-      stream.newest_age_s == null ? 'no chunks' : adminFmtAge(stream.newest_age_s) + ' ago',
-      stream.newest_name || '',
-      streamAlert ? 'alert' : '');
-    html += adminCard('birds.db updated',
-      db.exists ? adminFmtAge(db.modified_s) + ' ago' : 'missing',
-      db.mtime || '',
-      dbAlert ? 'warn' : '');
-    html += adminCard('uptime', (sys.uptime || {}).pretty || '-',
-      'load ' + ((sys.uptime || {}).load || []).map(function (n) { return n.toFixed(2); }).join(' / '));
-    html += adminCard('cpu temp',
-      sys.temp_c != null ? sys.temp_c.toFixed(1) + '°C' : '-',
-      sys.hostname + ' · ' + sys.kernel,
-      sys.temp_c != null && sys.temp_c > 75 ? 'warn' : '');
-    html += adminCard('memory used', sys.mem ? sys.mem.used_pct + '%' : '-',
-      sys.mem ? adminFmtBytes(sys.mem.used_bytes) + ' / ' + adminFmtBytes(sys.mem.total_bytes) : '',
-      sys.mem && sys.mem.used_pct > 92 ? 'warn' : '');
-    html += adminCard('disk (birdsongs)', sys.disk_birds ? sys.disk_birds.used_pct + '%' : '-',
-      sys.disk_birds ? adminFmtBytes(sys.disk_birds.total_bytes - sys.disk_birds.free_bytes) + ' / ' + adminFmtBytes(sys.disk_birds.total_bytes) : '',
-      sys.disk_birds && sys.disk_birds.used_pct > 92 ? 'warn' : '');
-    var audio = sys.audio || {}, cards = audio.arecord_l || [];
-    var mic = cards.find ? cards.find(function (c) { return /usb-audio|microphone|mic/i.test(c); }) : null;
-    // Without a USB mic, /proc/asound/cards only lists the Pi's HDMI
-    // audio outputs - which aren't an input source. Flag that clearly
-    // rather than showing "audio device: vc4hdmi0" as if it were a mic.
-    html += adminCard('audio device',
-      mic || (cards.length ? 'no microphone attached' : 'no audio devices'),
-      mic ? '' : (cards[0] || ''),
-      mic ? '' : 'warn');
-    html += '</div>';
-
-    html += '<h2 class="admin-section-head">services</h2>';
-    html += '<table class="admin-tbl"><thead><tr><th>unit</th><th>state</th><th>enabled</th><th>since</th><th></th></tr></thead><tbody>';
-    Object.keys(svc).forEach(function (name) {
-      var s = svc[name];
-      var pill = (s.active === 'active') ? 'active' : (s.active === 'failed' ? 'failed' : 'inactive');
-      html += '<tr>'
-        + '<td>' + adminEsc(name) + '</td>'
-        + '<td><span class="pill ' + pill + '">' + adminEsc(s.active) + '</span></td>'
-        + '<td>' + adminEsc(s.enabled) + '</td>'
-        + '<td>' + adminEsc(s.since || '-') + '</td>'
-        + '<td><button class="restart" data-unit="' + adminEsc(name) + '">restart</button></td>'
-        + '</tr>';
-    });
-    html += '</tbody></table>';
-
-    var conf = (sys.conf || {}).values || {};
-    var rows = Object.keys(conf).map(function (k) {
-      return '<tr><td>' + adminEsc(k) + '</td><td>' + adminEsc(conf[k]) + '</td></tr>';
-    }).join('');
-    if (rows) {
-      html += '<h2 class="admin-section-head">birdnet.conf</h2>';
-      html += '<table class="admin-tbl"><tbody>' + rows + '</tbody></table>';
-    }
-    if (Object.keys(recLogs).length) {
-      html += '<h2 class="admin-section-head">recent journal</h2>';
-      Object.keys(recLogs).forEach(function (u) {
-        html += '<h3 style="font:9.5px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);margin:12px 0 6px">' + adminEsc(u) + '</h3>';
-        html += '<div class="admin-logs-pane">' + adminEsc(recLogs[u] || '(empty)') + '</div>';
-      });
-    }
-    return html;
-  }
-  function wireAdminRestarts() {
-    adminBody.querySelectorAll('button.restart').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var unit = b.dataset.unit;
-        if (!confirm('Restart ' + unit + '?')) return;
-        b.disabled = true; var old = b.textContent; b.textContent = '...';
-        fetch('./avian/api/birdnet-status.php?action=restart&unit=' + encodeURIComponent(unit), {
-          method: 'POST', credentials: 'same-origin',
-        })
-          .then(function (r) { return r.json(); })
-          .then(function (j) {
-            b.textContent = j.ok ? 'ok' : 'fail';
-            setTimeout(function () { b.disabled = false; b.textContent = old; renderAdminSystem(); }, 1200);
-          })
-          .catch(function () { b.textContent = 'err'; b.disabled = false; setTimeout(function () { b.textContent = old; }, 1500); });
-      });
-    });
-  }
-
-  function renderAdminLogs() {
-    var unit = 'birdnet_recording', lines = 120, autoScroll = true;
-    adminBody.innerHTML =
-      '<div class="admin-logs-toolbar">'
-      + '  <label>unit</label><select id="adminLogsUnit">'
-      // php-fpm unit name differs per Debian version (8.2 on Bookworm,
-      // 8.4 on Trixie). List all three so the dropdown has the right one
-      // regardless of host - birdnet-status.php's ALLOWED_UNITS already
-      // skips ones systemd doesn't know about.
-      + ['birdnet_recording','birdnet_analysis','birdnet_log','birdnet_stats','spectrogram_viewer','livestream','icecast2','caddy','php8.4-fpm','php8.3-fpm','php8.2-fpm']
-          .map(function (u) { return '<option value="' + u + '">' + u + '</option>'; }).join('')
-      + '  </select>'
-      + '  <label>lines</label><input id="adminLogsLines" type="number" value="120" min="20" max="500" step="20">'
-      + '</div>'
-      + '<div class="admin-logs-pane" id="adminLogsOut">loading...</div>';
-    var pane = document.getElementById('adminLogsOut');
-    var sel = document.getElementById('adminLogsUnit');
-    var linesIn = document.getElementById('adminLogsLines');
-    sel.addEventListener('change', function () { unit = sel.value; tick(); });
-    linesIn.addEventListener('change', function () { lines = +linesIn.value || 120; tick(); });
-    pane.addEventListener('scroll', function () {
-      autoScroll = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 20;
-    });
-    function tick() {
-      adminApi('./avian/api/birdnet-status.php?action=logs&unit=' + encodeURIComponent(unit) + '&lines=' + lines)
-        .then(function (r) { return r.text().then(function (raw) { return { status: r.status, raw: raw }; }); })
-        .then(function (res) {
-          var j = null;
-          try { j = JSON.parse(res.raw); } catch (e) {}
-          if (res.status !== 200 || !j) {
-            pane.textContent = 'pi unreachable - ' + (j && j.error ? j.error : 'no data');
-            return;
-          }
-          pane.textContent = j.text || '(empty)';
-          if (autoScroll) pane.scrollTop = pane.scrollHeight;
-        });
-    }
-    tick();
-    adminPollT = setInterval(tick, 4000);
-  }
-
-  function renderAdminTools() {
-    var actions = [
-      ['restart birdnet_recording', 'picks up live audio from the mic. restart this first if detections stall.', 'birdnet_recording'],
-      ['restart birdnet_analysis',  'runs the neural net on recorded chunks. restart if detections are stuck.', 'birdnet_analysis'],
-      ['restart birdnet_log',       'writes the sqlite db. restart if api/stats stops updating.', 'birdnet_log'],
-      ['restart spectrogram_viewer','live fft view (legacy) - used by /birdnet/spectrogram.', 'spectrogram_viewer'],
-      ['restart livestream',        'icecast feed for the drawer live-audio button.', 'livestream'],
-      ['restart icecast2',          'web audio streaming server (fronts livestream).', 'icecast2'],
-    ];
-    var html = '<div class="admin-actions-grid">';
-    actions.forEach(function (a) {
-      html += '<div class="admin-action">'
-        + '<h4>' + adminEsc(a[0]) + '</h4>'
-        + '<p>' + adminEsc(a[1]) + '</p>'
-        + '<button class="run" type="button" data-unit="' + adminEsc(a[2]) + '">run</button>'
-        + '<div class="out" data-out="' + adminEsc(a[2]) + '"></div>'
-        + '</div>';
-    });
-    html += '</div>';
-    html += '<h2 class="admin-section-head">heal / update</h2>';
-    html += '<div class="admin-actions-grid">';
-    function deployCard(title, desc, lines) {
-      return '<div class="admin-action deploy">'
-        + '<h4>' + adminEsc(title) + '</h4>'
-        + '<p>' + adminEsc(desc) + '</p>'
-        + '<pre>' + adminEsc(lines.join('\n')) + '</pre>'
-        + '<button class="copy" type="button">copy</button>'
-        + '</div>';
-    }
-    html += deployCard('pull latest from github',
-      'fetches the newest AvianVisitors + BirdNET-Pi changes; the symlinks already in /BirdSongs/Extracted/ pick up new code on the next request.',
-      [
-        'cd ~/BirdNET-Pi && git pull',
-        '# substitute the right php-fpm unit if your debian ships a different version:',
-        'sudo systemctl reload caddy "$(systemctl list-unit-files \'php*-fpm.service\' --no-legend | awk \'{print $1; exit}\')"',
-      ]);
-    html += deployCard('rerun install_services.sh',
-      'refreshes every symlink + service file. safe to run anytime; only takes ~10 seconds.',
-      [
-        'cd ~/BirdNET-Pi && ./scripts/install_services.sh',
-      ]);
-    html += '</div>';
-    adminBody.innerHTML = html;
-    // Wire restart buttons + copy buttons.
-    adminBody.querySelectorAll('.admin-action button.run').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var unit = b.dataset.unit;
-        if (!confirm('restart ' + unit + '?')) return;
-        b.disabled = true; var old = b.textContent; b.textContent = '...';
-        var out = adminBody.querySelector('.out[data-out="' + unit.replace(/[^a-z0-9_.-]/gi,'_') + '"]');
-        fetch('./avian/api/birdnet-status.php?action=restart&unit=' + encodeURIComponent(unit), {
-          method: 'POST', credentials: 'same-origin',
-        })
-          .then(function (r) { return r.json(); })
-          .then(function (j) {
-            b.textContent = j.ok ? 'restarted' : 'failed';
-            if (out) out.textContent = (j.ok ? 'ok' : 'rc=' + j.rc) + (j.out ? '\n' + j.out : '');
-            setTimeout(function () { b.disabled = false; b.textContent = old; }, 2000);
-          })
-          .catch(function (e) {
-            b.textContent = 'error'; b.disabled = false;
-            if (out) out.textContent = e.message || 'request failed';
-            setTimeout(function () { b.textContent = old; }, 2000);
-          });
-      });
-    });
-    adminBody.querySelectorAll('.admin-action button.copy').forEach(function (b) {
-      b.addEventListener('click', function () {
-        var pre = b.previousElementSibling;
-        if (!pre) return;
-        navigator.clipboard.writeText(pre.textContent).then(function () {
-          var old = b.textContent; b.textContent = 'copied ✓';
-          setTimeout(function () { b.textContent = old; }, 1400);
-        });
-      });
-    });
-  }
 
   // Initial load: if the URL has a sci hash (a shared deep-link), open the
   // modal over the default collage view (highlighting the atlas card behind
   // the scenes) rather than forcing a jump to the atlas - matches in-app nav.
   if (readHash()) { highlightAtlas(readHash()); openDetailModal(readHash()); }
-  // Admin overlay routing: #admin=system|logs|tools opens the admin
-  // screen with that sub-tab. Clearing the hash closes it.
-  function readAdminHash() {
-    var m = location.hash.match(/^#admin=([a-z]+)/);
-    return m ? m[1] : null;
-  }
   // #about - brief explainer popup; reached via /about (302 -> /#about)
   // or the masthead eyebrow. aria-hidden drives the CSS fade/slide.
   function openAbout()  { document.getElementById('about-modal').setAttribute('aria-hidden', 'false'); }
   function closeAbout() { document.getElementById('about-modal').setAttribute('aria-hidden', 'true'); }
   function syncRouter() {
-    window.__lastHashchange = Date.now();
     var sci = readHash();
-    var adm = readAdminHash();
     if (location.hash === '#about') openAbout(); else closeAbout();
-    if (adm) { openAdmin(adm); return; }
-    closeAdmin();
     // Open the modal over the CURRENT view (no forced go(2)) so opening a bird
     // from the collage/stats no longer yanks you to the atlas; closing returns
     // you where you were. The morph self-skips to a centered fade when the
@@ -3555,7 +2783,6 @@
     if (sci) { highlightAtlas(sci); openDetailModal(sci); }
     else     { highlightAtlas(null); closeDetailModal(); }
   }
-  if (readAdminHash()) openAdmin(readAdminHash());
   if (location.hash === '#about') openAbout();
   window.addEventListener('hashchange', syncRouter);
 
@@ -3603,12 +2830,29 @@
   }
 
   // Cache decoded AudioBuffers per file so repeated expand/collapse on
-  // the same row doesn't re-fetch + re-decode the mp3.
-  var _decodedCache = {};
+  // the same row doesn't re-fetch + re-decode the mp3. CAPPED: decoded
+  // buffers run 1-4 MB each, so an unbounded session-long cache retained
+  // tens of MB. Oldest-inserted evicts first; a post-eviction request
+  // just re-decodes.
+  var _decodedCache = {}, _decodedOrder = [], DECODED_MAX = 12;
+  function cacheDecoded(key, buf) {
+    if (!(key in _decodedCache)) {
+      _decodedOrder.push(key);
+      if (_decodedOrder.length > DECODED_MAX) delete _decodedCache[_decodedOrder.shift()];
+    }
+    _decodedCache[key] = buf;
+  }
   // Cache the STFT analysis per file (shared by the bloom + line, and
   // reused across re-expands / theme repaints) so each clip is analyzed
-  // exactly once.
-  var _analysisCache = {};
+  // exactly once. Analyses are small (a few KB) - capped generously.
+  var _analysisCache = {}, _analysisOrder = [], ANALYSIS_MAX = 60;
+  function cacheAnalysis(key, a) {
+    if (!(key in _analysisCache)) {
+      _analysisOrder.push(key);
+      if (_analysisOrder.length > ANALYSIS_MAX) delete _analysisCache[_analysisOrder.shift()];
+    }
+    _analysisCache[key] = a;
+  }
 
   // The STFT analysis + FFT live in spectral-core.js (loaded before this
   // file in index.html) so the browser and the build-time signature
@@ -3935,7 +3179,7 @@
       return;
     }
     if (_decodedCache[file]) {
-      _analysisCache[file] = analyzeBuffer(_decodedCache[file]);
+      cacheAnalysis(file, analyzeBuffer(_decodedCache[file]));
       paintRowLine(row, _analysisCache[file], 1, false);
       done();
       return;
@@ -3949,8 +3193,8 @@
       })
       .then(function (buf) { return ctx.decodeAudioData(buf); })
       .then(function (audioBuffer) {
-        _decodedCache[file] = audioBuffer;
-        _analysisCache[file] = analyzeBuffer(audioBuffer);
+        cacheDecoded(file, audioBuffer);
+        cacheAnalysis(file, analyzeBuffer(audioBuffer));
         paintRowLine(row, _analysisCache[file], 1, false);
         done();
       })
@@ -4068,7 +3312,7 @@
     if (!attr) { el.innerHTML = ''; return; }
     var lic = licShort(attr.lic);
     var url = (attr.url || '').replace(/"/g, '%22');
-    el.innerHTML = 'song: ' + adminEsc(attr.rec || 'unknown') +
+    el.innerHTML = 'song: ' + esc(attr.rec || 'unknown') +
       (url ? ' · <a href="' + url + '" target="_blank" rel="noopener">xeno-canto</a>' : ' · xeno-canto') +
       (lic ? ' · ' + lic : '');
   }

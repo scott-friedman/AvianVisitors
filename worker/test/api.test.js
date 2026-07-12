@@ -34,9 +34,17 @@ class FakeDB {
 
 class FakeR2 {
   constructor(objects = {}) { this.objects = { ...objects }; this.puts = []; }
-  async head(k) { return this.objects[k] ? {} : null; }
-  async get(k) { return this.objects[k] ? { body: this.objects[k], size: 3 } : null; }
+  async head(k) { return this.objects[k] ? { size: this._size(k), httpEtag: 'W/"t"' } : null; }
+  async get(k, opts) {
+    if (!this.objects[k]) return null;
+    // Mirror real R2: an unsatisfiable range THROWS rather than returning null.
+    if (opts && opts.range && opts.range.offset != null && opts.range.offset >= this._size(k)) {
+      throw new Error('get: invalid range');
+    }
+    return { body: this.objects[k], size: this._size(k) };
+  }
   async put(k, body) { this.puts.push(k); this.objects[k] = body; }
+  _size(k) { return typeof this.objects[k] === 'string' ? this.objects[k].length : 3; }
 }
 
 const SECRET = 'test-ingest-secret';
@@ -197,6 +205,66 @@ describe('ingest (POST /api/detection)', () => {
     const res = await post('/api/detection', env(db, { CLIPS: new FakeR2() }), good(), { 'X-Avian-Secret': SECRET });
     expect(res.status).toBe(204);
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe('clip upload (POST /api/clip)', () => {
+  const MP3_ID3 = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0x00]);       // "ID3..."
+  const MP3_SYNC = new Uint8Array([0xff, 0xfb, 0x90, 0x00]);            // MPEG frame sync
+  const NOT_MP3 = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);             // PNG magic
+  const upload = (e, bytes) =>
+    worker.fetch(new Request('https://w.example/api/clip?file=x.mp3', {
+      method: 'POST', headers: { 'X-Avian-Secret': SECRET }, body: bytes,
+    }), e);
+
+  it('accepts both real MP3 magics and stores under clips/', async () => {
+    const clips = new FakeR2();
+    const e = env(new FakeDB(), { CLIPS: clips });
+    expect((await upload(e, MP3_ID3)).status).toBe(204);
+    expect((await upload(e, MP3_SYNC)).status).toBe(204);
+    expect(clips.puts).toEqual(['clips/x.mp3', 'clips/x.mp3']);
+  });
+
+  it('rejects non-MP3 bytes with 415 (bucket is served as audio/mpeg)', async () => {
+    const clips = new FakeR2();
+    const res = await upload(env(new FakeDB(), { CLIPS: clips }), NOT_MP3);
+    expect(res.status).toBe(415);
+    expect(clips.puts).toEqual([]);
+  });
+});
+
+describe('recording (GET /api/recording) Range handling', () => {
+  const KEY = 'Robin-91-2026-07-10-birdnet-08:00:00.mp3';
+  const BYTES = '0123456789'; // size 10 via FakeR2._size
+  const fetchRec = (e, headers = {}) =>
+    get('/api/recording?file=' + encodeURIComponent(KEY), e, headers);
+
+  it('serves 200 with Content-Length, and 206 for a satisfiable range', async () => {
+    const e = env(new FakeDB(), { CLIPS: new FakeR2({ ['clips/' + KEY]: BYTES }) });
+    const full = await fetchRec(e);
+    expect(full.status).toBe(200);
+    expect(full.headers.get('Content-Length')).toBe('10');
+
+    const part = await fetchRec(e, { Range: 'bytes=2-5' });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('Content-Range')).toBe('bytes 2-5/10');
+    expect(part.headers.get('Content-Length')).toBe('4');
+  });
+
+  it('returns 416 (not 500) for an unsatisfiable range — R2 would throw', async () => {
+    const e = env(new FakeDB(), { CLIPS: new FakeR2({ ['clips/' + KEY]: BYTES }) });
+    const res = await fetchRec(e, { Range: 'bytes=999-' });
+    expect(res.status).toBe(416);
+    expect(res.headers.get('Content-Range')).toBe('bytes */10');
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('errors are JSON like every other endpoint', async () => {
+    const e = env(new FakeDB(), { CLIPS: new FakeR2() });
+    const res = await fetchRec(e);
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Content-Type')).toContain('application/json');
+    expect((await res.json()).error).toBeTruthy();
   });
 });
 

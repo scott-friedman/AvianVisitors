@@ -2,6 +2,11 @@
 
 *The last 24h of birds, framed on the wall by your window.*
 
+> **This deployment (Scott's fork) — supersedes three claims below:**
+> - The panel is a **7.3" Inky Impression (800×480, 7-color)**, not the 13.3" Spectra 6; `display.py` is ported to it (`PANEL_W/H` + the `INKY7` palette). Only `hardware/` CAD is still 13.3".
+> - **The Worker renders the image, not the Pi.** `display.py` never screenshots anything — it fetches the finished PNG from the avian-worker's key-gated `GET /frame.png` (Cloudflare Browser Rendering) and pushes it to the panel. There is no `shoot` config key; set `image_url` (see `config.example.toml` / the `DEFAULTS` in `display.py`).
+> - The systemd timer fires every **5 minutes** (`systemd/birdframe.timer`), and the panel redraws only when the detection signature changes.
+
 A [Pimoroni Inky Impression 13.3"](https://amzn.to/4xlAWr3) (Spectra 6) mirroring the live collage. A Pi screenshots the site, mats it onto an A5 opening, and pushes to the panel, refreshing only when the birds change. Build one of your own at [theodore.net/projects/AvianVisitors#frame-ous](https://theodore.net/projects/AvianVisitors/#frame-ous).
 
 ![](https://theodore.net/assets/images/AvianVisitors/final.jpg)

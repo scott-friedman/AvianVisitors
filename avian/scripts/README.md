@@ -8,7 +8,9 @@ this directory.
 ## Pipeline
 
 1. `pregen.py` renders each bird with Gemini 2.5 Flash Image, on a flat cream ground.
-2. `cutout.py` removes the ground with BiRefNet and crops to the bird.
+2. `keycut.py` keys the cream ground out (deterministic flood fill) and crops to the
+   bird. (`cutout.py` — BiRefNet via rembg — is the ML alternative if onnxruntime
+   works on your platform; on this dev Mac it hangs, see below.)
 3. `build_masks.py` rebuilds the collage silhouette masks inlined in `apt.js`.
 4. `verify.py` (optional) runs an adversarial species-ID + anatomy check.
 
@@ -19,29 +21,35 @@ export GEMINI_API_KEY='your-key'
 # 1. generate (cream ground) for your region's species
 python3 pregen.py --labels ~/BirdNET-Pi/model/labels.txt --ebird-region US-CA
 
-# 2. cut the ground off and crop
-python3 cutout.py
+# 2. key the ground off and crop (in place; pass the freshly generated PNGs)
+python3 keycut.py avian/assets/illustrations/<slug>.png avian/assets/illustrations/<slug>-2.png
 
-# 3. rebuild the collage masks, then bump SKETCH_VERSION + IMG_VERSION in apt.js
+# 3. rebuild the collage masks
 python3 build_masks.py
 ```
+
+> **Art re-render rule:** never re-render/replace an illustration PNG in place at an
+> existing slug. Illustration/cutout URLs are fetched **unhashed** at runtime, and both
+> edge caches (the Pages custom domain and the `/birds/` proxy) hold them for up to
+> 24 h — replaced-in-place art keeps serving stale for up to a day. Bump the slug
+> (new filename) instead.
 
 `--labels` takes any `Sci|Com` per-line file (BirdNET-Pi's `labels.txt` works
 directly). `--ebird-region` filters to species actually seen in your region
 (needs `EBIRD_API_KEY`). Re-render one bird with
 `--species "Calypte anna|Anna's Hummingbird" --force`.
 
-## macOS gotcha: `cutout.py` hangs — use `keycut.py`
+## Why `keycut.py` is the default step 2: `cutout.py` hangs on this Mac
 
 On this dev Mac (Xcode `/usr/bin/python3`), `rembg`'s `new_session()` **hangs in
-native onnxruntime code** at session init — for BiRefNet *and* u2net — so step 2
-never returns, and a Python-level timeout can't break a native hang. Workaround:
-**`keycut.py`** (this dir) — a deterministic flood-fill key-out of the flat cream
-ground: it removes only the cream *connected to the image border* (so interior
-white plumage is safe), drops disconnected specks under 2% of the bird's area,
-feathers the edge 1px, and crops with a 2% margin. On these flat grounds it's as
-clean as the ML matte, often cleaner. Sudbury deployment worklist + per-bird
-status: `SUDBURY-ART-TODO.md` (repo root).
+native onnxruntime code** at session init — for BiRefNet *and* u2net — so
+`cutout.py` never returns, and a Python-level timeout can't break a native hang.
+**`keycut.py`** (this dir) is the default step 2 instead — a deterministic
+flood-fill key-out of the flat cream ground: it removes only the cream *connected
+to the image border* (so interior white plumage is safe), drops disconnected
+specks under 2% of the bird's area, feathers the edge 0.8 px, and crops with a 2%
+margin. On these flat grounds it's as clean as the ML matte, often cleaner.
+Sudbury deployment worklist + per-bird status: `SUDBURY-ART-TODO.md` (repo root).
 
 ```bash
 python3 keycut.py /tmp/bird-art-preview/<slug>.png /tmp/bird-art-preview/<slug>-2.png
@@ -77,9 +85,10 @@ re-key (`--tol`) or speck/stray touch-up is **free** — no new Gemini calls.
 
 The image model can't cut a clean transparent background on its own: it
 leaves holes and fringes, worst on pale birds. Rendering on a flat,
-consistent cream ground gives a known color that BiRefNet removes cleanly,
-and the steady ground also holds the painting style together across the
-whole set. `cutout.py` is the step that makes the backgrounds transparent.
+consistent cream ground gives a known color that step 2 keys out cleanly
+(flood fill or BiRefNet alike), and the steady ground also holds the
+painting style together across the whole set. `keycut.py` (or `cutout.py`)
+is the step that makes the backgrounds transparent.
 
 ## The prompt
 
@@ -130,3 +139,44 @@ python3 verify.py --labels labels.txt calypte-anna
   different style print; a one-off `--species` regen.
 - **Matched pair.** The perched and flight poses must read as the same
   individual. Review them side by side before locking.
+
+## Song signatures (`build-signatures.mjs`)
+
+Separate from the illustration pipeline: the modal's "song signature" bloom is a
+**canonical** per-species fingerprint precomputed from one clean xeno-canto song —
+NOT extracted from our noisy R2 field clips. For each target species the script
+pulls a license-compatible (CC, no ND) `type:song` recording, trims it to its
+loudest ~3.5 s, runs the shared STFT analysis, and writes two committed artifacts:
+
+- `avian/assets/signatures.json` — per-species analysis (`{ version, generated, species }`)
+- `avian/assets/songs/<slug>.mp3` — the trimmed reference clip (tap-to-play in the modal)
+
+Prereqs: **Node ≥ 18**, **ffmpeg** on PATH, and a **xeno-canto v3 API key** at
+`~/.config/avian/xeno-canto-key` (mode 600, outside the repo; free — register at
+xeno-canto.org → account → API key).
+
+```bash
+node avian/scripts/build-signatures.mjs                  # default: detected species w/ art, missing only (incremental)
+node avian/scripts/build-signatures.mjs --all-art        # every species with illustration art
+node avian/scripts/build-signatures.mjs --force          # rebuild (re-pick clips for) targets
+node avian/scripts/build-signatures.mjs --only "Cyanocitta cristata"
+node avian/scripts/build-signatures.mjs --limit 5        # first N (testing)
+```
+
+Birds whose auto-picked clip is poor (e.g. woodpeckers — no tonal song) can be
+pinned to a curated recording via `avian/assets/signature-overrides.json`
+(`{ "Genus species": <xeno-canto id> }`).
+
+**Follow-up after a build:** commit the artifacts, then `bash avian/build-site.sh`
+and redeploy Pages — build-site.sh content-hashes the *deployed* signatures.json
+and its clip URLs, so new signatures are visible immediately (no 24 h edge-cache
+wait).
+
+Two rules that keep the output right (full story: `SPECTRO-CONCEPTS-PLAN.md`):
+
+- **The STFT is shared.** `avian/frontend/spectral-core.js` is loaded by the
+  browser AND `require`d by this build script, so the canonical bloom and the
+  live per-recording line can't drift. Change the math there, once.
+- **Compute energy/pitch from LINEAR POWER, never the dB grid.** dB summed over a
+  linear-frequency band pins every dominant near the ceiling; dB is for the
+  heatmap visual only.

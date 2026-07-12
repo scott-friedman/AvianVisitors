@@ -1,4 +1,6 @@
 <?php
+// UNREFERENCED since the 2026-07-12 dead-admin strip (the Cloudflare frontend
+// no longer fetches this shim); kept as upstream on-Pi reference only.
 // AvianVisitors - drawer menu items.
 //
 // Returns the list of links shown in the side drawer when a user clicks

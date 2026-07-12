@@ -1,4 +1,6 @@
 <?php
+// UNREFERENCED since the 2026-07-12 dead-admin strip (the Cloudflare frontend
+// no longer fetches this shim); kept as upstream on-Pi reference only.
 // AvianVisitors - read/write a small, whitelisted subset of BirdNET-Pi
 // settings from the admin overlay's settings panel. Fetched by the
 // frontend at /avian/api/config.php.

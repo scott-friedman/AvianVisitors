@@ -51,6 +51,24 @@ function json(obj, status = 200, extra = {}) {
   return new Response(JSON.stringify(obj), { status, headers });
 }
 
+// Constant-time secret comparison: hash both sides (fixed length, and any
+// residual compare-loop timing leaks digest bits, not secret bits — useless
+// without a preimage), then XOR-compare. Replaces bare !== on the ingest /
+// clip / heartbeat / frame gates. False when the expected secret is unset,
+// so every gate stays fail-closed.
+async function secretMatches(provided, expected) {
+  if (!expected) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(String(provided ?? ''))),
+    crypto.subtle.digest('SHA-256', enc.encode(String(expected))),
+  ]);
+  const u = new Uint8Array(a), v = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < u.length; i++) diff |= u[i] ^ v[i];
+  return diff === 0;
+}
+
 // Local-time offset in hours from UTC. TZ_NAME (an IANA zone, "America/New_York")
 // is authoritative and DST-correct via Intl; TZ_OFFSET_HOURS is the fixed-offset
 // fallback (and the value used if Intl can't resolve the zone). Cached per
@@ -279,7 +297,7 @@ async function mojoVisit(env) {
 
 async function ingest(request, env) {
   const secret = request.headers.get('X-Avian-Secret') || '';
-  if (!env.AVIAN_INGEST_SECRET || secret !== env.AVIAN_INGEST_SECRET) {
+  if (!(await secretMatches(secret, env.AVIAN_INGEST_SECRET))) {
     return json({ error: 'unauthorized' }, 401);
   }
 
@@ -378,7 +396,7 @@ function clipKey(raw) {
 
 async function clip(request, env, url) {
   const secret = request.headers.get('X-Avian-Secret') || '';
-  if (!env.AVIAN_INGEST_SECRET || secret !== env.AVIAN_INGEST_SECRET) {
+  if (!(await secretMatches(secret, env.AVIAN_INGEST_SECRET))) {
     return json({ error: 'unauthorized' }, 401);
   }
   if (!env.CLIPS) return json({ error: 'no clip storage' }, 503);
@@ -390,6 +408,13 @@ async function clip(request, env, url) {
   const bytes = await request.arrayBuffer();
   if (!bytes || bytes.byteLength === 0) return json({ error: 'empty body' }, 400);
   if (bytes.byteLength > 5_000_000) return json({ error: 'too large' }, 413);
+  // Magic-byte sanity: this bucket is served back as audio/mpeg, so accept
+  // only real MP3 payloads — an "ID3" tag header or an MPEG frame sync
+  // (0xFF 0xEx). Secret-gated, so this guards against Pi-side bugs.
+  const head = new Uint8Array(bytes.slice(0, 3));
+  const isMp3 = (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33) ||
+                (head[0] === 0xff && (head[1] & 0xe0) === 0xe0);
+  if (!isMp3) return json({ error: 'not an mp3' }, 415);
 
   await env.CLIPS.put('clips/' + key, bytes, {
     httpMetadata: { contentType: 'audio/mpeg' },
@@ -406,53 +431,68 @@ async function clip(request, env, url) {
 // Honors Range (the <audio> element seeks; the spectrogram does a full fetch).
 // Missing/expired object → 404, which the frontend degrades to "no audio".
 async function recording(request, env, url) {
-  if (!env.CLIPS) return new Response('no clip storage', { status: 404, headers: CORS });
+  // Error bodies are json() like every other endpoint (they used to be
+  // text/plain); the frontend only checks r.ok, so the shape change is free.
+  if (!env.CLIPS) return json({ error: 'no clip storage' }, 404);
 
   let sci = null;
   let key = clipKey(url.searchParams.get('file'));
   if (!key) {
     sci = (url.searchParams.get('sci') || '').trim();
-    if (!sci) return new Response('file or sci required', { status: 400, headers: CORS });
+    if (!sci) return json({ error: 'file or sci required' }, 400);
     const row = await env.DB.prepare(
       'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts DESC LIMIT 1'
     ).bind(sci).first();
     key = row && row.file ? clipKey(row.file) : null;
-    if (!key) return new Response('no recording', { status: 404, headers: CORS });
+    if (!key) return json({ error: 'no recording' }, 404);
   }
 
-  const rng = parseRange(request.headers.get('Range'));
-  const opts = rng ? { range: rng } : undefined;
-  let obj = (await env.CLIPS.get('clips/' + key, opts)) || (await env.CLIPS.get('rare/' + key, opts));
-  if (!obj && sci) {
+  // Resolve which object exists FIRST (head is cheap), so a Range header can
+  // be validated against the real size before the ranged get — R2 *throws* on
+  // an unsatisfiable range rather than returning null, which used to 500
+  // ahead of the 416 logic below.
+  const locate = async (k) =>
+    (await env.CLIPS.head('clips/' + k)) ? 'clips/' + k :
+    (await env.CLIPS.head('rare/' + k)) ? 'rare/' + k : null;
+  let objKey = await locate(key);
+  if (!objKey && sci) {
     const oldest = await env.DB.prepare(
       'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts ASC LIMIT 1'
     ).bind(sci).first();
     const alt = oldest && oldest.file ? clipKey(oldest.file) : null;
-    if (alt && alt !== key) {
-      obj = (await env.CLIPS.get('rare/' + alt, opts)) || (await env.CLIPS.get('clips/' + alt, opts));
-    }
+    if (alt && alt !== key) objKey = await locate(alt);
   }
-  if (!obj) return new Response('not found', { status: 404, headers: CORS });
+  if (!objKey) return json({ error: 'not found' }, 404);
 
-  const size = obj.size; // full object size, even on a ranged get
+  const meta = await env.CLIPS.head(objKey);
+  if (!meta) return json({ error: 'not found' }, 404); // raced a TTL delete
+  const size = meta.size;
+
   const headers = new Headers(CORS);
   headers.set('Content-Type', 'audio/mpeg');
   headers.set('Accept-Ranges', 'bytes');
   headers.set('Cache-Control', 'public, max-age=604800');
-  if (obj.httpEtag) headers.set('ETag', obj.httpEtag);
+  if (meta.httpEtag) headers.set('ETag', meta.httpEtag);
 
+  const rng = parseRange(request.headers.get('Range'));
   if (rng) {
     let off, len;
     if (rng.suffix != null) { len = Math.min(rng.suffix, size); off = size - len; }
     else { off = rng.offset; len = rng.length == null ? size - off : Math.min(rng.length, size - off); }
     if (off < 0 || off >= size || len <= 0) {
-      headers.set('Content-Range', `bytes */${size}`);
-      return new Response('range not satisfiable', { status: 416, headers });
+      return json({ error: 'range not satisfiable' }, 416, {
+        'Content-Range': `bytes */${size}`,
+        'Accept-Ranges': 'bytes',
+      });
     }
+    const obj = await env.CLIPS.get(objKey, { range: { offset: off, length: len } });
+    if (!obj) return json({ error: 'not found' }, 404);
     headers.set('Content-Range', `bytes ${off}-${off + len - 1}/${size}`);
     headers.set('Content-Length', String(len));
     return new Response(obj.body, { status: 206, headers });
   }
+  const obj = await env.CLIPS.get(objKey);
+  if (!obj) return json({ error: 'not found' }, 404);
   headers.set('Content-Length', String(size));
   return new Response(obj.body, { status: 200, headers });
 }
@@ -480,7 +520,7 @@ const HEARTBEAT_DEFAULT_MAX_AGE = 2700; // 45 min = 3 missed 15-min pings before
 
 async function heartbeat(request, env) {
   const secret = request.headers.get('X-Avian-Secret') || '';
-  if (!env.AVIAN_INGEST_SECRET || secret !== env.AVIAN_INGEST_SECRET) {
+  if (!(await secretMatches(secret, env.AVIAN_INGEST_SECRET))) {
     return json({ error: 'unauthorized' }, 401);
   }
   const now = Math.floor(Date.now() / 1000);
@@ -608,7 +648,7 @@ async function frame(request, env, url) {
   const provided = request.headers.get('X-Frame-Key') || url.searchParams.get('k') || '';
   if (!env.FRAME_KEY) {
     if (env.FRAME_DEV_OPEN !== '1') return json({ error: 'unauthorized' }, 401);
-  } else if (provided !== env.FRAME_KEY) {
+  } else if (!(await secretMatches(provided, env.FRAME_KEY))) {
     return json({ error: 'unauthorized' }, 401);
   }
 
@@ -1449,5 +1489,6 @@ function clampInt(raw, dflt, lo, hi) {
 // Exposed for unit tests only (worker/test/*) — not part of any runtime contract.
 export {
   tzOffsetHours, tzMod, localDayStart, clampInt, clipKey, parseRange,
-  isTransientD1, pollKey, frameSignature, POLL_CACHE, FRAME_WINDOWS, RARE_MAX,
+  isTransientD1, pollKey, frameSignature, secretMatches,
+  POLL_CACHE, FRAME_WINDOWS, RARE_MAX,
 };

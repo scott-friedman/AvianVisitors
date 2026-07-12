@@ -3,7 +3,9 @@
 
 Step 1 of the illustration pipeline:
     1. pregen.py       render each bird on a uniform cream ground
-    2. cutout.py       remove the ground (BiRefNet) and crop to the bird
+    2. keycut.py       key out the ground and crop to the bird (cutout.py,
+                       BiRefNet, is the alternative if onnxruntime works
+                       on your platform - it hangs on this dev Mac)
     3. build_masks.py  refresh the collage silhouette masks in apt.js
 
 Reads a species list (BirdNET-Pi's labels.txt, eBird, or stdin),
@@ -87,10 +89,6 @@ JAY_GENERA = {
 SWALLOW_GENERA = {
     "Tachycineta", "Riparia", "Progne", "Petrochelidon", "Stelgidopteryx",
 }
-
-# Genera where Gemini's prior collapses to American Robin (gray back,
-# orange breast) for ground-foraging thrushes. Add as needed.
-ROBIN_GENERA = set()  # placeholder for future use
 
 # Anti-reference catalogue. Each entry describes one lookalike species
 # that Gemini collapses to: the common/scientific names go in IMAGE 2's
@@ -647,6 +645,10 @@ def main() -> int:
                                anti_ref_key=anti_key_for_call,
                                species_note=notes.get(sci),
                                style_ref=style_ref_path)
+                if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise RuntimeError(
+                        f"payload for {slug} pose {pose} is not a PNG "
+                        f"(first bytes {data[:8]!r}) - not writing {fname}")
                 path.write_bytes(data)
                 done += 1
                 refs_tag = "+ref" if pos_ref else ""

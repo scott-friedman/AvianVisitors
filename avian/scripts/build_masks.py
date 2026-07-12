@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AvianVisitors - rebuild the collage silhouette masks from the cutouts.
 
-Step 3 of the illustration pipeline (after pregen.py and cutout.py).
+Step 3 of the illustration pipeline (after pregen.py and keycut.py).
 
 The collage packs birds by their actual silhouette, not bounding boxes,
 so the frontend ships a tiny 1-bit mask per illustration inlined in
@@ -14,8 +14,7 @@ rewrites the DIMS and MASKS tables in avian/frontend/apt.js:
                   the cutout is opaque (alpha > 127). This is exactly
                   what loadMask() in apt.js decodes.
 
-Run after changing the illustration set, then bump SKETCH_VERSION and
-IMG_VERSION in apt.js so browsers drop their cached copies.
+Run after changing the illustration set.
 
 Usage:
     python3 build_masks.py            # rewrite apt.js in place
@@ -112,7 +111,7 @@ def main() -> int:
     src = replace_decl(src, "DIMS", dims_json)
     src = replace_decl(src, "MASKS", masks_json)
     args.apt.write_text(src)
-    print(f"patched {args.apt}\nremember to bump SKETCH_VERSION + IMG_VERSION in apt.js")
+    print(f"patched {args.apt}")
     return 0
 
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# UNUSED in the Cloudflare deployment (avian-worker's /frame.png renders the screenshot off-Pi; this still targets the old 13.3" geometry) — kept for upstream reference.
 """Screenshot the live AvianVisitors collage for the e-ink frame.
 
 Loads the real site (the LAN default http://birdnet.local, or a forwarded

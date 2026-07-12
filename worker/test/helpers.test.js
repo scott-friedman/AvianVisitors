@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   tzOffsetHours, localDayStart, clampInt, clipKey, parseRange,
-  isTransientD1, pollKey, frameSignature,
+  isTransientD1, pollKey, frameSignature, secretMatches,
 } from '../src/index.js';
 
 afterEach(() => vi.useRealTimers());
@@ -160,5 +160,20 @@ describe('frameSignature', () => {
     expect(await frameSignature([{ sci: 'A a', n: 3 }], 12)).not.toBe(base);
     expect(await frameSignature([{ sci: 'A a', n: 300 }], 24)).not.toBe(base);
     expect(await frameSignature([], 24)).not.toBe(base);
+  });
+});
+
+describe('secretMatches', () => {
+  it('matches only the exact secret', async () => {
+    expect(await secretMatches('s3cret', 's3cret')).toBe(true);
+    expect(await secretMatches('s3cret ', 's3cret')).toBe(false);
+    expect(await secretMatches('S3cret', 's3cret')).toBe(false);
+    expect(await secretMatches('', 's3cret')).toBe(false);
+  });
+
+  it('fails closed when the expected secret is unset', async () => {
+    expect(await secretMatches('anything', '')).toBe(false);
+    expect(await secretMatches('anything', undefined)).toBe(false);
+    expect(await secretMatches('', undefined)).toBe(false);
   });
 });

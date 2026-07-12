@@ -2,11 +2,15 @@
 # bird — add or change a wifi network on the Pi (NetworkManager). Idempotent.
 #
 # Usage:
-#   bash set-wifi.sh "<SSID>" "<password>" [priority] [--hidden] [--wpa3]
+#   bash set-wifi.sh "<SSID>" ["<password>"] [priority] [--hidden] [--wpa3]
+#
+# Omit the password to be prompted for it silently (keeps it out of bash
+# history); the positional form still works for scripted use.
 #
 # Examples:
 #   bash set-wifi.sh "DadsHouse"  "hunter2"   100      # primary (joins first when in range)
 #   bash set-wifi.sh "ScottPhone" "rescue123"  50      # rescue hotspot (lower priority)
+#   bash set-wifi.sh "DadsHouse"                       # prompts for the password
 #
 # Higher priority wins when more than one known network is in range. Re-running
 # with the same SSID updates the password/priority. After saving, it auto-joins
@@ -18,8 +22,16 @@
 # networks (WPA2 and WPA2/WPA3-mixed work without it). Use --hidden for a hidden SSID.
 set -euo pipefail
 
-SSID="${1:?usage: set-wifi.sh <SSID> <password> [priority] [--hidden] [--wpa3]}"
-PSK="${2:?password required}"
+SSID="${1:?usage: set-wifi.sh <SSID> [password] [priority] [--hidden] [--wpa3]}"
+PSK="${2:-}"
+case "$PSK" in --*) PSK="";; esac   # a flag in $2 means "no positional password"
+if [ -z "$PSK" ]; then
+  # No positional password → prompt silently, so the passphrase stays out of
+  # bash history. (Positional $2 still works for scripted use.)
+  read -rs -p "wifi password for '$SSID': " PSK
+  echo
+  [ -n "$PSK" ] || { echo "ERROR: empty password"; exit 1; }
+fi
 PRIO="${3:-50}"
 KEYMGMT="wpa-psk"
 HIDDEN="no"

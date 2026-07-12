@@ -9,8 +9,8 @@ compared to the intended species. This catches drift that passes a quick
 visual review - a stylized bird that reads as the wrong species, an extra
 wing, a stray perch the prompt said not to draw.
 
-Results are appended to verify-results.csv (slug, pose, target, guess,
-match, confidence, anatomy counts, flags).
+Results are appended to a CSV (default: avian/scripts/verify-results.csv;
+slug, pose, target, guess, match, confidence, anatomy counts, flags).
 
 Usage:
     export GEMINI_API_KEY='your-key'
@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 import argparse
 import base64
+import csv
 import json
 import os
 import re
@@ -128,25 +129,24 @@ def verify_one(api_key: str, png: Path, sci: str, com: str) -> dict | None:
     return extract_json(call_gemini(api_key, parts))
 
 
-CSV_HEADER = ("slug,pose,target_sci,guessed_sci,guessed_com,matches,confidence,"
-              "wings,legs,head,tail,has_stick,diag_present,diag_missing,"
-              "anatomy_issues,style\n")
+CSV_FIELDS = ["slug", "pose", "target_sci", "guessed_sci", "guessed_com",
+              "matches", "confidence", "wings", "legs", "head", "tail",
+              "has_stick", "diag_present", "diag_missing", "anatomy_issues",
+              "style"]
 
 
-def csv_row(slug: str, pose: int, sci: str, v: dict) -> str:
-    def q(key):
-        return '"' + str(v.get(key, "")).replace('"', "'") + '"'
-    return ",".join([
-        slug, str(pose), sci.replace(",", " "),
-        str(v.get("guessed_species_sci", "")).replace(",", " "),
-        str(v.get("guessed_species_com", "")).replace(",", " "),
-        str(v.get("matches_target", False)), str(v.get("guess_confidence", "")),
-        str(v.get("wing_count", "")), str(v.get("leg_count", "")),
-        str(v.get("head_count", "")), str(v.get("tail_count", "")),
-        str(v.get("has_stick_or_perch", "")),
-        q("diagnostic_features_present"), q("diagnostic_features_missing"),
-        q("anatomy_issues"), str(v.get("style_assessment", "")),
-    ]) + "\n"
+def csv_row(slug: str, pose: int, sci: str, v: dict) -> list:
+    return [
+        slug, pose, sci,
+        v.get("guessed_species_sci", ""), v.get("guessed_species_com", ""),
+        v.get("matches_target", False), v.get("guess_confidence", ""),
+        v.get("wing_count", ""), v.get("leg_count", ""),
+        v.get("head_count", ""), v.get("tail_count", ""),
+        v.get("has_stick_or_perch", ""),
+        v.get("diagnostic_features_present", ""),
+        v.get("diagnostic_features_missing", ""),
+        v.get("anatomy_issues", ""), v.get("style_assessment", ""),
+    ]
 
 
 def main() -> int:
@@ -158,8 +158,9 @@ def main() -> int:
                     help="Sci|Com label file (same one passed to pregen.py)")
     ap.add_argument("--dir", type=Path, default=here / "assets" / "illustrations",
                     help="Illustration directory (default: avian/assets/illustrations/)")
-    ap.add_argument("--out", type=Path, default=Path("verify-results.csv"),
-                    help="CSV output path (default: ./verify-results.csv)")
+    ap.add_argument("--out", type=Path,
+                    default=Path(__file__).resolve().parent / "verify-results.csv",
+                    help="CSV output path (default: avian/scripts/verify-results.csv)")
     ap.add_argument("--gemini-key", help="Gemini API key (or GEMINI_API_KEY env)")
     args = ap.parse_args()
 
@@ -174,7 +175,8 @@ def main() -> int:
     else:
         pngs = sorted(args.dir.glob("*.png"))
     if not args.out.exists():
-        args.out.write_text(CSV_HEADER)
+        with args.out.open("w", newline="") as f:
+            csv.writer(f).writerow(CSV_FIELDS)
 
     print(f"verifying {len(pngs)} illustrations against {len(labels)} labels\n")
     mismatches = 0
@@ -211,8 +213,8 @@ def main() -> int:
         if v.get("diagnostic_features_missing"): flags.append(f"missing: {v['diagnostic_features_missing']}")
         if flags:
             print(f"         [warn] {'; '.join(flags)}")
-        with args.out.open("a") as f:
-            f.write(csv_row(slug, pose, sci, v))
+        with args.out.open("a", newline="") as f:
+            csv.writer(f).writerow(csv_row(slug, pose, sci, v))
 
     print(f"\ndone. {mismatches} mismatch(es). results -> {args.out}")
     return 0

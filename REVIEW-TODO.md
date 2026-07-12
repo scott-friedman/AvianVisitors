@@ -1,5 +1,7 @@
 # REVIEW-TODO.md — stability / remote-ops hardening backlog
 
+**STATUS: CLOSED — all items completed 2026-07-01.** Kept as the record of what shipped and why.
+
 **Created 2026-06-19** from a code review focused on **stability, remote updating, and
 remote access** — the three things that matter for a box that lives **unattended at Dad's
 in Sudbury**, that Scott manages **from home**, and that **Dad can't troubleshoot**.
@@ -187,7 +189,7 @@ the heartbeat timer on the Pi, and create the UptimeRobot monitor on `<worker>/a
 - [x] ⭐ **[Med] Doc conflict on the SSH security posture — reconcile before deploy.**
   `pi/README.md:92-97` says the final decision is **password-gated, no Cloudflare Access app**.
   But `pi/tunnel-setup.sh:68-72` still *prints* "add a Cloudflare Access app → Emails →
-  friedmannn2@gmail.com" as a required step, and `DEPLOY-SUDBURY.md:18` still lists it as a
+  (Scott's email — redacted)" as a required step, and `DEPLOY-SUDBURY.md:18` still lists it as a
   pending ⏳ "one step left." These contradict each other — you could ship thinking SSH is locked
   to your email when it's actually only password-gated.
   **Fix:** pick one and make all three agree. Password-only via the tunnel is *defensible* (the

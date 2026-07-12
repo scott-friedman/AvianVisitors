@@ -164,16 +164,20 @@ def autocrop(img, thresh=12, pad=16):
                      min(rgb.width, r + pad), min(rgb.height, b + pad)))
 
 
-def fit_panel(img, border=0):
-    """Fit onto the 800x480 panel buffer on a white field (letterbox),
-    preserving aspect. ``border`` insets the image by that many px on every edge
-    — a white margin so a picture-frame bezel that overlaps the panel edge can't
-    clip the artwork. With border=0 and an already-800x480 image (the usual case
-    — /frame.png renders frame-ready) this is a straight pass-through."""
-    if border <= 0 and img.size == (PANEL_W, PANEL_H):
+def fit_panel(img, border=0, box_size=(PANEL_W, PANEL_H)):
+    """Fit onto the panel buffer on a white field (letterbox), preserving
+    aspect. ``border`` insets the image by that many px on every edge — a white
+    margin so a picture-frame bezel that overlaps the panel edge can't clip the
+    artwork. ``box_size`` is the target buffer: 800x480, or the SWAPPED 480x800
+    for a portrait mount (rotate=90/270) so the later rotate(expand=True) lands
+    exactly 800x480 instead of being force-resized/squashed. With border=0 and
+    an already-target-sized image (the usual case — /frame.png renders
+    frame-ready) this is a straight pass-through."""
+    bw, bh = box_size
+    if border <= 0 and img.size == (bw, bh):
         return img
-    box_w = max(1, PANEL_W - 2 * border)   # the inner rectangle the image fits into
-    box_h = max(1, PANEL_H - 2 * border)
+    box_w = max(1, bw - 2 * border)   # the inner rectangle the image fits into
+    box_h = max(1, bh - 2 * border)
     src = img.width / img.height
     tgt = box_w / box_h
     if src > tgt:
@@ -181,20 +185,22 @@ def fit_panel(img, border=0):
     else:
         nh, nw = box_h, max(1, round(box_h * src))
     resized = img.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("RGB", (PANEL_W, PANEL_H), (255, 255, 255))
-    canvas.paste(resized, ((PANEL_W - nw) // 2, (PANEL_H - nh) // 2))
+    canvas = Image.new("RGB", (bw, bh), (255, 255, 255))
+    canvas.paste(resized, ((bw - nw) // 2, (bh - nh) // 2))
     return canvas
 
 
-def fit_window(img, left=0, top=0, right=0, bottom=0):
+def fit_window(img, left=0, top=0, right=0, bottom=0, box_size=(PANEL_W, PANEL_H)):
     """Like fit_panel but with independent per-edge insets, for a frame whose mat
     overlaps the panel unevenly (measured with frame/calibrate.py). Letterboxes the
-    image into the visible window (panel minus per-edge insets) on a white field,
-    centred within that window. With all insets 0 this is fit_panel(img, 0)."""
+    image into the visible window (buffer minus per-edge insets) on a white field,
+    centred within that window. With all insets 0 this is fit_panel(img, 0).
+    For a portrait mount the insets are relative to the pre-rotation buffer."""
     if left <= 0 and top <= 0 and right <= 0 and bottom <= 0:
-        return fit_panel(img, 0)
-    box_w = max(1, PANEL_W - left - right)
-    box_h = max(1, PANEL_H - top - bottom)
+        return fit_panel(img, 0, box_size)
+    bw, bh = box_size
+    box_w = max(1, bw - left - right)
+    box_h = max(1, bh - top - bottom)
     src = img.width / img.height
     tgt = box_w / box_h
     if src > tgt:
@@ -202,7 +208,7 @@ def fit_window(img, left=0, top=0, right=0, bottom=0):
     else:
         nh, nw = box_h, max(1, round(box_h * src))
     resized = img.resize((nw, nh), Image.LANCZOS)
-    canvas = Image.new("RGB", (PANEL_W, PANEL_H), (255, 255, 255))
+    canvas = Image.new("RGB", (bw, bh), (255, 255, 255))
     canvas.paste(resized, (left + (box_w - nw) // 2, top + (box_h - nh) // 2))
     return canvas
 
@@ -300,15 +306,20 @@ def run(cfg, preview=None, force=False, use_signature=True):
             return
         print("refresh:", "changed" if changed else "heal")
 
+    # rotate=90/270 (portrait mount): fit into the SWAPPED box (480x800) so
+    # push_panel's rotate(expand=True) lands exactly 800x480 — fitting to the
+    # landscape box first would rotate to 480x800 and get force-resized (squashed).
+    rot = int(cfg.get("rotate") or 0) % 360
+    box = (PANEL_H, PANEL_W) if rot in (90, 270) else (PANEL_W, PANEL_H)
     try:
         raw = obtain_image(cfg)
         if cfg.get("fill"):
             raw = autocrop(raw, pad=int(cfg.get("fill_pad") or 16))
         inset = cfg.get("inset") or []
         if len(inset) == 4 and any(int(v) > 0 for v in inset):
-            img = fit_window(raw, *(int(v) for v in inset))
+            img = fit_window(raw, *(int(v) for v in inset), box_size=box)
         else:
-            img = fit_panel(raw, cfg["border"])
+            img = fit_panel(raw, cfg["border"], box_size=box)
     except Exception as e:
         print(f"could not get image: {e}", file=sys.stderr)  # keep the last panel image
         return

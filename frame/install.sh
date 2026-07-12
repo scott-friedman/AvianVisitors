@@ -23,15 +23,19 @@ python3 -m venv .venv
 .venv/bin/pip install -q -r requirements-frame.txt
 
 echo "4/5  Setting up config..."
+# config.toml holds FRAME_KEY — keep the dir and file private (not default umask).
 mkdir -p "$HOME/.birdframe"
-[ -f "$HOME/.birdframe/config.toml" ] || cp config.example.toml "$HOME/.birdframe/config.toml"
+chmod 700 "$HOME/.birdframe"
+[ -f "$HOME/.birdframe/config.toml" ] || install -m 600 config.example.toml "$HOME/.birdframe/config.toml"
 
 echo "5/5  Installing systemd timer..."
 sed "s|/home/monalisa/AvianVisitors/frame|$FRAME|g; s|/home/monalisa|$HOME|g; s|User=monalisa|User=$USER|" \
   systemd/birdframe.service | sudo tee /etc/systemd/system/birdframe.service >/dev/null
 sudo cp systemd/birdframe.timer /etc/systemd/system/birdframe.timer
 sudo systemctl daemon-reload
-sudo systemctl enable birdframe.timer
+# --now: also START the timer, so the no-reboot path (SPI already up) doesn't
+# leave the frame armed-but-idle until the next reboot.
+sudo systemctl enable --now birdframe.timer
 
 cat <<DONE
 

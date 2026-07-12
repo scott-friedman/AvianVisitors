@@ -24,8 +24,9 @@
 //   node avian/scripts/build-signatures.mjs --limit 5       # first N (testing)
 // Combine, e.g. `--all-art --force`. Curated per-species clip overrides:
 //   avian/assets/signature-overrides.json  { "Genus species": <xeno-canto id> }
-// Then: bash avian/build-site.sh && (cd worker && npx wrangler pages deploy ../_site \
-//   --project-name barrysbirds --branch production)
+// Then: bash avian/build-site.sh && npx wrangler pages deploy _site \
+//   --project-name avianvisitors --branch avian-visitors
+// (NOT barrysbirds/production - that project is a 301 stub since 2026-07-02.)
 //
 // See SPECTRO-CONCEPTS-PLAN.md ("Runbook") and CLAUDE.md (Cloudflare side).
 import fs from 'node:fs';
@@ -84,21 +85,35 @@ function licCode(u) {
 const licOk = (u) => { const c = licCode(u); return c === 'cc0' || /^by(-nc)?(-sa)?$/.test(c); };
 const lenSec = (s) => String(s || '').split(':').map(Number).reduce((a, b) => a * 60 + b, 0);
 
-// ---- xeno-canto v3 query (tag-only; colons stay literal, spaces -> %20) ----
+// ---- XC API fetch: 30 s timeout + small retry on 429/5xx (honors Retry-After) ----
+async function xcFetch(url, what) {
+  let backoff = 2000;
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) });
+    if (res.ok) return res;
+    if (attempt < 3 && (res.status === 429 || res.status >= 500)) {
+      const ra = Number(res.headers.get('retry-after')) * 1000;
+      await sleep(ra > 0 ? ra : backoff);
+      backoff *= 2;
+      continue;
+    }
+    throw new Error(what + ' HTTP ' + res.status);
+  }
+}
+// ---- xeno-canto v3 query (tag-only; whole query percent-encoded — the server
+// decodes colons/spaces back, and a stray `&`/`=` in --only can't inject params) ----
 async function xcQuery(gen, sp, q) {
   const tags = `gen:${gen} sp:${sp} grp:birds q:${q} type:song`;
-  const url = `https://xeno-canto.org/api/3/recordings?query=${tags.replace(/ /g, '%20')}&key=${KEY}`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
-  if (!res.ok) throw new Error('xc query HTTP ' + res.status);
+  const url = `https://xeno-canto.org/api/3/recordings?query=${encodeURIComponent(tags)}&key=${KEY}`;
+  const res = await xcFetch(url, 'xc query');
   const j = await res.json();
   if (j.error) throw new Error('xc: ' + j.message);
   return j.recordings || [];
 }
 // Fetch one specific recording by id (for OVERRIDE picks). `nr:` is the id tag.
 async function xcById(id) {
-  const url = `https://xeno-canto.org/api/3/recordings?query=nr:${id}&key=${KEY}`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA } });
-  if (!res.ok) throw new Error('xc id HTTP ' + res.status);
+  const url = `https://xeno-canto.org/api/3/recordings?query=${encodeURIComponent('nr:' + id)}&key=${KEY}`;
+  const res = await xcFetch(url, 'xc id');
   const j = await res.json();
   return (j.recordings || []).filter((r) => r.file);
 }
@@ -128,11 +143,16 @@ function tonality(an) {
   if (vf < 0.12 || vf > 0.98) score -= 0.3;
   return score;
 }
+const MAX_DL = 20 * 1024 * 1024;   // sanity cap on a single audio download (bytes)
 async function download(url, out) {
   const u = url + (url.includes('?') ? '&' : '?') + 'key=' + KEY;
-  const res = await fetch(u, { headers: { 'User-Agent': UA } });
+  const res = await fetch(u, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) });
   if (!res.ok) throw new Error('download HTTP ' + res.status);
-  fs.writeFileSync(out, Buffer.from(await res.arrayBuffer()));
+  const clen = Number(res.headers.get('content-length'));
+  if (clen > MAX_DL) throw new Error('download too large (' + clen + ' B > ' + MAX_DL + ')');
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_DL) throw new Error('download too large (' + buf.length + ' B > ' + MAX_DL + ')');
+  fs.writeFileSync(out, buf);
 }
 
 // ---- ffmpeg helpers ----
@@ -164,6 +184,13 @@ function peakWindow(f) {
 const q3 = (a) => Array.from(a, (x) => Math.round(x * 1000) / 1000);
 const qi = (a) => Array.from(a, (x) => Math.round(x));
 
+// Atomic write: a crash mid-write must never leave a truncated signatures.json.
+function writeDb(obj) {
+  const tmp = OUTJSON + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj));
+  fs.renameSync(tmp, OUTJSON);
+}
+
 async function buildOne(sci, db) {
   const [gen, sp] = sci.split(/\s+/);
   if (!gen || !sp) return { sci, status: 'skip', why: 'not binomial' };
@@ -183,7 +210,7 @@ async function buildOne(sci, db) {
   const slug = slugify(sci), K = Math.min(4, cand.length);
   let best = null;
   for (let i = 0; i < K; i++) {
-    const r = cand[i], tmp = path.join(os.tmpdir(), 'xc-' + r.id + '.dl');
+    const r = cand[i], tmp = path.join(os.tmpdir(), 'xc-' + String(r.id).replace(/[^A-Za-z0-9_-]/g, '_') + '.dl');
     try {
       await download(r.file, tmp);
       const pcm = decodePCM(tmp);
@@ -222,7 +249,14 @@ async function buildOne(sci, db) {
 (async function main() {
   fs.mkdirSync(SONGS, { recursive: true });
   let db = { version: 1, generated: '', species: {} };
-  if (fs.existsSync(OUTJSON)) { try { db = JSON.parse(fs.readFileSync(OUTJSON, 'utf8')); db.species = db.species || {}; } catch (e) {} }
+  if (fs.existsSync(OUTJSON)) {
+    try { db = JSON.parse(fs.readFileSync(OUTJSON, 'utf8')); db.species = db.species || {}; }
+    catch (e) {
+      console.error(`Existing ${OUTJSON} failed to parse: ${e.message}`);
+      console.error('Refusing to start from an empty db — that would discard every previously-built species on the next write. Fix or remove the file, then re-run.');
+      process.exit(1);
+    }
+  }
 
   // Target species:
   //   --only "Genus species"  one bird
@@ -237,8 +271,16 @@ async function buildOne(sci, db) {
       .map((f) => slugToSci(f.replace(/\.png$/, '')))
       .sort();
   } else {
-    const res = await fetch(LIFELIST, { headers: { 'User-Agent': UA } });
-    const data = await res.json();
+    let data;
+    try {
+      const res = await fetch(LIFELIST, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (e) {
+      console.error(`Lifelist fetch failed (${LIFELIST}): ${e.message}`);
+      console.error('Is avian-worker reachable? Or build without it: --all-art, or --only "Genus species".');
+      process.exit(1);
+    }
     targets = (data.species || []).map((s) => s.sci).filter(hasArt);
   }
   if (LIMIT) targets = targets.slice(0, LIMIT);
@@ -254,7 +296,7 @@ async function buildOne(sci, db) {
       const r = await buildOne(sci, db);
       summary[r.status === 'built' ? 'built' : 'skip']++;
       console.log(r.status === 'built' ? `✓ ${r.why}` : `– skip (${r.why})`);
-      if (r.status === 'built') fs.writeFileSync(OUTJSON, JSON.stringify({ ...db, generated: new Date().toISOString() }));
+      if (r.status === 'built') writeDb({ ...db, generated: new Date().toISOString() });
     } catch (e) {
       summary.fail++;
       console.log('✗ ' + e.message);
@@ -262,7 +304,7 @@ async function buildOne(sci, db) {
     await sleep(1100);    // be polite to the xeno-canto API
   }
   db.generated = new Date().toISOString();
-  fs.writeFileSync(OUTJSON, JSON.stringify(db));
+  writeDb(db);
   const built = Object.keys(db.species).length;
   console.log(`\nDone. built ${summary.built}, skipped ${summary.skip}, failed ${summary.fail}. signatures.json now holds ${built} species.`);
 })();

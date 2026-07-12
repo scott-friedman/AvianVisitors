@@ -23,11 +23,14 @@ CFDIR="$HOME/.cloudflared"
 ETC=/etc/cloudflared
 
 command -v cloudflared >/dev/null || { echo "ERROR: cloudflared not installed."; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq not installed (sudo apt install jq)."; exit 1; }
 [ -f "$CFDIR/cert.pem" ] || { echo "ERROR: run first (no sudo):  cloudflared tunnel login"; exit 1; }
 
 name_to_uuid() {
+  # jq --arg, not string-splicing into an inline script (a quote in the tunnel
+  # name would break out of the literal).
   cloudflared tunnel list --output json \
-    | python3 -c "import sys,json;m=[t for t in json.load(sys.stdin) if t['name']=='$TUNNEL_NAME'];print(m[0]['id'] if m else '')"
+    | jq -r --arg n "$TUNNEL_NAME" '[.[] | select(.name == $n)][0].id // empty'
 }
 
 # 1. tunnel (idempotent)

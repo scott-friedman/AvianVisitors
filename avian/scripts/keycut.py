@@ -5,9 +5,10 @@ The flat cream background is a known, uniform color, so we key it out by
 flood-filling the background that is CONNECTED to the image border. That
 protects cream/white pixels INSIDE the bird (they aren't border-connected),
 which a naive global color threshold would wrongly erase. Edge is feathered
-1px to kill the anti-aliased halo, then cropped to the bird with a 2% margin
+0.8 px to kill the anti-aliased halo, then cropped to the bird with a 2% margin
 (matching cutout.py).
 """
+from __future__ import annotations
 import sys
 from pathlib import Path
 import numpy as np
