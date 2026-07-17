@@ -1118,6 +1118,8 @@ const COVERAGE_SIG_EXEMPT = new Set([
   'Archilochus colubris',   // Ruby-throated Hummingbird
   'Dryobates villosus',     // Hairy Woodpecker
   'Sphyrapicus varius',     // Yellow-bellied Sapsucker
+  'Ardea herodias',         // Great Blue Heron — only harsh squawks, no CC-licensed song on xeno-canto
+  'Canis volaticus',        // Mojo — the fake family-dog easter egg (see MOJO block); no such species, never buildable
 ]);
 
 // Same slug rule as apt.js slugify() + the illustration filenames.
