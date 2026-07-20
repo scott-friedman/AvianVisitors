@@ -115,6 +115,7 @@ each is actually detected at Sudbury). Progress: **35 / 46 land birds done.**
 - [ ] **Yellow-throated Vireo** — `Vireo flavifrons` · freq 0.03
 
 ## Coastal / wetland — DEFERRED (inland backyard mic won't hear these; add only if one is actually detected)
+- [x] **Greater Yellowlegs** — `Tringa melanoleuca` · freq 0.08  ✅ DEPLOYED LIVE 2026-07-20 — DETECTED at Sudbury (n=1) → the "add only if detected" trigger fired; it was the sole bird in both `/api/coverage` gaps (art + signature). Keyed perched `--tol 14` + keep-largest (white belly eaten at 18; 14 left one cream blob), flight clean `--tol 18`. NEW `species-notes.json` entry (long yellow legs + long slightly-upturned two-toned bill vs Lesser Yellowlegs / the Willet `tringa-semipalmata` we already have). Bonus: also got a **song signature** — no pure `type:song` on xeno-canto (shorebirds call, don't sing), so pinned the iconic ringing flight call via the NEW `avian/assets/signature-overrides.json` (XC474951, tonality 0.96, CC BY-NC-SA). Complete species (art+bloom); coverage now 0/0.
 - [ ] **Double-crested Cormorant** — `Nannopterum auritum` · freq 0.13
 - [ ] **Herring Gull** — `Larus argentatus` · freq 0.08
 - [ ] **American Black Duck** — `Anas rubripes` · freq 0.24
