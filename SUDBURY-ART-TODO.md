@@ -4,8 +4,15 @@
 artwork**, so they're invisible on the e-ink frame and the website (the
 "detected ≠ shown" gotcha — see `CLAUDE.md`). This file tracks which still need
 illustrations drawn. Work the **land** list top-down (it's ranked by how often
-each is actually detected at Sudbury). Progress: **35 / 46 land birds done.**
-(All 11 remaining are **undetected** at Sudbury so far — no current collage gap; add on detection.)
+each is actually detected at Sudbury). Progress: **36 / 46 land birds done.**
+(All 10 remaining are **undetected** at Sudbury so far — no current collage gap; add on detection.)
+
+**Coverage as of 2026-07-29: `/api/coverage` reports 0 art gaps and 0 addable
+signature gaps.** All 61 detected species have art (287 slugs shipped), and every
+one that can carry a song signature now has one (60 built). The only names left
+in `signature_missing` are the 5 deliberate `COVERAGE_SIG_EXEMPT` birds — Hairy
+Woodpecker, Ruby-throated Hummingbird, Yellow-bellied Sapsucker, Great Blue
+Heron, Mojo. Nothing below is actionable until a new species is detected.
 
 ## How this list was derived (don't redo unless the location changes)
 - BirdNET range/meta model @ Sudbury **42.3834, -71.4162**, threshold **0.03**
@@ -124,7 +131,6 @@ each is actually detected at Sudbury). Progress: **35 / 46 land birds done.**
 - [ ] **Least Sandpiper** — `Calidris minutilla` · freq 0.10
 - [ ] **Semipalmated Plover** — `Charadrius semipalmatus` · freq 0.08
 - [ ] **Lesser Yellowlegs** — `Tringa flavipes` · freq 0.08
-- [ ] **Greater Yellowlegs** — `Tringa melanoleuca` · freq 0.08
 - [ ] **Semipalmated Sandpiper** — `Calidris pusilla` · freq 0.07
 - [ ] **Solitary Sandpiper** — `Tringa solitaria` · freq 0.06
 - [ ] **Long-tailed Duck** — `Clangula hyemalis` · freq 0.05
