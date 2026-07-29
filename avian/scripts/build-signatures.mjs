@@ -199,9 +199,12 @@ async function buildOne(sci, db) {
     cand = (await xcById(OVERRIDE[sci])).filter((r) => licOk(r.lic));
     if (!cand.length) return { sci, status: 'skip', why: 'override XC' + OVERRIDE[sci] + ' missing/incompatible-license' };
   } else {
-    let recs = await xcQuery(gen, sp, 'A');
-    if (!recs.length) { await sleep(800); recs = await xcQuery(gen, sp, 'B'); }
-    cand = candidates(recs);
+    // Fall back to q:B when q:A yields no USABLE candidate - not merely when it
+    // returns nothing. A species can have A-grade song that is all ND/all-rights
+    // (Cooper's Hawk: one by-nc-nd A recording hid two by-nc-sa B ones), and
+    // gating the fallback on recs.length stranded it as "no compatible-license".
+    cand = candidates(await xcQuery(gen, sp, 'A'));
+    if (!cand.length) { await sleep(800); cand = candidates(await xcQuery(gen, sp, 'B')); }
     if (!cand.length) return { sci, status: 'skip', why: 'no compatible-license song' };
   }
 
