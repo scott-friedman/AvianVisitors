@@ -69,7 +69,11 @@ HEARTBEAT_MAX_AGE_SECONDS = "2700"
 [triggers]
 crons = ["*/30 10-23 * * *"]
 
-# NOTE: AVIAN_INGEST_SECRET and FRAME_KEY are SECRETS, not vars. Set them with:
+# NOTE: AVIAN_INGEST_SECRET, FRAME_KEY, COVERAGE_WEBHOOK_URL, and
+# COVERAGE_WEBHOOK_KEY are SECRETS, not vars. Set them with:
 #   echo '<random>' | wrangler secret put AVIAN_INGEST_SECRET   # gates POST /api/detection
 #   echo '<random>' | wrangler secret put FRAME_KEY             # gates GET /frame.png?k=...
-# For local dev they live in worker/.dev.vars (gitignored).
+#   echo '<url>'    | wrangler secret put COVERAGE_WEBHOOK_URL  # Birb first-seen gap ping
+#   echo '<key>'    | wrangler secret put COVERAGE_WEBHOOK_KEY  # Grok Bot routine sender key
+# Unset COVERAGE_WEBHOOK_URL = no-op (ingest still 204). For local dev they live
+# in worker/.dev.vars (gitignored).

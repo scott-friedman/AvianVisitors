@@ -14,3 +14,9 @@ FRAME_KEY = "dev-frame-key-not-for-prod"
 
 # Uncomment to let /frame.png run with NO key in local dev (never set in prod).
 # FRAME_DEV_OPEN = "1"
+
+# Optional: Birb (Grok Bot) first-seen coverage-gap ping. Unset = no-op.
+# In production: `wrangler secret put COVERAGE_WEBHOOK_URL` /
+# `wrangler secret put COVERAGE_WEBHOOK_KEY`. Do not commit real values.
+# COVERAGE_WEBHOOK_URL = "https://hooks.example/coverage"
+# COVERAGE_WEBHOOK_KEY = "dev-webhook-key-not-for-prod"
