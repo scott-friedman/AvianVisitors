@@ -4,6 +4,9 @@
  * Three responsibilities (see ../PLAN.md Phase 1, ../CLAUDE.md):
  *   POST /api/detection  — the Pi's BirdNET hook posts each detection
  *                          (secret-gated via X-Avian-Secret) → D1 insert.
+ *                          First life-list insert of a species missing art
+ *                          and/or a non-exempt song signature POSTs a gap
+ *                          event to COVERAGE_WEBHOOK_URL (best-effort).
  *   POST /api/clip       — the Pi uploads that detection's mp3 (same secret)
  *                          → R2 `avian-clips` (7-day object lifecycle).
  *   GET  /api/recording  — streams a clip from R2 by ?file=<key> or ?sci=
@@ -332,7 +335,9 @@ async function ingest(request, env) {
   const c = Math.max(0, Math.min(1, conf > 1 ? conf / 100 : conf));
 
   // INSERT OR IGNORE against UNIQUE(sci, ts) dedupes Pi restarts/replays.
-  await env.DB.prepare(
+  // `meta.changes` is 0 on a replay — needed below so a restarted Pi cannot
+  // re-fire the first-seen coverage ping for the same (sci, ts).
+  const inserted = await env.DB.prepare(
     'INSERT OR IGNORE INTO detections (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)'
   ).bind(sci, com, c, ts, file).run();
 
@@ -346,6 +351,16 @@ async function ingest(request, env) {
       // failure here quietly erodes the forever-archive.
       console.error('[ingest] rare-clip archive failed:', sci, file, err);
     }
+  }
+
+  // First-seen coverage ping (best-effort). A new life-list species with a
+  // missing illustration and/or (non-exempt) song signature wakes Birb so the
+  // gap can be filled without a polling cron. Subsequent chirps of the same
+  // sci, Mojo, an unset webhook, and a failed POST must not affect the 204.
+  try {
+    await maybeNotifyCoverageGap(env, sci, com, inserted);
+  } catch (err) {
+    console.error('[ingest] coverage webhook failed:', sci);
   }
 
   return new Response(null, { status: 204, headers: CORS });
@@ -1138,11 +1153,87 @@ async function fetchJsonAsset(u) {
   }
 }
 
-async function coverage(env) {
+// Art slugs + signature keys live in Pages (decoupled from the Worker, so art
+// and signatures expand on a Pages redeploy with no Worker change). Shared by
+// GET /api/coverage and the first-seen ingest ping. A failed/unparseable
+// manifest degrades to null (no gaps) so a Pages hiccup cannot false-alarm.
+async function loadCoverageSets(env) {
   // Fallback matches wrangler.toml's PAGES_BASE — NOT the retired barrysbirds
   // stub, which only "worked" by chasing its 301 (the loop CLAUDE.md warns about).
   const base = (env.PAGES_BASE || 'https://birds-origin.indianridgeroad.com').replace(/\/+$/, '');
+  const [manifest, sigs] = await Promise.all([
+    fetchJsonAsset(`${base}/assets/art-manifest.json`),
+    fetchJsonAsset(`${base}/assets/signatures.json`),
+  ]);
+  const artSet = manifest && Array.isArray(manifest.slugs) ? new Set(manifest.slugs) : null;
+  const sigSet = sigs && sigs.species ? new Set(Object.keys(sigs.species)) : null;
+  return { artSet, sigSet };
+}
 
+function coverageGapsFor(sci, artSet, sigSet) {
+  const art_missing = !!(artSet && !artSet.has(slugifySci(sci)));
+  // Actionable signature gap only — exempt species have no tonal song, so a
+  // missing fingerprint is expected and must not wake Birb.
+  const signature_missing = !!(sigSet && !sigSet.has(sci) && !COVERAGE_SIG_EXEMPT.has(sci));
+  return { art_missing, signature_missing };
+}
+
+// Wake Birb (Grok Bot routine webhook) when a species joins the life list
+// without art and/or an addable song signature. Unset URL = no-op. Never
+// logs the URL or sender key (fetch errors can embed the URL).
+async function maybeNotifyCoverageGap(env, sci, com, insertResult) {
+  const url = String(env.COVERAGE_WEBHOOK_URL || '').trim();
+  if (!url || sci === MOJO.sci) return;
+  // Replay of the same (sci, ts): INSERT OR IGNORE writes nothing.
+  if (!(insertResult && insertResult.meta && insertResult.meta.changes > 0)) return;
+
+  // Equality on sci + COUNT — covering seek on idx_detections_dedupe (same
+  // plan as archiveRareClip). n === 1 means this insert created the life list.
+  const row = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM detections WHERE sci = ?'
+  ).bind(sci).first();
+  if (!row || row.n !== 1) return;
+
+  const { artSet, sigSet } = await loadCoverageSets(env);
+  const gaps = coverageGapsFor(sci, artSet, sigSet);
+  if (!gaps.art_missing && !gaps.signature_missing) return;
+
+  const key = String(env.COVERAGE_WEBHOOK_KEY || '').trim();
+  const headers = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'avian-worker/coverage',
+  };
+  // Grok Bot routine panel copies an Authorization: Bearer sender key;
+  // X-Automation-Key is the companion header on that same wake. Also send
+  // X-Webhook-Key so the receiver can trim whichever it does not need.
+  if (key) {
+    headers['Authorization'] = `Bearer ${key}`;
+    headers['X-Automation-Key'] = key;
+    headers['X-Webhook-Key'] = key;
+  }
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        event: 'coverage_gap',
+        sci,
+        com,
+        art_missing: gaps.art_missing,
+        signature_missing: gaps.signature_missing,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) console.error('[ingest] coverage webhook HTTP', res.status, sci);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function coverage(env) {
   // Detected species (life list), heaviest hitters first so the gap lists read
   // "most-heard missing bird" at the top.
   const { results } = await env.DB.prepare(
@@ -1153,14 +1244,7 @@ async function coverage(env) {
   ).all();
   const detected = results || [];
 
-  // Art slugs + signature keys live in Pages (decoupled from the Worker, so art
-  // and signatures expand on a Pages redeploy with no Worker change).
-  const [manifest, sigs] = await Promise.all([
-    fetchJsonAsset(`${base}/assets/art-manifest.json`),
-    fetchJsonAsset(`${base}/assets/signatures.json`),
-  ]);
-  const artSet = manifest && Array.isArray(manifest.slugs) ? new Set(manifest.slugs) : null;
-  const sigSet = sigs && sigs.species ? new Set(Object.keys(sigs.species)) : null;
+  const { artSet, sigSet } = await loadCoverageSets(env);
 
   const art_missing = [];
   const signature_missing = [];

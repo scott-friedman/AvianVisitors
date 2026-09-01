@@ -1,7 +1,8 @@
 // Route-level tests against the default export's fetch(), with a fake D1/R2.
 // These lock the incident-hardened behaviors: the transient-D1 retry loop and
 // poll micro-cache (the 2026-07-03 overload), ingest's gate/validation/rare-
-// clip archive, and /api/frame-config's abuse hardening (2026-07-10).
+// clip archive + first-seen coverage webhook, and /api/frame-config's abuse
+// hardening (2026-07-10).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import worker, { POLL_CACHE, RARE_MAX } from '../src/index.js';
 
@@ -17,7 +18,11 @@ class FakeDB {
       bind: (...a) => stmt(a),
       first: async () => db._hit(sql, args, 'first'),
       all: async () => ({ results: db._hit(sql, args, 'all') || [] }),
-      run: async () => { db._hit(sql, args, 'run'); return { success: true }; },
+      run: async () => {
+        const hit = db._hit(sql, args, 'run');
+        if (hit && typeof hit === 'object' && hit.meta) return hit;
+        return { success: true, meta: { changes: 1 } };
+      },
     });
     return stmt([]);
   }
@@ -205,6 +210,138 @@ describe('ingest (POST /api/detection)', () => {
     const res = await post('/api/detection', env(db, { CLIPS: new FakeR2() }), good(), { 'X-Avian-Secret': SECRET });
     expect(res.status).toBe(204);
     expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe('ingest coverage-gap webhook (first-seen only)', () => {
+  const HOOK_URL = 'https://hooks.example/coverage';
+  const HOOK_KEY = 'test-webhook-key';
+  const hook = { COVERAGE_WEBHOOK_URL: HOOK_URL, COVERAGE_WEBHOOK_KEY: HOOK_KEY };
+  const auth = { 'X-Avian-Secret': SECRET };
+  const novel = () => ({
+    sci: 'Cardinalis cardinalis', com: 'Northern Cardinal',
+    conf: 0.91, ts: Math.floor(Date.now() / 1000),
+  });
+
+  function dbWithCount(n) {
+    const db = new FakeDB();
+    db.on('SELECT COUNT(*) AS n FROM detections WHERE sci = ?', { n });
+    return db;
+  }
+
+  // Capture webhook POSTs. Manifest GETs are answered from `slugs`/`species`
+  // so the notify path can decide art vs signature gaps without the network.
+  function stubCoverageAssets({ slugs = [], species = {}, webhook = {} } = {}) {
+    const posts = [];
+    vi.stubGlobal('fetch', vi.fn(async (input, init = {}) => {
+      const url = String(input);
+      if (url.includes('art-manifest.json')) {
+        return new Response(JSON.stringify({ slugs }), { status: 200 });
+      }
+      if (url.includes('signatures.json')) {
+        return new Response(JSON.stringify({ species }), { status: 200 });
+      }
+      if (String(init.method || 'GET').toUpperCase() === 'POST') {
+        posts.push({ headers: init.headers || {}, body: JSON.parse(init.body) });
+        if (webhook.throw) throw new Error('webhook down');
+        return new Response('ok', { status: webhook.status ?? 200 });
+      }
+      return new Response('no', { status: 404 });
+    }));
+    return posts;
+  }
+
+  it('POSTs sci/com + gap flags on a first-seen species missing art and/or a signature', async () => {
+    const posts = stubCoverageAssets({
+      slugs: ['turdus-migratorius'],
+      species: { 'Turdus migratorius': {} },
+    });
+    const d = novel();
+    const res = await post('/api/detection', env(dbWithCount(1), hook), d, auth);
+    expect(res.status).toBe(204);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].body).toEqual({
+      event: 'coverage_gap',
+      sci: d.sci,
+      com: d.com,
+      art_missing: true,
+      signature_missing: true,
+    });
+    expect(posts[0].headers.Authorization).toBe('Bearer ' + HOOK_KEY);
+    expect(posts[0].headers['X-Automation-Key']).toBe(HOOK_KEY);
+    expect(posts[0].headers['X-Webhook-Key']).toBe(HOOK_KEY);
+
+    // Fully covered first-seen: no ping. Same COUNT=1 (different sci in
+    // a real DB); the stub answers both manifests as present for the robin.
+    const covered = stubCoverageAssets({
+      slugs: ['turdus-migratorius'],
+      species: { 'Turdus migratorius': {} },
+    });
+    const robin = {
+      sci: 'Turdus migratorius', com: 'American Robin',
+      conf: 0.88, ts: Math.floor(Date.now() / 1000),
+    };
+    expect((await post('/api/detection', env(dbWithCount(1), hook), robin, auth)).status).toBe(204);
+    expect(covered).toHaveLength(0);
+  });
+
+  it('does not POST on a subsequent detection of the same sci (or a replay)', async () => {
+    const posts = stubCoverageAssets({ slugs: [], species: {} });
+    const d = novel();
+    expect((await post('/api/detection', env(dbWithCount(4), hook), d, auth)).status).toBe(204);
+    expect(posts).toHaveLength(0);
+
+    // INSERT OR IGNORE replay: changes=0 even if the life list still has n=1.
+    const replay = stubCoverageAssets({ slugs: [], species: {} });
+    const db = dbWithCount(1);
+    db.on('INSERT OR IGNORE', { success: true, meta: { changes: 0 } });
+    expect((await post('/api/detection', env(db, hook), d, auth)).status).toBe(204);
+    expect(replay).toHaveLength(0);
+    expect(db.count('SELECT COUNT(*) AS n FROM detections WHERE sci = ?')).toBe(0);
+  });
+
+  it('still returns 204 when the webhook is unset or the POST fails', async () => {
+    const unsetPosts = stubCoverageAssets({ slugs: [], species: {} });
+    expect((await post('/api/detection', env(dbWithCount(1)), novel(), auth)).status).toBe(204);
+    expect(unsetPosts).toHaveLength(0);
+
+    stubCoverageAssets({ slugs: [], species: {}, webhook: { throw: true } });
+    expect((await post('/api/detection', env(dbWithCount(1), hook), novel(), auth)).status).toBe(204);
+    expect(console.error).toHaveBeenCalled();
+
+    const httpFail = stubCoverageAssets({ slugs: [], species: {}, webhook: { status: 503 } });
+    expect((await post('/api/detection', env(dbWithCount(1), hook), novel(), auth)).status).toBe(204);
+    expect(httpFail).toHaveLength(1);
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it('never notifies for Mojo, and does not ping an exempt species for a missing signature alone', async () => {
+    const mojoPosts = stubCoverageAssets({ slugs: [], species: {} });
+    const mojo = {
+      sci: 'Canis volaticus', com: 'Mojo',
+      conf: 0.9, ts: Math.floor(Date.now() / 1000),
+    };
+    expect((await post('/api/detection', env(dbWithCount(1), hook), mojo, auth)).status).toBe(204);
+    expect(mojoPosts).toHaveLength(0);
+
+    // Hummingbird: no tonal song → signature gap is expected. Art present ⇒ silent.
+    const exemptCovered = stubCoverageAssets({
+      slugs: ['archilochus-colubris'],
+      species: {},
+    });
+    const hum = {
+      sci: 'Archilochus colubris', com: 'Ruby-throated Hummingbird',
+      conf: 0.8, ts: Math.floor(Date.now() / 1000),
+    };
+    expect((await post('/api/detection', env(dbWithCount(1), hook), hum, auth)).status).toBe(204);
+    expect(exemptCovered).toHaveLength(0);
+
+    // Same exempt species, but missing art ⇒ art-only ping (signature_missing false).
+    const exemptArt = stubCoverageAssets({ slugs: ['turdus-migratorius'], species: {} });
+    expect((await post('/api/detection', env(dbWithCount(1), hook), hum, auth)).status).toBe(204);
+    expect(exemptArt).toHaveLength(1);
+    expect(exemptArt[0].body.art_missing).toBe(true);
+    expect(exemptArt[0].body.signature_missing).toBe(false);
   });
 });
 

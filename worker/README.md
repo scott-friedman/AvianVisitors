@@ -14,7 +14,7 @@ micro-cache (see "Operational invariants").
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `POST /api/detection` | secret | Pi's BirdNET hook posts `{sci, com, conf, ts, file?}`. `INSERT OR IGNORE` dedupes on `(sci, ts)`; each species' first 25 clips are archived to R2 `rare/`. → **204** |
+| `POST /api/detection` | secret | Pi's BirdNET hook posts `{sci, com, conf, ts, file?}`. `INSERT OR IGNORE` dedupes on `(sci, ts)`; each species' first 25 clips are archived to R2 `rare/`. A **first life-list** insert whose species is missing art and/or a non-exempt song signature POSTs `{event, sci, com, art_missing, signature_missing}` to `COVERAGE_WEBHOOK_URL` (best-effort; unset/failure still → **204**). Mojo is skipped. |
 | `POST /api/clip?file=<key>` | secret | Pi uploads that detection's mp3 bytes → R2 `clips/<key>` (bucket's 7-day lifecycle rule). → **204** |
 | `POST /api/heartbeat` | secret | Pi's 15-min liveness ping → single-row D1 upsert. → **204** |
 | `GET /frame.png` | key | 800×480 collage PNG for the e-ink panel — Browser Rendering screenshot of `FRAME_URL`, signature-cached **per window** in D1 `frame_cache`. Fails closed if `FRAME_KEY` is unset (`FRAME_DEV_OPEN=1` opens it for local dev). |
@@ -48,6 +48,11 @@ Secrets (`wrangler secret put …`; local dev values live in `.dev.vars`, gitign
 
 - `AVIAN_INGEST_SECRET` — gates the three Pi POST routes (detection/clip/heartbeat).
 - `FRAME_KEY` — gates `GET /frame.png` (a render costs metered Browser Rendering time).
+- `COVERAGE_WEBHOOK_URL` — Grok Bot routine webhook. When unset, the first-seen
+  coverage ping is a no-op. Never commit the URL; never log it.
+- `COVERAGE_WEBHOOK_KEY` — that routine's sender key (`Authorization: Bearer`,
+  plus `X-Automation-Key` and `X-Webhook-Key`). Optional if the URL is open,
+  but the routine panel issues a key.
 
 Vars (`wrangler.toml [vars]`):
 
