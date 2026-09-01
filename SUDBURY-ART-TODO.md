@@ -132,7 +132,7 @@ Heron, Mojo. Nothing below is actionable until a new species is detected.
 - [ ] **Semipalmated Plover** — `Charadrius semipalmatus` · freq 0.08
 - [ ] **Lesser Yellowlegs** — `Tringa flavipes` · freq 0.08
 - [ ] **Semipalmated Sandpiper** — `Calidris pusilla` · freq 0.07
-- [ ] **Solitary Sandpiper** — `Tringa solitaria` · freq 0.06
+- [x] **Solitary Sandpiper** — `Tringa solitaria` · freq 0.06
 - [ ] **Long-tailed Duck** — `Clangula hyemalis` · freq 0.05
 - [ ] **Ruddy Duck** — `Oxyura jamaicensis` · freq 0.05
 - [ ] **Surf Scoter** — `Melanitta perspicillata` · freq 0.04
