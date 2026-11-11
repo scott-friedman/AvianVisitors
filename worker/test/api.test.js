@@ -4,7 +4,7 @@
 // clip archive + first-seen coverage webhook, and /api/frame-config's abuse
 // hardening (2026-07-10).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import worker, { POLL_CACHE, RARE_MAX } from '../src/index.js';
+import worker, { POLL_CACHE, RARE_MAX, parseClipName } from '../src/index.js';
 
 // Fake D1: routes SQL (by substring) to canned results or functions; records
 // every call. INSERT/REPLACE semantics are NOT emulated — tests assert the SQL
@@ -38,7 +38,7 @@ class FakeDB {
 }
 
 class FakeR2 {
-  constructor(objects = {}) { this.objects = { ...objects }; this.puts = []; }
+  constructor(objects = {}) { this.objects = { ...objects }; this.puts = []; this.deletes = []; this.meta = {}; }
   async head(k) { return this.objects[k] ? { size: this._size(k), httpEtag: 'W/"t"' } : null; }
   async get(k, opts) {
     if (!this.objects[k]) return null;
@@ -48,7 +48,16 @@ class FakeR2 {
     }
     return { body: this.objects[k], size: this._size(k) };
   }
-  async put(k, body) { this.puts.push(k); this.objects[k] = body; }
+  async put(k, body, opts = {}) {
+    this.puts.push(k); this.objects[k] = body;
+    if (opts.customMetadata) this.meta[k] = opts.customMetadata;
+  }
+  async delete(k) { this.deletes.push(k); delete this.objects[k]; }
+  async list({ prefix = '' } = {}) {
+    const objects = Object.keys(this.objects).filter((k) => k.startsWith(prefix))
+      .map((k) => ({ key: k, customMetadata: this.meta[k] }));
+    return { objects, truncated: false };
+  }
   _size(k) { return typeof this.objects[k] === 'string' ? this.objects[k].length : 3; }
 }
 
@@ -160,7 +169,17 @@ describe('ingest (POST /api/detection)', () => {
     expect((await post('/api/detection', e, { sci: 'A a' }, auth)).status).toBe(400);
     expect((await post('/api/detection', e, { ...good(), sci: 'x'.repeat(121) }, auth)).status).toBe(400);
     expect((await post('/api/detection', e, { ...good(), ts: Math.floor(Date.now() / 1000) + 8 * 86400 }, auth)).status).toBe(400);
+    expect((await post('/api/detection', e, { ...good(), ts: Math.floor(Date.now() / 1000) + 2 * 86400 }, auth)).status).toBe(400);
+    expect((await post('/api/detection', e, { ...good(), ts: Math.floor(Date.now() / 1000) - 61 * 86400 }, auth)).status).toBe(400);
     expect(db.count('INSERT')).toBe(0);
+  });
+
+  it('accepts a weeks-old backlog replay (a >7-day outage must not drop data)', async () => {
+    const db = new FakeDB();
+    const res = await post('/api/detection', env(db),
+      { ...good(), ts: Math.floor(Date.now() / 1000) - 30 * 86400 }, { 'X-Avian-Secret': SECRET });
+    expect(res.status).toBe(204);
+    expect(db.count('INSERT OR IGNORE INTO detections')).toBe(1);
   });
 
   it('inserts with INSERT OR IGNORE (the (sci,ts) dedupe) and clamps conf', async () => {
@@ -177,43 +196,64 @@ describe('ingest (POST /api/detection)', () => {
     expect(db.calls.filter((c) => c.sql.includes('INSERT')).pop().args[2]).toBe(1); // clamped 0..1
   });
 
-  it('archives a rare species\' clip to rare/ (first lifetime clips only)', async () => {
-    const db = new FakeDB();
-    db.on('SELECT COUNT(*) AS n FROM detections WHERE sci = ?', { n: 3 });
-    const clips = new FakeR2({ ['clips/' + good().file]: 'mp3bytes' });
-    const e = env(db, { CLIPS: clips });
-    const res = await post('/api/detection', e, good(), { 'X-Avian-Secret': SECRET });
+  // n archived Robin clips at the given confidence percentages.
+  const archived = (pcts) => Object.fromEntries(pcts.map((pct, i) =>
+    [`rare/Robin-${pct}-2026-06-${String(i + 1).padStart(2, '0')}-birdnet-07:00:00.mp3`, 'old']));
+
+  it('archives a clip to rare/ while the species has room, with its confidence', async () => {
+    const clips = new FakeR2({ ['clips/' + good().file]: 'mp3bytes', ...archived([80, 85, 90]) });
+    const res = await post('/api/detection', env(new FakeDB(), { CLIPS: clips }), good(), { 'X-Avian-Secret': SECRET });
     expect(res.status).toBe(204);
     expect(clips.puts).toEqual(['rare/' + good().file]);
+    expect(clips.meta['rare/' + good().file]).toEqual({ sci: good().sci, conf: '0.91' });
+    expect(clips.deletes).toEqual([]);
   });
 
-  it('does not archive past the lifetime cap or when already archived', async () => {
-    const db = new FakeDB();
-    db.on('SELECT COUNT(*) AS n FROM detections WHERE sci = ?', { n: RARE_MAX + 1 });
-    const clips = new FakeR2({ ['clips/' + good().file]: 'mp3bytes' });
-    await post('/api/detection', env(db, { CLIPS: clips }), good(), { 'X-Avian-Secret': SECRET });
-    expect(clips.puts).toEqual([]);
+  it('when full, a clearer clip replaces the weakest one (write first, then one delete)', async () => {
+    const pcts = Array.from({ length: RARE_MAX }, (_, i) => 70 + (i % 20)); // weakest = 70
+    const clips = new FakeR2({ ['clips/' + good().file]: 'mp3bytes', ...archived(pcts) });
+    await post('/api/detection', env(new FakeDB(), { CLIPS: clips }), good(), { 'X-Avian-Secret': SECRET });
+    expect(clips.puts).toEqual(['rare/' + good().file]);
+    expect(clips.deletes).toEqual(['rare/Robin-70-2026-06-01-birdnet-07:00:00.mp3']);
+    expect(Object.keys(clips.objects).filter((k) => k.startsWith('rare/')).length).toBe(RARE_MAX);
+  });
 
-    const db2 = new FakeDB();
-    db2.on('SELECT COUNT(*) AS n FROM detections WHERE sci = ?', { n: 1 });
-    const clips2 = new FakeR2({
-      ['clips/' + good().file]: 'mp3bytes',
-      ['rare/' + good().file]: 'already',
-    });
-    await post('/api/detection', env(db2, { CLIPS: clips2 }), good(), { 'X-Avian-Secret': SECRET });
-    expect(clips2.puts).toEqual([]);
+  it('when full, a clip that is not clearly better changes nothing', async () => {
+    const pcts = Array.from({ length: RARE_MAX }, () => 90); // new clip is 0.91: inside the margin
+    const clips = new FakeR2({ ['clips/' + good().file]: 'mp3bytes', ...archived(pcts) });
+    await post('/api/detection', env(new FakeDB(), { CLIPS: clips }), good(), { 'X-Avian-Secret': SECRET });
+    expect(clips.puts).toEqual([]);
+    expect(clips.deletes).toEqual([]);
+  });
+
+  it('never touches another species whose name shares the prefix, or a replayed clip', async () => {
+    const other = Object.fromEntries(Array.from({ length: RARE_MAX }, (_, i) =>
+      [`rare/Robin-like_Thrush-60-2026-06-${String(i + 1).padStart(2, '0')}-birdnet-07:00:00.mp3`, 'x']));
+    const clips = new FakeR2({ ['clips/' + good().file]: 'mp3bytes', ...other });
+    await post('/api/detection', env(new FakeDB(), { CLIPS: clips }), good(), { 'X-Avian-Secret': SECRET });
+    expect(clips.puts).toEqual(['rare/' + good().file]); // Robin had room: the 25 are not Robin's
+    expect(clips.deletes).toEqual([]);
+
+    const replay = new FakeR2({ ['clips/' + good().file]: 'mp3bytes', ['rare/' + good().file]: 'already' });
+    await post('/api/detection', env(new FakeDB(), { CLIPS: replay }), good(), { 'X-Avian-Secret': SECRET });
+    expect(replay.puts).toEqual([]);
+  });
+
+  it('parses the BirdNET clip name (species part + confidence)', () => {
+    expect(parseClipName('Blue-gray_Gnatcatcher-74-2026-06-20-birdnet-17:31:27.mp3')).toEqual({ name: 'Blue-gray_Gnatcatcher', conf: 0.74 });
+    expect(parseClipName('whatever.mp3')).toBeNull();
   });
 
   it('never fails the ingest when the archive throws (but logs it)', async () => {
-    const db = new FakeDB();
-    db.on('SELECT COUNT(*) AS n FROM detections WHERE sci = ?', () => { throw new Error('R2 down'); });
-    const res = await post('/api/detection', env(db, { CLIPS: new FakeR2() }), good(), { 'X-Avian-Secret': SECRET });
+    const clips = new FakeR2();
+    clips.list = async () => { throw new Error('R2 down'); };
+    const res = await post('/api/detection', env(new FakeDB(), { CLIPS: clips }), good(), { 'X-Avian-Secret': SECRET });
     expect(res.status).toBe(204);
     expect(console.error).toHaveBeenCalled();
   });
 });
 
-describe('ingest coverage-gap webhook (first-seen only)', () => {
+describe('ingest coverage-gap webhook (fires when a species is confirmed)', () => {
   const HOOK_URL = 'https://hooks.example/coverage';
   const HOOK_KEY = 'test-webhook-key';
   const hook = { COVERAGE_WEBHOOK_URL: HOOK_URL, COVERAGE_WEBHOOK_KEY: HOOK_KEY };
@@ -223,11 +263,19 @@ describe('ingest coverage-gap webhook (first-seen only)', () => {
     conf: 0.91, ts: Math.floor(Date.now() / 1000),
   });
 
-  function dbWithCount(n) {
+  // Prior history of the species, as justConfirmed() reads it. No argument =
+  // never heard before. `days` apart → lo/hi fall on different local days.
+  const SPAN_SQL = 'ORDER BY ts ASC LIMIT 1) AS lo';
+  function dbWithPrior(prior) {
     const db = new FakeDB();
-    db.on('SELECT COUNT(*) AS n FROM detections WHERE sci = ?', { n });
+    if (prior) {
+      const hi = Math.floor(Date.now() / 1000) - (prior.daysAgo ?? 0) * 86400;
+      db.on(SPAN_SQL, { lo: hi - (prior.spanDays ?? 0) * 86400, hi });
+      db.on('SELECT MAX(conf) AS c', { c: prior.maxConf ?? 0.75 });
+    }
     return db;
   }
+  const dbWithCount = (n) => (n === 1 ? dbWithPrior() : dbWithPrior({ spanDays: 5 }));
 
   // Capture webhook POSTs. Manifest GETs are answered from `slugs`/`species`
   // so the notify path can decide art vs signature gaps without the network.
@@ -251,7 +299,7 @@ describe('ingest coverage-gap webhook (first-seen only)', () => {
     return posts;
   }
 
-  it('POSTs sci/com + gap flags on a first-seen species missing art and/or a signature', async () => {
+  it('POSTs sci/com + gap flags when a strong first hit confirms a species missing art and/or a signature', async () => {
     const posts = stubCoverageAssets({
       slugs: ['turdus-migratorius'],
       species: { 'Turdus migratorius': {} },
@@ -297,7 +345,30 @@ describe('ingest coverage-gap webhook (first-seen only)', () => {
     db.on('INSERT OR IGNORE', { success: true, meta: { changes: 0 } });
     expect((await post('/api/detection', env(db, hook), d, auth)).status).toBe(204);
     expect(replay).toHaveLength(0);
-    expect(db.count('SELECT COUNT(*) AS n FROM detections WHERE sci = ?')).toBe(0);
+    expect(db.count(SPAN_SQL)).toBe(0);
+  });
+
+  it('waits for confirmation: a weak one-off does not ping; a second day or a strong hit does', async () => {
+    const weak = { ...novel(), conf: 0.74 };
+    const first = stubCoverageAssets({ slugs: [], species: {} });
+    await post('/api/detection', env(dbWithPrior(), hook), weak, auth);
+    expect(first).toHaveLength(0);                       // first ever, weak → unconfirmed
+
+    const sameDay = stubCoverageAssets({ slugs: [], species: {} });
+    await post('/api/detection', env(dbWithPrior({ daysAgo: 0 }), hook), weak, auth);
+    expect(sameDay).toHaveLength(0);                     // weak again, same day → still unconfirmed
+
+    const secondDay = stubCoverageAssets({ slugs: [], species: {} });
+    await post('/api/detection', env(dbWithPrior({ daysAgo: 3 }), hook), weak, auth);
+    expect(secondDay).toHaveLength(1);                   // weak, but a different day → confirmed now
+
+    const strongLater = stubCoverageAssets({ slugs: [], species: {} });
+    await post('/api/detection', env(dbWithPrior({ daysAgo: 0 }), hook), novel(), auth);
+    expect(strongLater).toHaveLength(1);                 // same day, 0.91 → confirmed now
+
+    const alreadyStrong = stubCoverageAssets({ slugs: [], species: {} });
+    await post('/api/detection', env(dbWithPrior({ daysAgo: 0, maxConf: 0.95 }), hook), novel(), auth);
+    expect(alreadyStrong).toHaveLength(0);               // was confirmed by an earlier strong hit
   });
 
   it('still returns 204 when the webhook is unset or the POST fails', async () => {
@@ -338,7 +409,7 @@ describe('ingest coverage-gap webhook (first-seen only)', () => {
 
     // Same exempt species, but missing art ⇒ art-only ping (signature_missing false).
     const exemptArt = stubCoverageAssets({ slugs: ['turdus-migratorius'], species: {} });
-    expect((await post('/api/detection', env(dbWithCount(1), hook), hum, auth)).status).toBe(204);
+    expect((await post('/api/detection', env(dbWithCount(1), hook), { ...hum, conf: 0.95 }, auth)).status).toBe(204);
     expect(exemptArt).toHaveLength(1);
     expect(exemptArt[0].body.art_missing).toBe(true);
     expect(exemptArt[0].body.signature_missing).toBe(false);
@@ -457,5 +528,58 @@ describe('/frame.png gate + per-window cache', () => {
     expect(res.headers.get('Content-Type')).toBe('image/png');
     expect(res.headers.get('X-Frame-Cache')).toBe('hit');
     expect(cacheArgs[0]).toBe(12); // keyed by the CONFIGURED window, not a fixed id=1
+  });
+});
+
+describe('field notes (GET /api/facts)', () => {
+  // 15:20Z with a fixed -4 offset = 11:20 local. Calls logged 6am-10am only.
+  const factsAt1120 = async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-15T15:20:00Z'));
+    const db = new FakeDB()
+      .on('COUNT(*) AS n, COUNT(DISTINCT sci) AS s', { n: 10, s: 2 })
+      .on('GROUP BY h', [6, 7, 8, 9, 10].map((h) => ({ h, n: 2 })))
+      .on('SELECT COUNT(*) AS n FROM detections', { n: 10 });
+    const res = await get('/api/facts', env(db));
+    expect(res.status).toBe(200);
+    return { db, facts: (await res.json()).facts };
+  };
+
+  it('QUIET never counts hours that have not happened yet', async () => {
+    const { facts } = await factsAt1120();
+    const quiet = facts.filter((f) => f.kind === 'quiet').map((f) => f.text);
+    // The old cyclic scan reported "11am–6am" (the rest of today + the night).
+    expect(quiet).toEqual(['Quietest stretch: 12am–6am.']);
+  });
+
+  it('formats hours in per-row local time, with no bound tz modifier', async () => {
+    const { db } = await factsAt1120();
+    const byHour = db.find('GROUP BY h');
+    expect(byHour.sql).toContain("strftime('%H', (ts + -14400), 'unixepoch')");
+    expect(byHour.args.length).toBe(1); // just todayStart
+  });
+});
+
+describe('recording ?sci= picks the clearest clip', () => {
+  it('prefers the highest-confidence recent clip over the newest', async () => {
+    const db = new FakeDB()
+      .on('ORDER BY conf DESC, ts DESC', { file: 'Robin-97-clear.mp3' })
+      .on('ORDER BY ts DESC LIMIT 1', { file: 'Robin-71-faint.mp3' });
+    const e = env(db, { CLIPS: new FakeR2({ 'clips/Robin-97-clear.mp3': 'aaaa', 'clips/Robin-71-faint.mp3': 'bb' }) });
+    const res = await get('/api/recording?sci=Turdus%20migratorius', e);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Length')).toBe('4');
+  });
+
+  it('falls back to the clearest archived clip once the hot set has expired', async () => {
+    const db = new FakeDB()
+      .on('ORDER BY ts DESC LIMIT 1', { file: 'Veery-75-2026-07-01-birdnet-09:21:12.mp3' });
+    const e = env(db, { CLIPS: new FakeR2({
+      'rare/Veery-72-2026-06-02-birdnet-05:00:00.mp3': 'cc',
+      'rare/Veery-88-2026-06-09-birdnet-05:00:00.mp3': 'ccccc',
+    }) });
+    const res = await get('/api/recording?sci=Catharus%20fuscescens', e);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Length')).toBe('5');
   });
 });

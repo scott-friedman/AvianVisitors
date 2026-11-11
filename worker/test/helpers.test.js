@@ -5,7 +5,7 @@
 // the cache and re-run whole-table GROUP BYs (the 2026-07-03 D1 overload).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
-  tzOffsetHours, localDayStart, clampInt, clipKey, parseRange,
+  tzOffsetHours, localDayStart, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
   isTransientD1, pollKey, frameSignature, secretMatches,
 } from '../src/index.js';
 
@@ -175,5 +175,22 @@ describe('secretMatches', () => {
     expect(await secretMatches('anything', '')).toBe(false);
     expect(await secretMatches('anything', undefined)).toBe(false);
     expect(await secretMatches('', undefined)).toBe(false);
+  });
+});
+
+describe('per-row local time (historic rows keep the offset they were recorded under)', () => {
+  const NY = { TZ_NAME: 'America/New_York' };
+  it('finds the DST changes to the second', () => {
+    const rows = tzTransitions(NY);
+    expect(rows).toContainEqual([1793512800, -18000]); // 2026-11-01 06:00Z fall back
+    expect(rows).toContainEqual([1772953200, -14400]); // 2026-03-08 07:00Z spring forward
+  });
+  it('answers the offset in force at a given time, not today\'s', () => {
+    expect(tzOffsetSecAt(NY, Date.UTC(2026, 6, 1, 13, 21, 12) / 1000)).toBe(-14400); // July = EDT
+    expect(tzOffsetSecAt(NY, Date.UTC(2026, 10, 11, 16) / 1000)).toBe(-18000);       // Nov = EST
+  });
+  it('builds a literal-only SQL expression', () => {
+    expect(localSql(NY)('ts')).toMatch(/^\(ts \+ CASE( WHEN ts < \d+ THEN -?\d+)+ ELSE -?\d+ END\)$/);
+    expect(localSql({ TZ_OFFSET_HOURS: '-7' })('MAX(ts)')).toBe('(MAX(ts) + -25200)');
   });
 });

@@ -4,7 +4,7 @@
  * Three responsibilities (see ../PLAN.md Phase 1, ../CLAUDE.md):
  *   POST /api/detection  — the Pi's BirdNET hook posts each detection
  *                          (secret-gated via X-Avian-Secret) → D1 insert.
- *                          First life-list insert of a species missing art
+ *                          The detection that CONFIRMS a species missing art
  *                          and/or a non-exempt song signature POSTs a gap
  *                          event to COVERAGE_WEBHOOK_URL (best-effort).
  *   POST /api/clip       — the Pi uploads that detection's mp3 (same secret)
@@ -100,6 +100,92 @@ function tzOffsetHours(env) {
 function tzMod(env) {
   const h = tzOffsetHours(env);
   return `${h >= 0 ? '+' : ''}${h} hours`;
+}
+
+// ---- per-row local time ------------------------------------------------------
+// tzMod() applies TODAY's offset, which is right for "now" but wrong for any
+// row recorded on the other side of a DST change: after the November fall-back
+// every summer detection read one hour early (first-seen times, modal times,
+// the dial, the rhythm, day buckets). So historic timestamps are shifted by the
+// offset that was in force AT THAT ROW'S ts. tzTransitions() lists the zone's
+// offset changes as [fromTs, offsetSeconds] rows; localSql() turns that into a
+// SQL expression (numeric literals only, so nothing to bind or inject) and
+// tzOffsetSecAt() answers the same question in JS. Built once per isolate per
+// day. Rows older than TZ_TABLE_START take the offset in force on that date —
+// the box started listening in June 2026, so nothing is older.
+const TZ_TABLE_START = 1767225600; // 2026-01-01T00:00:00Z
+let _tzTable = null; // { zone, day, rows }
+function tzTransitions(env) {
+  const zone = (env.TZ_NAME || '').trim();
+  const fixed = Math.round((parseFloat(env.TZ_OFFSET_HOURS ?? '0') || 0) * 3600);
+  if (!zone) return [[0, fixed]];
+  const day = Math.floor(Date.now() / 86400000);
+  if (_tzTable && _tzTable.zone === zone && _tzTable.day === day) return _tzTable.rows;
+  let rows;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' });
+    const offAt = (sec) => {
+      const name = fmt.formatToParts(new Date(sec * 1000)).find((p) => p.type === 'timeZoneName').value;
+      const m = /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(name);
+      if (!m) throw new Error('unparseable offset ' + name);
+      return m[1] ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 3600 + Number(m[3]) * 60) : 0;
+    };
+    const end = Math.floor(Date.now() / 1000) + 400 * 86400;
+    let prev = offAt(TZ_TABLE_START);
+    rows = [[0, prev]];
+    for (let t = TZ_TABLE_START; t < end; t += 86400) {
+      const o = offAt(t + 86400);
+      if (o === prev) continue;
+      let lo = t, hi = t + 86400;              // offAt(lo) = prev, offAt(hi) = o
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2); // not >>: unix seconds overflow int32 after 2038, and lo+hi does today
+        if (offAt(mid) === prev) lo = mid; else hi = mid;
+      }
+      rows.push([hi, o]);
+      prev = o;
+    }
+  } catch {
+    rows = [[0, fixed]];
+  }
+  _tzTable = { zone, day, rows };
+  return rows;
+}
+
+// UTC offset (seconds) in force at unix time `ts`.
+function tzOffsetSecAt(env, ts) {
+  const rows = tzTransitions(env);
+  let off = rows[0][1];
+  for (const [from, o] of rows) { if (ts >= from) off = o; else break; }
+  return off;
+}
+
+// Returns L(col): a SQL expression for `col` (unix seconds) shifted to local
+// wall-clock seconds, e.g. datetime(${L('ts')}, 'unixepoch').
+function localSql(env) {
+  const rows = tzTransitions(env);
+  return (col) => {
+    if (rows.length === 1) return `(${col} + ${rows[0][1]})`;
+    let sql = `(${col} + CASE`;
+    for (let i = 1; i < rows.length; i++) sql += ` WHEN ${col} < ${rows[i][0]} THEN ${rows[i - 1][1]}`;
+    return sql + ` ELSE ${rows[rows.length - 1][1]} END)`;
+  };
+}
+
+// ---- confirmed vs unconfirmed species ----------------------------------------
+// BirdNET false positives are mostly one-off, low-confidence hits (14 of the
+// first 74 life-list species had one or two detections). A species is CONFIRMED
+// once it has a detection at >= CONFIRM_CONF, or detections on two different
+// local days. Unconfirmed species stay on the life list (the site labels them),
+// but they do not trigger the art/signature request and are left out of the
+// coverage gap lists until they confirm.
+const CONFIRM_CONF = 0.9;
+// SQL boolean (0/1) for use inside a GROUP BY sci (or whole-species) aggregate.
+function confirmedSql(tz) {
+  return `(MAX(conf) >= ${CONFIRM_CONF} OR date(${tz('MIN(ts)')}, 'unixepoch') <> date(${tz('MAX(ts)')}, 'unixepoch'))`;
+}
+// Local calendar-day number of a unix time (for "two different days" in JS).
+function localDayNo(env, ts) {
+  return Math.floor((ts + tzOffsetSecAt(env, ts)) / 86400);
 }
 
 // Start of the local day, in UTC seconds (so it compares against ts directly).
@@ -298,6 +384,9 @@ async function mojoVisit(env) {
 
 // ---- ingest -----------------------------------------------------------------
 
+const INGEST_MAX_FUTURE_S = 86400;      // 1 day
+const INGEST_MAX_PAST_S = 60 * 86400;   // 60 days of replayable backlog
+
 async function ingest(request, env) {
   const secret = request.headers.get('X-Avian-Secret') || '';
   if (!(await secretMatches(secret, env.AVIAN_INGEST_SECRET))) {
@@ -326,9 +415,13 @@ async function ingest(request, env) {
   // bounded (longest real bird binomials/commons are well under 60 chars; a
   // multi-MB string would be echoed by every GROUP BY endpoint), ts within a
   // sane window (a far-future ts would permanently top `recent` and pin the
-  // poll-cache version; ±7 days covers any realistic forwarder replay backlog).
+  // poll-cache version, so the future side is tight: 1 day of clock skew). The
+  // past side is wide — 60 days — because the Pi replays its backlog after an
+  // outage and the forwarder SKIPS a 400 as a poison line: the old ±7 days
+  // silently threw away everything older than a week once the box came back.
   if (sci.length > 120 || com.length > 120) return json({ error: 'name too long' }, 400);
-  if (Math.abs(ts - Math.floor(Date.now() / 1000)) > 7 * 86400) {
+  const skew = ts - Math.floor(Date.now() / 1000);
+  if (skew > INGEST_MAX_FUTURE_S || skew < -INGEST_MAX_PAST_S) {
     return json({ error: 'ts out of range' }, 400);
   }
   // Accept confidence as 0..1 or 0..100; store clamped to 0..1.
@@ -341,11 +434,11 @@ async function ingest(request, env) {
     'INSERT OR IGNORE INTO detections (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)'
   ).bind(sci, com, c, ts, file).run();
 
-  // Rare-species archival (best-effort — must never fail the ingest). Mojo is
+  // Best-clip archival (best-effort — must never fail the ingest). Mojo is
   // excluded: his cron self-heals his one bark from master/ already.
   if (file && env.CLIPS && sci !== MOJO.sci) {
     try {
-      await archiveRareClip(env, sci, file);
+      await archiveRareClip(env, sci, file, c);
     } catch (err) {
       // Archive is a bonus — never fail the ingest — but log it: a silent
       // failure here quietly erodes the forever-archive.
@@ -353,12 +446,13 @@ async function ingest(request, env) {
     }
   }
 
-  // First-seen coverage ping (best-effort). A new life-list species with a
-  // missing illustration and/or (non-exempt) song signature wakes Birb so the
-  // gap can be filled without a polling cron. Subsequent chirps of the same
-  // sci, Mojo, an unset webhook, and a failed POST must not affect the 204.
+  // Coverage ping (best-effort). When a species becomes CONFIRMED (see
+  // CONFIRM_CONF) with a missing illustration and/or (non-exempt) song
+  // signature, wake Birb so the gap can be filled without a polling cron. It
+  // fires once, on the detection that confirms the species. Other chirps,
+  // Mojo, an unset webhook, and a failed POST must not affect the 204.
   try {
-    await maybeNotifyCoverageGap(env, sci, com, inserted);
+    await maybeNotifyCoverageGap(env, sci, com, c, ts, inserted);
   } catch (err) {
     console.error('[ingest] coverage webhook failed:', sci);
   }
@@ -373,29 +467,69 @@ async function ingest(request, env) {
 // the bucket's 7-day lifecycle rule (prefix-scoped to clips/) expires them.
 // See AUDIO-FIX-PLAN.md and CLIP-RETENTION-PLAN.md.
 
-// Rare-clip archive: the flat 7-day TTL deletes a once-ever Veery as fast as the
-// 1000th goldfinch, so each species' first RARE_MAX clips are also copied to
-// rare/<basename> — a prefix with NO lifecycle rule, kept indefinitely (same
-// exemption trick as Mojo's master/). The count is lifetime, so a common species
-// archived its first 25 long ago and never copies again; storage is bounded at
-// RARE_MAX × ~45 KB ≈ 1.1 MB per species, ever. The per-species COUNT is a
-// covering-index seek on idx_detections_dedupe (EXPLAIN QUERY PLAN verified
-// 2026-07-03 — see the D1 full-scan gotcha in CLAUDE.md).
+// Forever archive: the flat 7-day TTL deletes a once-ever Veery as fast as the
+// 1000th goldfinch, so each species also keeps its RARE_MAX CLEAREST clips
+// under rare/<basename> — a prefix with NO lifecycle rule, kept indefinitely
+// (same exemption trick as Mojo's master/). It used to keep the FIRST 25, but a
+// species' first clips are often its faintest. Now a new clip joins while there
+// is room; once full, it replaces the weakest archived clip only if it beats it
+// by RARE_MARGIN (hysteresis, so near-ties do not churn). Storage stays bounded
+// at RARE_MAX × ~45 KB ≈ 1.1 MB per species.
+//
+// What is archived is read from R2 itself (one list call on the species' name
+// prefix), not from D1: D1 does not know which objects exist. Confidence comes
+// from the object's customMetadata, or from the "-<pct>-" in the filename for
+// clips archived before this change.
+//
+// Safety: this is the only code that deletes from the forever archive. It
+// writes the new clip BEFORE it deletes the old one, deletes at most one object
+// per ingest, and only a key that the species-name pattern matched exactly.
 const RARE_MAX = 25;
+const RARE_MARGIN = 0.02;
 
-async function archiveRareClip(env, sci, file) {
+// "<Com_safe>-<pct>-<YYYY-MM-DD>-birdnet-…mp3" → { name, conf } (BirdNET-Pi's
+// extraction filename; see pi/detection-forwarder.py). Null if it doesn't fit.
+function parseClipName(key) {
+  const m = /^(.+)-(\d{1,3})-\d{4}-\d{2}-\d{2}-birdnet-/.exec(key);
+  return m ? { name: m[1], conf: Math.min(1, Number(m[2]) / 100) } : null;
+}
+
+// Every archived clip of one species: [{ key: 'rare/…', conf }].
+async function listRareClips(env, name) {
+  const out = [];
+  let cursor;
+  for (let page = 0; page < 5; page++) {
+    const res = await env.CLIPS.list({ prefix: 'rare/' + name + '-', limit: 100, include: ['customMetadata'], cursor });
+    for (const o of res.objects || []) {
+      const parsed = parseClipName(o.key.slice(5));
+      if (!parsed || parsed.name !== name) continue;   // "Blue-" must not match "Blue-gray_…"
+      const metaConf = o.customMetadata && Number(o.customMetadata.conf);
+      out.push({ key: o.key, conf: Number.isFinite(metaConf) && metaConf > 0 ? metaConf : parsed.conf });
+    }
+    if (!res.truncated) break;
+    cursor = res.cursor;
+  }
+  return out;
+}
+
+async function archiveRareClip(env, sci, file, conf) {
   const key = clipKey(file);
-  if (!key) return;
-  const row = await env.DB.prepare(
-    'SELECT COUNT(*) AS n FROM detections WHERE sci = ?'
-  ).bind(sci).first();
-  if (!row || row.n > RARE_MAX) return;
-  if (await env.CLIPS.head('rare/' + key)) return; // replayed detection; already archived
+  const parsed = key && parseClipName(key);
+  if (!parsed) return; // unknown naming: cannot group by species, so do not archive
+  const have = await listRareClips(env, parsed.name);
+  if (have.some((o) => o.key === 'rare/' + key)) return; // replayed detection; already archived
+  let evict = null;
+  if (have.length >= RARE_MAX) {
+    evict = have.reduce((w, o) => (o.conf < w.conf ? o : w));
+    if (!(conf > evict.conf + RARE_MARGIN)) return; // not clearly better than the weakest
+  }
   const src = await env.CLIPS.get('clips/' + key);
   if (!src) return; // clip upload failed or already expired — nothing to copy
   await env.CLIPS.put('rare/' + key, src.body, {
     httpMetadata: { contentType: 'audio/mpeg' },
+    customMetadata: { sci, conf: String(conf) },
   });
+  if (evict) await env.CLIPS.delete(evict.key);
 }
 
 // Validate a clip key = one mp3 basename; block path traversal / nesting. Keys
@@ -440,9 +574,9 @@ async function clip(request, env, url) {
 // GET /api/recording?file=<key>  → that exact clip.
 // GET /api/recording?sci=<name>  → newest clip for that species.
 // Lookup order per key: clips/ (7-day hot set) then rare/ (the forever archive
-// of each species' first RARE_MAX clips). For ?sci=, if the newest clip has
-// expired from both, fall back to the species' OLDEST clip — the one most
-// likely archived — so a rare bird's atlas play button outlives the TTL.
+// of each species' RARE_MAX clearest clips). For ?sci= the pick is the clearest
+// recent clip; if that has expired from both, fall back to the clearest of the
+// archived clips, so a rare bird's atlas play button outlives the TTL.
 // Honors Range (the <audio> element seeks; the spectrogram does a full fetch).
 // Missing/expired object → 404, which the frontend degrades to "no audio".
 async function recording(request, env, url) {
@@ -455,9 +589,14 @@ async function recording(request, env, url) {
   if (!key) {
     sci = (url.searchParams.get('sci') || '').trim();
     if (!sci) return json({ error: 'file or sci required' }, 400);
-    const row = await env.DB.prepare(
+    // Prefer the CLEAREST clip still inside the hot set (highest confidence in
+    // the last 6 days — inside the 7-day clips/ lifecycle), not merely the
+    // newest: the newest is often a faint 0.7 hit. Else fall back to the newest.
+    const row = (await env.DB.prepare(
+      'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL AND ts >= ? ORDER BY conf DESC, ts DESC LIMIT 1'
+    ).bind(sci, Math.floor(Date.now() / 1000) - 6 * 86400).first()) || (await env.DB.prepare(
       'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts DESC LIMIT 1'
-    ).bind(sci).first();
+    ).bind(sci).first());
     key = row && row.file ? clipKey(row.file) : null;
     if (!key) return json({ error: 'no recording' }, 404);
   }
@@ -471,11 +610,12 @@ async function recording(request, env, url) {
     (await env.CLIPS.head('rare/' + k)) ? 'rare/' + k : null;
   let objKey = await locate(key);
   if (!objKey && sci) {
-    const oldest = await env.DB.prepare(
-      'SELECT file FROM detections WHERE sci = ? AND file IS NOT NULL ORDER BY ts ASC LIMIT 1'
-    ).bind(sci).first();
-    const alt = oldest && oldest.file ? clipKey(oldest.file) : null;
-    if (alt && alt !== key) objKey = await locate(alt);
+    // Expired from the hot set: play the clearest clip in the forever archive.
+    const parsed = parseClipName(key);
+    if (parsed) {
+      const best = (await listRareClips(env, parsed.name)).sort((x, y) => y.conf - x.conf)[0];
+      if (best) objKey = best.key;
+    }
   }
   if (!objKey) return json({ error: 'not found' }, 404);
 
@@ -858,7 +998,7 @@ async function queryApi(request, env, url) {
     else return json({ error: 'not found' }, 404);
   }
 
-  const tz = tzMod(env);
+  const tz = localSql(env); // tz(col) → SQL for col in per-row local time
   const now = Math.floor(Date.now() / 1000);
 
   const run = () => {
@@ -914,12 +1054,12 @@ async function recent(env, url, tz, now) {
   // Same trap on every windowed GROUP BY sci / COUNT(DISTINCT sci) query below.
   const { results } = await env.DB.prepare(
     `SELECT sci, com, COUNT(*) AS n, MAX(conf) AS best_conf,
-            datetime(MAX(ts), 'unixepoch', ?) AS last_seen
+            datetime(${tz('MAX(ts)')}, 'unixepoch') AS last_seen
        FROM detections INDEXED BY idx_detections_ts
       WHERE ts >= ?
       GROUP BY sci
       ORDER BY MAX(ts) DESC`
-  ).bind(tz, since).all();
+  ).bind(since).all();
 
   // top_file/top_at are vestigial — no frontend reads them (the atlas card
   // plays via /api/recording?sci=, which resolves the newest clip itself).
@@ -944,7 +1084,7 @@ async function stats(env, tz, now) {
   const lastHour = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', hourStart)).n;
   const week = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', weekStart)).n;
   const weekSpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', weekStart)).n;
-  const started = await first(`SELECT date(MIN(ts), 'unixepoch', ?) AS d FROM detections`, tz);
+  const started = await first(`SELECT date(${tz('MIN(ts)')}, 'unixepoch') AS d FROM detections`);
 
   return json({
     totals: { detections: total, species: speciesN },
@@ -994,26 +1134,41 @@ async function facts(env, tz, now) {
 
   // 1) NEW — species whose first-ever detection is today (lifers today)
   const newToday = await all(
-    'SELECT sci, com, MIN(ts) AS f FROM detections GROUP BY sci HAVING f >= ? ORDER BY f ASC', todayStart);
+    'SELECT sci, com, MIN(ts) AS f, MAX(conf) AS c FROM detections GROUP BY sci HAVING f >= ? ORDER BY f ASC', todayStart);
   const newSet = new Set(newToday.map((r) => r.sci));
+  // A first-ever species heard only today is confirmed only by a strong hit
+  // (see CONFIRM_CONF); otherwise say "possible", not "new".
+  const sure = newToday.every((r) => r.c >= CONFIRM_CONF);
   if (newToday.length === 1) {
-    push('new', 'NEW', `New today: ${newToday[0].com} — first time at this yard.`, newToday[0].sci);
+    push('new', 'NEW', sure
+      ? `New today: ${newToday[0].com} — first time at this yard.`
+      : `Possible new species: ${newToday[0].com} — not confirmed yet.`, newToday[0].sci);
   } else if (newToday.length > 1) {
     const names = newToday.slice(0, 3).map((r) => r.com);
     const extra = newToday.length - names.length;
-    push('new', 'NEW', `${newToday.length} new species today: ${names.join(', ')}${extra ? `, +${extra} more` : ''}.`);
+    push('new', 'NEW', `${newToday.length} ${sure ? '' : 'possible '}new species today: ${names.join(', ')}${extra ? `, +${extra} more` : ''}.`);
   }
 
-  // 2) DAWN — first call today (+ minutes before/after sunrise)
-  const fc = await first(
+  // 2) DAWN — the first call of the dawn chorus (+ minutes before/after sunrise).
+  // "First call after midnight" would crown a 12:05am owl and print "380 min
+  // before sunrise", so when the sun is known the search starts 90 min before
+  // sunrise. Before that point in the day (or with no site coordinates) it
+  // falls back to the day's first call, without the sunrise tail.
+  const sun = sunArc(env, new Date((now + offH * 3600) * 1000), offH);
+  const firstCallSql =
     `SELECT com, sci,
-            CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS h,
-            CAST(strftime('%M', ts, 'unixepoch', ?) AS INT) AS m
-       FROM detections WHERE ts >= ? ORDER BY ts ASC LIMIT 1`, tz, tz, todayStart);
+            CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS h,
+            CAST(strftime('%M', ${tz('ts')}, 'unixepoch') AS INT) AS m
+       FROM detections WHERE ts >= ? ORDER BY ts ASC LIMIT 1`;
+  const hasSun = !!(sun && sun.sunrise != null);
+  let fc = hasSun
+    ? await first(firstCallSql, todayStart + Math.round(Math.max(0, sun.sunrise - 1.5) * 3600))
+    : null;
+  const atDawn = !!fc;
+  if (!fc) fc = await first(firstCallSql, todayStart);
   if (fc) {
-    const sun = sunArc(env, new Date((now + offH * 3600) * 1000), offH);
     let tail = '.';
-    if (sun && sun.sunrise != null) {
+    if (atDawn) {
       const mins = Math.round((sun.sunrise - (fc.h + fc.m / 60)) * 60);
       if (mins >= 5) tail = ` — ${mins} min before sunrise.`;
       else if (mins <= -5) tail = ` — ${-mins} min after sunrise.`;
@@ -1023,8 +1178,8 @@ async function facts(env, tz, now) {
 
   // by-hour today (drives PEAK + QUIET)
   const byHour = await all(
-    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS h, COUNT(*) AS n
-       FROM detections WHERE ts >= ? GROUP BY h`, tz, todayStart);
+    `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS h, COUNT(*) AS n
+       FROM detections WHERE ts >= ? GROUP BY h`, todayStart);
 
   // 3) PEAK — busiest local hour today
   if (byHour.length) {
@@ -1071,18 +1226,20 @@ async function facts(env, tz, now) {
   const lh = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', now - 3600);
   if (lh && lh.n > 0) push('now', 'NOW', `Last hour: ${calls(lh.n)} from ${lh.s} species.`);
 
-  // 8) QUIET — longest silent run of clock-hours today (cyclic, wraps midnight)
+  // 8) QUIET — longest silent run of COMPLETED clock-hours today. Only hours
+  // that have already passed count: the old cyclic scan also counted the hours
+  // still to come as silent ("Quietest stretch: 12pm–6am" at 11am).
   {
     const bins = new Array(24).fill(0);
     for (const r of byHour) bins[r.h] = r.n;
-    let best = 0, bestStart = -1, cur = 0, curStart = -1;
-    for (let i = 0; i < 48; i++) {                // 2× pass handles the wrap
-      const h = i % 24;
-      if (bins[h] === 0) { if (cur === 0) curStart = h; cur++; if (cur > best && cur <= 24) { best = cur; bestStart = curStart; } }
+    const nowH = new Date((now + offH * 3600) * 1000).getUTCHours();
+    let best = 0, bestStart = -1, cur = 0;
+    for (let h = 0; h < nowH; h++) {
+      if (bins[h] === 0) { cur++; if (cur > best) { best = cur; bestStart = h - cur + 1; } }
       else cur = 0;
     }
-    if (best >= 3 && best < 24) {
-      const endH = (bestStart + best) % 24;        // exclusive end = first active hour
+    if (best >= 3) {
+      const endH = bestStart + best;               // exclusive end, never past the current hour
       push('quiet', 'QUIET', `Quietest stretch: ${hm12(bestStart, 0)}–${hm12(endH, 0)}.`);
     }
   }
@@ -1104,13 +1261,14 @@ async function facts(env, tz, now) {
 async function lifelist(env, tz) {
   const { results } = await env.DB.prepare(
     `SELECT sci, com,
-            datetime(MIN(ts), 'unixepoch', ?) AS first_seen,
-            datetime(MAX(ts), 'unixepoch', ?) AS last_seen,
-            COUNT(*) AS n, MAX(conf) AS best_conf
+            datetime(${tz('MIN(ts)')}, 'unixepoch') AS first_seen,
+            datetime(${tz('MAX(ts)')}, 'unixepoch') AS last_seen,
+            COUNT(*) AS n, MAX(conf) AS best_conf,
+            ${confirmedSql(tz)} AS confirmed
        FROM detections
       GROUP BY sci
       ORDER BY MIN(ts) ASC`
-  ).bind(tz, tz).all();
+  ).all();
   return json({ species: results || [], as_of: new Date().toISOString() });
 }
 
@@ -1172,6 +1330,26 @@ async function loadCoverageSets(env) {
   return { artSet, sigSet };
 }
 
+// True only for the one detection that takes a species from unconfirmed to
+// confirmed. Cheap on the hot path: the earliest/latest OTHER rows are two
+// index-ordered seeks on (sci, ts), and for an established species they fall on
+// different days, which settles it in two row reads. Only a species whose whole
+// history is one day needs the MAX(conf) look — bounded by that day's rows.
+async function justConfirmed(env, sci, conf, ts) {
+  const span = await env.DB.prepare(
+    `SELECT (SELECT ts FROM detections WHERE sci = ? AND ts <> ? ORDER BY ts ASC LIMIT 1) AS lo,
+            (SELECT ts FROM detections WHERE sci = ? AND ts <> ? ORDER BY ts DESC LIMIT 1) AS hi`
+  ).bind(sci, ts, sci, ts).first();
+  const strong = conf >= CONFIRM_CONF;
+  if (!span || span.lo == null) return strong;                          // first row ever
+  if (localDayNo(env, span.lo) !== localDayNo(env, span.hi)) return false; // already confirmed
+  const prior = await env.DB.prepare(
+    'SELECT MAX(conf) AS c FROM detections WHERE sci = ? AND ts <> ?'
+  ).bind(sci, ts).first();
+  if (prior && prior.c >= CONFIRM_CONF) return false;                   // already confirmed
+  return strong || localDayNo(env, ts) !== localDayNo(env, span.lo);
+}
+
 function coverageGapsFor(sci, artSet, sigSet) {
   const art_missing = !!(artSet && !artSet.has(slugifySci(sci)));
   // Actionable signature gap only — exempt species have no tonal song, so a
@@ -1180,21 +1358,15 @@ function coverageGapsFor(sci, artSet, sigSet) {
   return { art_missing, signature_missing };
 }
 
-// Wake Birb (Grok Bot routine webhook) when a species joins the life list
+// Wake Birb (Grok Bot routine webhook) when a species becomes CONFIRMED
 // without art and/or an addable song signature. Unset URL = no-op. Never
 // logs the URL or sender key (fetch errors can embed the URL).
-async function maybeNotifyCoverageGap(env, sci, com, insertResult) {
+async function maybeNotifyCoverageGap(env, sci, com, conf, ts, insertResult) {
   const url = String(env.COVERAGE_WEBHOOK_URL || '').trim();
   if (!url || sci === MOJO.sci) return;
   // Replay of the same (sci, ts): INSERT OR IGNORE writes nothing.
   if (!(insertResult && insertResult.meta && insertResult.meta.changes > 0)) return;
-
-  // Equality on sci + COUNT — covering seek on idx_detections_dedupe (same
-  // plan as archiveRareClip). n === 1 means this insert created the life list.
-  const row = await env.DB.prepare(
-    'SELECT COUNT(*) AS n FROM detections WHERE sci = ?'
-  ).bind(sci).first();
-  if (!row || row.n !== 1) return;
+  if (!(await justConfirmed(env, sci, conf, ts))) return;
 
   const { artSet, sigSet } = await loadCoverageSets(env);
   const gaps = coverageGapsFor(sci, artSet, sigSet);
@@ -1239,12 +1411,15 @@ async function coverage(env) {
   // Detected species (life list), heaviest hitters first so the gap lists read
   // "most-heard missing bird" at the top.
   const { results } = await env.DB.prepare(
-    `SELECT sci, com, COUNT(*) AS n
+    `SELECT sci, com, COUNT(*) AS n, ${confirmedSql(localSql(env))} AS confirmed
        FROM detections
       GROUP BY sci
       ORDER BY COUNT(*) DESC`
   ).all();
   const detected = results || [];
+  // Gaps are listed (and alerted on) for CONFIRMED species only — a one-off
+  // low-confidence hit should not commission an illustration.
+  const unconfirmed = detected.filter((r) => !r.confirmed).length;
 
   const { artSet, sigSet } = await loadCoverageSets(env);
 
@@ -1252,6 +1427,7 @@ async function coverage(env) {
   const signature_missing = [];
   const signature_addable = [];
   for (const r of detected) {
+    if (!r.confirmed) continue;
     const row = { sci: r.sci, com: r.com, n: r.n };
     if (artSet && !artSet.has(slugifySci(r.sci))) art_missing.push(row);
     if (sigSet && !sigSet.has(r.sci)) {
@@ -1266,6 +1442,7 @@ async function coverage(env) {
     signature_addable,
     totals: {
       detected: detected.length,
+      unconfirmed,
       with_art: artSet ? artSet.size : null,
       with_signature: sigSet ? sigSet.size : null,
     },
@@ -1279,16 +1456,16 @@ async function timeseries(env, url, tz, now) {
   const days = clampInt(url.searchParams.get('days'), 30, 1, 90);
   const dailySince = now - (days - 1) * 86400;
   const daily = (await env.DB.prepare(
-    `SELECT date(ts, 'unixepoch', ?) AS date, COUNT(*) AS detections,
+    `SELECT date(${tz('ts')}, 'unixepoch') AS date, COUNT(*) AS detections,
             COUNT(DISTINCT sci) AS species
        FROM detections WHERE ts >= ? GROUP BY date ORDER BY date`
-  ).bind(tz, dailySince).all()).results || [];
+  ).bind(dailySince).all()).results || [];
 
   const hourSince = now - 30 * 86400;
   const by_hour = (await env.DB.prepare(
-    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS hour, COUNT(*) AS detections
+    `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS hour, COUNT(*) AS detections
        FROM detections WHERE ts >= ? GROUP BY hour ORDER BY hour`
-  ).bind(tz, hourSince).all()).results || [];
+  ).bind(hourSince).all()).results || [];
 
   return json({ days, daily, by_hour, as_of: new Date().toISOString() });
 }
@@ -1306,13 +1483,13 @@ async function hourly(env, url, tz, now) {
   // hour (local clock) × species counts in the rolling window. ORDER BY ... n DESC
   // so the first ≤3 rows pushed per hour are that hour's most-heard species.
   const { results } = await env.DB.prepare(
-    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS hour,
+    `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS hour,
             sci, com, COUNT(*) AS n
        FROM detections
       WHERE ts >= ?
       GROUP BY hour, sci
       ORDER BY hour, n DESC`
-  ).bind(tz, since).all();
+  ).bind(since).all();
 
   const bins = Array.from({ length: 24 }, (_, h) => ({
     hour: h, detections: 0, species: 0, top: [],
@@ -1359,12 +1536,12 @@ async function rhythm(env, url, tz, now) {
   const since = now - days * 86400;
 
   const { results } = await env.DB.prepare(
-    `SELECT CAST(strftime('%H', ts, 'unixepoch', ?) AS INT) AS hour,
+    `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS hour,
             sci, com, COUNT(*) AS n
        FROM detections
       WHERE ts >= ?
       GROUP BY hour, sci`
-  ).bind(tz, since).all();
+  ).bind(since).all();
 
   const bySci = new Map();
   for (const r of (results || [])) {
@@ -1425,17 +1602,19 @@ async function chorus(env, url, tz, now) {
   const off  = offH * 3600;                                    // tz offset seconds
   const since = now - hours * 3600;
 
-  const firstSlot = Math.floor((since + off) / iv);
+  // Slots are indexed in per-row local time, so the window's first slot uses
+  // the offset in force at `since` (differs from `off` only on a DST-change day).
+  const firstSlot = Math.floor((since + tzOffsetSecAt(env, since)) / iv);
   const lastSlot  = Math.floor((now   + off) / iv);
   const nBins = lastSlot - firstSlot + 1;
 
   const { results } = await env.DB.prepare(
-    `SELECT CAST((ts + ?) / ? AS INT) AS slot, sci, com, COUNT(*) AS n
+    `SELECT CAST(${tz('ts')} / ? AS INT) AS slot, sci, com, COUNT(*) AS n
        FROM detections
       WHERE ts >= ?
       GROUP BY slot, sci
       ORDER BY slot, n DESC`
-  ).bind(off, iv, since).all();
+  ).bind(iv, since).all();
 
   const bySci = new Map();
   const totals  = new Array(nBins).fill(0);
@@ -1543,16 +1722,17 @@ async function species(env, url, tz) {
   if (!sci) return json({ error: 'sci= required' }, 400);
 
   const detections = (await env.DB.prepare(
-    `SELECT date(ts, 'unixepoch', ?) AS d, time(ts, 'unixepoch', ?) AS t, conf, file
+    `SELECT date(${tz('ts')}, 'unixepoch') AS d, time(${tz('ts')}, 'unixepoch') AS t, conf, file
        FROM detections WHERE sci = ? ORDER BY ts DESC LIMIT 500`
-  ).bind(tz, tz, sci).all()).results || [];
+  ).bind(sci).all()).results || [];
 
   const summary = await env.DB.prepare(
     `SELECT com, COUNT(*) AS total,
-            datetime(MIN(ts), 'unixepoch', ?) AS first_seen,
-            datetime(MAX(ts), 'unixepoch', ?) AS last_seen, MAX(conf) AS best_conf
+            datetime(${tz('MIN(ts)')}, 'unixepoch') AS first_seen,
+            datetime(${tz('MAX(ts)')}, 'unixepoch') AS last_seen, MAX(conf) AS best_conf,
+            ${confirmedSql(tz)} AS confirmed
        FROM detections WHERE sci = ?`
-  ).bind(tz, tz, sci).first();
+  ).bind(sci).first();
 
   return json({ sci, summary, detections, as_of: new Date().toISOString() });
 }
@@ -1560,9 +1740,10 @@ async function species(env, url, tz) {
 async function firstseen(env, url, tz) {
   const limit = clampInt(url.searchParams.get('limit'), 10, 1, 50);
   const { results } = await env.DB.prepare(
-    `SELECT sci, com, datetime(MIN(ts), 'unixepoch', ?) AS first_seen, COUNT(*) AS total
+    `SELECT sci, com, datetime(${tz('MIN(ts)')}, 'unixepoch') AS first_seen, COUNT(*) AS total,
+            ${confirmedSql(tz)} AS confirmed
        FROM detections GROUP BY sci ORDER BY MIN(ts) DESC LIMIT ?`
-  ).bind(tz, limit).all();
+  ).bind(limit).all();
   return json({ species: results || [], as_of: new Date().toISOString() });
 }
 
@@ -1574,7 +1755,7 @@ function clampInt(raw, dflt, lo, hi) {
 
 // Exposed for unit tests only (worker/test/*) — not part of any runtime contract.
 export {
-  tzOffsetHours, tzMod, localDayStart, clampInt, clipKey, parseRange,
+  tzOffsetHours, tzMod, localDayStart, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
   isTransientD1, pollKey, frameSignature, secretMatches,
-  POLL_CACHE, FRAME_WINDOWS, RARE_MAX,
+  POLL_CACHE, FRAME_WINDOWS, RARE_MAX, CONFIRM_CONF, parseClipName,
 };
