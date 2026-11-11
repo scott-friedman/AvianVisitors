@@ -552,6 +552,12 @@
     box-shadow: 0 2px 6px rgba(26,22,18,0.18);
     pointer-events: none;
   }
+  /* Not yet confirmed (one day, low confidence): quieter than the lifer pill. */
+  .lifer-badge.unconfirmed {
+    color: var(--ink); background: transparent;
+    border: 1px dashed currentColor; box-shadow: none; opacity: 0.62;
+    pointer-events: auto;
+  }
   .bird-card .stat .n {
     color: var(--ink); font: 700 13px/1 ui-serif, Georgia, serif;
     font-variant-numeric: tabular-nums; margin-right: 4px;

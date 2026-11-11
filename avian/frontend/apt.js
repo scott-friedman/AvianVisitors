@@ -543,6 +543,37 @@
   // DOM rebuild for it killed the hovered tile under the cursor and burned
   // real main-thread time on phones. Interactions (animate) always render.
   var _collageSig = null;
+  // Layout-only count: exact up to 8, then snapped to ~12% geometric steps
+  // (9, 10, 11, 12, 14, 15, 17 ... 100, 112, 126 ...). Tile area goes as
+  // count^0.65, so a step moves a bird's width by ~4% at most - invisible -
+  // but it means one more call from a chatty bird no longer changes the layout
+  // signature. Without it the whole flock re-packed (and visibly shuffled) on
+  // nearly every 30 s poll during the dawn chorus. Labels use the exact count.
+  var LAYOUT_STEP = Math.log(1.12);
+  function layoutN(n) {
+    n = Math.max(1, +n || 1);
+    if (n <= 8) return n;
+    return Math.round(Math.exp(Math.round(Math.log(n) / LAYOUT_STEP) * LAYOUT_STEP));
+  }
+  // A poll that changes no layout still carries newer counts: point each
+  // placed tile at its fresh row so the hover pill and title stay exact.
+  function refreshCollageData(items) {
+    var bySci = {};
+    items.forEach(function (s) { bySci[s.sci] = s; });
+    collagePlaced.forEach(function (t) {
+      var s = bySci[t.data.sci];
+      if (!s) return;
+      t.data = s;
+      if (t.el) t.el.title = collageTitle(s);
+    });
+  }
+  function collageTitle(s) {
+    // "calls" (not "heard") because one bird can rack up dozens of
+    // detections in a session; "heard" implies distinct individuals.
+    var n = +s.n || 0;
+    return (s.com || s.sci) + ' · ' + fmtN(n) + ' ' +
+      (n === 1 ? 'call' : 'calls') + ' ' + windowLabel(currentHours);
+  }
   function renderCollage(items, animate) {
     if (!items.length) {
       collage.innerHTML = '<p class="empty">no birds heard in this window.</p>';
@@ -552,9 +583,16 @@
     }
     var W = collage.clientWidth, H = collage.clientHeight;
     if (!W || !H) { setTimeout(function () { renderCollage(items, animate); }, 80); return; }
+    // The API orders by most-recently-heard, which reshuffles on every call.
+    // Sort by name so neither the signature nor the packer's tie-breaks
+    // (equal-area tiles keep input order) depend on who sang last.
+    items = items.slice().sort(function (a, b) { return a.sci < b.sci ? -1 : a.sci > b.sci ? 1 : 0; });
     var sig = W + 'x' + H + '|' + currentHours + '|' +
-      items.map(function (s) { return s.sci + ':' + s.n; }).join(',');
-    if (!animate && sig === _collageSig && collage.querySelector('.gtile')) return;
+      items.map(function (s) { return s.sci + ':' + layoutN(s.n); }).join(',');
+    if (!animate && sig === _collageSig && collage.querySelector('.gtile')) {
+      refreshCollageData(items);
+      return;
+    }
     _collageSig = sig;
     collage.innerHTML = '';
 
@@ -585,7 +623,7 @@
       if (!mask && pose === 2) { pose = 1; slug = base; mask = loadMask(slug); collagePose[s.sci] = 1; }
       if (!mask) return null;
       var d = DIMS[slug];
-      var n = +s.n; if (!n || isNaN(n)) n = 1;
+      var n = layoutN(s.n);
       return {
         mask: mask, data: s, pose: pose,
         ar: d ? d[0] / d[1] : 1.4,
@@ -674,6 +712,24 @@
       placed.forEach(function (t) { if (t.x > -1000) { t.x += dx; t.y += dy; } });
     }
 
+    // Frame mode (?frame=1, the e-ink screenshot): grow the finished cluster to
+    // fill the 800x480 shot. The packer only ever shrinks, so a typical flock
+    // sat in ~40% of the image and the Pi had to crop + upscale it (blurring
+    // the art before the 7-colour dither). Scaling a valid packing uniformly
+    // about the centre keeps it valid - no repack - and the screenshot then
+    // carries the birds at the size the panel shows them.
+    if (document.documentElement.classList.contains('frame') && isFinite(b.L)) {
+      var grow = Math.min((W * 0.96) / (b.R - b.L), (H * 0.94) / (b.B - b.T));
+      if (grow > 1.01) {
+        placed.forEach(function (t) {
+          if (t.x < -1000) return;
+          t.x = W / 2 + (t.x - W / 2) * grow;
+          t.y = H / 2 + (t.y - H / 2) * grow;
+          t.fullW *= grow; t.fullH *= grow;
+        });
+      }
+    }
+
     placed.forEach(function (r) {
       var s = r.data;
       var img = avImg(s.sci, r.pose === 2 ? 2 : 1);
@@ -684,11 +740,7 @@
       btn.setAttribute('aria-label', s.com);
       // Fallback for keyboard / screen-reader users - the visible hover
       // pill below is the primary affordance for sighted mouse users.
-      // "calls" (not "heard") because one bird can rack up dozens of
-      // detections in a session; "heard" implies distinct individuals.
-      var titleN = +s.n || 0;
-      btn.title = (s.com || s.sci) + ' · ' + fmtN(titleN) + ' ' +
-        (titleN === 1 ? 'call' : 'calls') + ' ' + windowLabel(currentHours);
+      btn.title = collageTitle(s);
       btn.style.left   = r.x + 'px';
       btn.style.top    = r.y + 'px';
       btn.style.width  = r.fullW + 'px';
@@ -1987,7 +2039,7 @@
     // bucket lets lifer badges age out of a window without a data change.
     var atlasSig = JSON.stringify([window.__atlasSort || 'count', currentHours,
       Math.floor(Date.now() / 300000),
-      filtered.map(function (s) { return [s.sci, s.n, winBySci[s.sci] || 0, s.last_seen || '', s.first_seen || '']; })]);
+      filtered.map(function (s) { return [s.sci, s.n, winBySci[s.sci] || 0, s.last_seen || '', s.first_seen || '', s.confirmed]; })]);
     if (!animate && atlasSig === _atlasSig && grid.querySelector('.bird-card')) return;
     _atlasSig = atlasSig;
 
@@ -2018,6 +2070,10 @@
       var win = winBySci[s.sci] || 0;
       var firstMs = Date.parse((s.first_seen || '').replace(' ', 'T'));
       var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMs;
+      // The worker marks a species unconfirmed until it has a strong hit or a
+      // second day (most one-off low-confidence hits are BirdNET mistakes).
+      // An absent field (older worker) counts as confirmed.
+      var unconfirmed = s.confirmed === 0 || s.confirmed === false;
       var sketchSrc = avImg(s.sci, 1);
       var audioSrc = AV_API + '/api/recording?sci=' + encodeURIComponent(s.sci);
       // The "all time" window makes the windowed count identical to the
@@ -2029,7 +2085,8 @@
           + '<div><span class="n">' + fmtNK(total) + '</span><span class="lbl-inline">all time</span></div>';
       return ''
         + '<article class="bird-card" data-sci="' + esc(s.sci) + '" data-audio="' + esc(audioSrc) + '">'
-        +   (isLifer ? '<span class="lifer-badge" title="new to the life list in this window">lifer</span>' : '')
+        +   (unconfirmed ? '<span class="lifer-badge unconfirmed" title="heard on one day only, at low confidence. it is confirmed after a second day or one clear call.">unconfirmed</span>'
+                        : isLifer ? '<span class="lifer-badge" title="new to the life list in this window">lifer</span>' : '')
         +   '<div class="stat">' + statRows + '</div>'
         +   '<div class="img-wrap">'
         +     '<img loading="lazy" decoding="async" src="' + sketchSrc + '" alt="' + esc(s.com) + '">'
@@ -2549,10 +2606,11 @@
       var winRow = ((DATA.recent && DATA.recent.species) || []).filter(function (x) { return x.sci === sci; })[0];
       document.getElementById('modalWindow').textContent = (winRow ? +winRow.n : 0).toLocaleString();
       document.getElementById('modalFirstSeen').textContent = s.first_seen ? fmtRecTime(s.first_seen.split(' ')[0], s.first_seen.split(' ')[1]) : '-';
-      var rar = rarityLabel(+s.total || 0, s.first_seen);
+      var rar = (s.confirmed === 0 || s.confirmed === false)
+        ? 'unconfirmed' : rarityLabel(+s.total || 0, s.first_seen);
       var rarEl = document.getElementById('modalRarity');
       rarEl.textContent = rar;
-      if (rar === 'rare') rarEl.classList.add('rare');
+      if (rar === 'rare' || rar === 'unconfirmed') rarEl.classList.add('rare');
       var dets = j.detections || [];
       document.getElementById('modalRecCount').textContent = dets.length + ' captured';
       document.getElementById('modalRecordings').innerHTML = dets.length
