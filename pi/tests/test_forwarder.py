@@ -164,3 +164,25 @@ def test_find_clip_matches_by_time_suffix(tmp_path, monkeypatch):
     assert path and path.endswith(base)
     assert _real_find_clip("2026-06-19", "23:59:59", "American Robin") == (None, None)
     assert _real_find_clip("2026-06-20", "07:48:01", "American Robin") == (None, None)
+
+
+def test_half_written_line_is_reread_once_complete(tmp_path, monkeypatch):
+    """BirdNET mid-append: the tail has no newline yet. It must not be yielded
+    (and so never parsed or skipped past) until the rest of the line lands."""
+    db = tmp_path / "BirdDB.txt"
+    full = "2026-06-19;07:48:01;Turdus migratorius;American Robin;0.91;1;2;3;4;5;6\n"
+    db.write_text("header;line\n" + full[:30])
+    monkeypatch.setattr(fwd, "STATE_FILE", str(tmp_path / "state.json"))
+    fwd.save_state(0, db.stat().st_ino)
+
+    def finish_the_line(_secs):
+        with open(db, "a") as fh:
+            fh.write(full[30:])
+        monkeypatch.setattr(fwd.time, "sleep", lambda s: None)
+
+    monkeypatch.setattr(fwd.time, "sleep", finish_the_line)
+    gen = fwd.follow(str(db))
+    assert next(gen)[0] == "header;line\n"
+    line, offset, _ = next(gen)
+    assert line == full
+    assert offset == db.stat().st_size

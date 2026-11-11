@@ -72,6 +72,7 @@ DEFAULTS = {
     "panel": "",            # force a driver module (e.g. "inky_ac073tc1") if auto() fails
     "quiet_start": 0, "quiet_end": 0,    # 0/0 = no quiet hours
     "heal_hours": 24,
+    "min_refresh_minutes": 15,  # shortest gap between two panel redraws (each one flashes ~40 s); 0 = no limit
     "state": "~/.birdframe/state.json",
     "timeout": 45,
     "basic_user": None, "basic_pass": None,
@@ -130,7 +131,10 @@ def signature(species):
 
 
 # --- image ------------------------------------------------------------------
-def get_image(src, timeout, auth=None):
+def get_image(src, timeout, auth=None, meta=None):
+    """Load the frame image. If ``meta`` (a dict) is given, ``meta["stale"]`` is
+    set when the worker answered with its last good frame because the render
+    failed (``X-Frame-Cache: stale``) — the picture does NOT match the data."""
     if re.match(r"^https?://", src):
         req = urllib.request.Request(src, headers={"User-Agent": "AvianVisitors-frame/1.0"})
         # Also send any ?k= frame key as X-Frame-Key: the worker prefers the
@@ -142,6 +146,8 @@ def get_image(src, timeout, auth=None):
         if auth:
             req.add_header("Authorization", auth)
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            if meta is not None:
+                meta["stale"] = (r.headers.get("X-Frame-Cache") or "").lower() == "stale"
             return Image.open(io.BytesIO(r.read(20_000_000))).convert("RGB")
     return Image.open(os.path.expanduser(src)).convert("RGB")
 
@@ -255,12 +261,15 @@ def load_state(path):
         return {"signature": None, "last_refresh": 0}
 
 
-def save_state(path, sig, when):
+STALE_RETRY_SECONDS = 30 * 60  # wait this long before re-asking after a stale frame
+
+
+def save_state(path, sig, when, retry_after=0):
     path = os.path.expanduser(path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"signature": sig, "last_refresh": when}, f)
+        json.dump({"signature": sig, "last_refresh": when, "retry_after": retry_after}, f)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)  # atomic: a power cut can't leave a half-written file
@@ -274,11 +283,11 @@ def in_quiet_hours(cfg, hour):
 
 
 # --- run --------------------------------------------------------------------
-def obtain_image(cfg):
+def obtain_image(cfg, meta=None):
     src = cfg["image_url"] or cfg["image"]
     if not src:
         raise ValueError("set image_url (the /frame.png URL) or image in config")
-    return get_image(src, cfg["timeout"], _auth(cfg))
+    return get_image(src, cfg["timeout"], _auth(cfg), meta)
 
 
 def run(cfg, preview=None, force=False, use_signature=True):
@@ -304,6 +313,16 @@ def run(cfg, preview=None, force=False, use_signature=True):
         if not changed and not heal_due:
             print("no change; skip")
             return
+        min_gap = float(cfg.get("min_refresh_minutes") or 0) * 60
+        if min_gap and 0 <= now - state.get("last_refresh", 0) < min_gap:
+            # The birds changed, but the panel was redrawn a moment ago. Wait:
+            # the signature is not saved, so the change is picked up on the
+            # first timer tick after the gap has passed.
+            print("changed, but redrawn too recently; waiting")
+            return
+        if now < state.get("retry_after", 0):
+            print("last render was stale; backing off")
+            return
         print("refresh:", "changed" if changed else "heal")
 
     # rotate=90/270 (portrait mount): fit into the SWAPPED box (480x800) so
@@ -311,8 +330,19 @@ def run(cfg, preview=None, force=False, use_signature=True):
     # landscape box first would rotate to 480x800 and get force-resized (squashed).
     rot = int(cfg.get("rotate") or 0) % 360
     box = (PANEL_H, PANEL_W) if rot in (90, 270) else (PANEL_W, PANEL_H)
+    meta = {}
     try:
-        raw = obtain_image(cfg)
+        raw = obtain_image(cfg, meta)
+        if meta.get("stale") and not force and not preview:
+            # The worker's render failed and it sent its LAST GOOD frame. Pushing
+            # it and saving the new signature would pin an out-of-date picture on
+            # the panel until the birds next change. Keep the panel as it is, keep
+            # the old signature (so the change is still pending), and back off —
+            # every retry costs the worker a metered browser launch.
+            print("worker sent a stale frame (render failed); will retry later", file=sys.stderr)
+            save_state(cfg["state"], state.get("signature"), state.get("last_refresh", 0),
+                       now + STALE_RETRY_SECONDS)
+            return
         if cfg.get("fill"):
             raw = autocrop(raw, pad=int(cfg.get("fill_pad") or 16))
         inset = cfg.get("inset") or []

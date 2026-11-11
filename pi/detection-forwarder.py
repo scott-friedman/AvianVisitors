@@ -243,10 +243,16 @@ def follow(path: str):
         f.seek(0)                            # rotation/truncation: read the new file from the start
     save_state(f.tell(), inode)              # persist now so a quick restart resumes here, not at a newer EOF
     while True:
+        pos = f.tell()
         line = f.readline()
-        if line:
+        if line.endswith("\n"):
             yield line, f.tell(), inode
             continue
+        if line:
+            # A half-written line (BirdNET is mid-append). Parsing it now would
+            # either drop the detection or post a truncated one, and the offset
+            # would move past it. Rewind and read it again once it is complete.
+            f.seek(pos)
         time.sleep(1)
         try:
             st = os.stat(path)

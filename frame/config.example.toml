@@ -32,6 +32,7 @@ saturation = 0.7       # Inky colour saturation, 0 to 1
 quiet_start = 0        # 0/0 = always refresh on change; e.g. 22 and 6 mutes 22:00-06:00
 quiet_end = 0
 heal_hours = 24        # force a refresh at least this often
+min_refresh_minutes = 15  # shortest gap between two redraws (each flashes ~40 s); 0 = no limit
 
 # Paths.
 state = "~/.birdframe/state.json"
