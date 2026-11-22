@@ -122,6 +122,8 @@
     perKey: 2,                  // takes of the same key kept per clip (a repeated call)
     bodyCents: 100,             // the call is "on the note" while within a semitone of it
     pickBand: 0.8,              // keys go to different birds only among near-equal notes
+    oddSemis: 12,               // a one-off note this far outside a bird's usual range is doubted
+    hpRatio: 0.45, hpMaxHz: 3500,   // playback cuts rumble below this × the note (see rumbleCut)
     minPurity: 0.3,             // a note must own this share of the sound around it
     maxSd: 32,                  // ...hold its pitch this steadily (cents)...
     minRelDb: -30,              // ...and not be a faint bird far behind the main one
@@ -135,6 +137,13 @@
     // arr is scratch: sorts its first n entries in place.
     var v = arr.subarray(0, n); v.sort();
     return n ? v[n >> 1] : 0;
+  }
+
+  // Where playback's rumble filter sits for a note at `hz`: more than an octave
+  // under it (so a call's own slide up from below survives), never above
+  // hpMaxHz. One definition, shared by the analysis (purity) and the page.
+  function rumbleCut(hz) {
+    return Math.max(120, Math.min(CFG.hpMaxHz, hz * CFG.hpRatio));
   }
 
   // Listen to one clip. pcm: Float32Array (mono), sr: its sample rate.
@@ -405,6 +414,18 @@
             dsum += D[R.t0 + i];
           }
           var sd = Math.sqrt(vs / (tot || 1));
+          // Purity = this sound's share of everything else going on while it
+          // holds its note — judged over what playback lets through. The page
+          // cuts all sound well below the note (rumbleCut), so a truck or a
+          // crow down there does not make a kinglet's note any less clean.
+          var cutB = Math.round(rumbleCut(midiToHz(pitchC / 100)) / binHz) - b0;
+          if (cutB > lo) {
+            dsum = 0;
+            for (i = w0; i <= w1; i++) {
+              row = (R.t0 + i) * nb; g = gain[R.t0 + i];
+              for (b = cutB; b <= hi; b++) { dv = P[row + b] - floor[b] * g; if (dv > 0) dsum += dv; }
+            }
+          }
           var purity = dsum > 0 ? Math.min(1, tot / dsum) : 0;
           // Sample bounds. [s0,s1] is the steady part alone — the "pure note".
           // [t0,t1] is the bird's whole syllable around it: the slide up into the
@@ -462,7 +483,7 @@
       var du = 0.25 + 0.75 * clamp01((nt.steadyMs - 40) / 150);
       var lv = 0.55 + 0.45 * clamp01(1 + nt.rel / 26);
       var ce = (nt.mid >= cLo && nt.mid <= cHi) ? 1 : 0.8;
-      nt.q = Math.pow(nt.purity, 0.35) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce;
+      nt.q = Math.pow(nt.purity, 0.5) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce;
       nt.dur = nt.t1 - nt.t0;
       delete nt.e; delete nt.mid;
       if (nt.purity < cfg.minPurity || nt.sd > cfg.maxSd || nt.rel < cfg.minRelDb) continue;
@@ -618,7 +639,13 @@
   //   - whether the SAME species sings near that pitch in its OTHER recordings.
   //     A clip often has a second bird in the background; a pitch this species
   //     hits in one clip only is more likely the neighbour than the bird named.
-  // Sets note.key, note.cents, note.sup, note.rank on each note. Notes need
+  // And a note heard in one clip only, lying more than an octave outside
+  // everything the bird sings in two or more of its clips, is flagged `odd`: on
+  // the yard's real recordings those were a mourning dove cooing behind a phoebe,
+  // a kinglet over a woodpecker. An odd note can still hold a key nobody else
+  // has (it is a real sound from the yard), but it is the last choice for one,
+  // it stays out of the bird's solo board, and the page says so.
+  // Sets note.key, .cents, .sup, .odd, .rank on each note. Notes need
   // { sci, clip, midi, q }.
   function rankNotes(notes) {
     var bySci = {}, i;
@@ -626,6 +653,7 @@
     Object.keys(bySci).forEach(function (sci) {
       var list = bySci[sci], clips = {}, nClips = 0;
       list.forEach(function (n) { if (!clips[n.clip]) { clips[n.clip] = 1; nClips++; } });
+      var sLo = Infinity, sHi = -Infinity, sN = 0;
       list.forEach(function (n) {
         var seen = {}, sup = 0;
         for (var k = 0; k < list.length; k++) {
@@ -636,7 +664,11 @@
         n.key = keyOf(n.midi);
         n.cents = (n.midi - n.key) * 100;
         n.sup = sup;
-        var trust = sup > 0 ? 1 + 0.1 * Math.min(sup, 3) : (nClips >= 3 ? 0.8 : 1);
+        if (sup > 0) { sN++; if (n.midi < sLo) sLo = n.midi; if (n.midi > sHi) sHi = n.midi; }
+      });
+      list.forEach(function (n) {
+        n.odd = !n.sup && nClips >= 3 && sN >= 2 && (n.midi < sLo - CFG.oddSemis || n.midi > sHi + CFG.oddSemis);
+        var trust = n.sup > 0 ? 1 + 0.1 * Math.min(n.sup, 3) : (n.odd ? 0.5 : (nClips >= 3 ? 0.8 : 1));
         n.rank = n.q * (1 - 0.35 * Math.abs(n.cents) / 50) * trust;
       });
     });
@@ -651,12 +683,13 @@
   //             of the yard, not forty keys of chickadee. But variety never
   //             costs quality: only birds whose note is nearly as good as the
   //             key's best (within CFG.pickBand) are in the running.
-  // opts.sci restricts the board to one species (solo mode).
+  // opts.sci restricts the board to one species (solo mode), minus its `odd`
+  // notes (see rankNotes): a solo board should be that bird and nothing else.
   function buildKeys(notes, opts) {
     var o = opts || {}, keys = {}, i;
     for (i = 0; i < notes.length; i++) {
       var n = notes[i];
-      if (o.sci && n.sci !== o.sci) continue;
+      if (o.sci && (n.sci !== o.sci || n.odd)) continue;        // solo: this bird, and surely this bird
       if (n.key == null) continue;
       var slot = keys[n.key] || (keys[n.key] = {});
       if (o.sci) (slot._all || (slot._all = [])).push(n);         // solo: keep every take
@@ -696,7 +729,7 @@
   function speciesRanges(notes) {
     var by = {};
     notes.forEach(function (n) {
-      if (n.key == null) return;
+      if (n.key == null || n.odd) return;
       var s = by[n.sci] || (by[n.sci] = { sci: n.sci, keys: {}, notes: 0 });
       s.keys[n.key] = 1; s.notes++;
     });
@@ -736,11 +769,24 @@
     return { notes: notes, beats: t, bars: bars, errors: errors };
   }
 
+  // How well a key carries a TUNE, 0..1. Above roughly 4-5 kHz the ear stops
+  // hearing notes as a melody (it hears "high" and "higher", which is why a
+  // piano stops at C8), and half the yard sings up there: on the real recordings
+  // an unweighted fit put Ode to Joy at 7 kHz, every note "right" and no tune
+  // to be heard. So the fitter leans toward the octaves where a melody reads as
+  // one. The keyboard itself is not filtered: every real note stays playable.
+  function melodic(key) {
+    if (key > 108) return Math.max(0.25, 1 - 0.1 * (key - 108));    // C8 = 4186 Hz
+    if (key < 57) return Math.max(0.6, 1 - 0.05 * (57 - key));      // A3: thin, rumbly
+    return 1;
+  }
+
   // Lay a tune onto the notes the birds really have.
-  //   has(key) → 0 if no bird sings that key, else >0 (a 0..1 quality).
+  //   has(key) -> 0 if no bird sings that key, else >0 (a 0..1 quality).
   // Because nothing is re-pitched, the only freedom is WHERE the tune sits: every
-  // whole-semitone transposition is tried and the one that lands the most notes
-  // on real keys wins. A note with no key is then (when fill is on) moved an
+  // whole-semitone transposition is tried, and the one that lands the most of
+  // the tune on real keys, in the octaves a melody can be heard in, on the
+  // better notes, wins. A note with no key is then (when fill is on) moved an
   // octave to a key that exists, else to the nearest key within two semitones,
   // else left silent. `how` on each note says which: exact | octave | near | rest.
   function fitMelody(mel, has, opts) {
@@ -771,7 +817,11 @@
       for (var oc = 1; oc <= 3; oc++) {             // same note name, another octave
         var up = key + 12 * oc, dn = key - 12 * oc;
         var hu = up <= hi && has(up) > 0, hd = dn >= lo && has(dn) > 0;
-        if (hu && hd) return [Math.abs(up - center) <= Math.abs(dn - center) ? up : dn, 'octave'];
+        if (hu && hd) {
+          var mu = melodic(up), md = melodic(dn);
+          if (mu !== md) return [mu > md ? up : dn, 'octave'];
+          return [Math.abs(up - center) <= Math.abs(dn - center) ? up : dn, 'octave'];
+        }
         if (hu) return [up, 'octave'];
         if (hd) return [dn, 'octave'];
       }
@@ -787,11 +837,16 @@
     var VAL = { exact: 1, octave: 0.5, near: 0.2, rest: 0 };
     var bestShift = null, bestScore = -Infinity;
     for (var s = lo - mx - 12; s <= hi - mn + 12; s++) {
-      var score = 0;
+      var score = 0, reg = 0, sounding = 0;
       for (i = 0; i < mel.length; i++) {
         var pl = place(mel[i].m + s, s);
-        score += VAL[pl[1]] + (pl[1] === 'exact' ? 0.05 * Math.min(1, has(pl[0])) : 0);
+        if (pl[0] == null) continue;
+        score += VAL[pl[1]] * (0.8 + 0.2 * Math.min(1, has(pl[0])));
+        reg += melodic(pl[0]); sounding++;
       }
+      // The register counts for the tune as a whole, not note by note: weighing
+      // single notes would make it "cheap" to break the tune's shape up high.
+      if (sounding) score *= reg / sounding;
       score -= 0.0005 * Math.abs(melMid + s - center) * mel.length / 12;
       if (score > bestScore) { bestScore = score; bestShift = s; }
     }
@@ -919,7 +974,7 @@
     analyzeClip: analyzeClip, steadyWindows: steadyWindows, onsetTime: onsetTime,
     cutPcm: cutPcm, cutClip: cutClip,
     keyOf: keyOf, rankNotes: rankNotes, buildKeys: buildKeys, speciesRanges: speciesRanges,
-    parseMelody: parseMelody, fitMelody: fitMelody, rollCall: rollCall,
+    parseMelody: parseMelody, fitMelody: fitMelody, melodic: melodic, rollCall: rollCall, rumbleCut: rumbleCut,
     parseMidi: parseMidi, midiTunePart: midiTunePart, midiMelody: midiMelody
   };
 });

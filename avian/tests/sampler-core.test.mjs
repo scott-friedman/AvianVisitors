@@ -287,6 +287,53 @@ test('speciesRanges ranks birds by how many different notes they sing', () => {
 });
 
 // --------------------------------------------------------------- melody ----
+test('a one-off note far outside a bird\'s usual range is doubted (the neighbour in the background)', () => {
+  // A phoebe heard in three recordings sings around 100-103. One recording
+  // also has a low coo at 75: almost certainly the dove behind it.
+  const notes = S.rankNotes([
+    N('Phoebe', 'a', 100), N('Phoebe', 'b', 100.3), N('Phoebe', 'b', 103), N('Phoebe', 'c', 103.2),
+    N('Phoebe', 'c', 75, 0.9),            // the coo: one clip only, two octaves below everything else
+    N('Phoebe', 'a', 108, 0.9),           // one clip only, but within an octave of its range: not doubted
+    N('Crow', 'x', 75, 0.5),
+  ]);
+  const coo = notes[4], high = notes[5];
+  assert.equal(coo.odd, true);
+  assert.equal(high.odd, false);
+  assert.ok(Math.abs(coo.rank - 0.9 * 0.5) < 1e-9, 'an odd note keeps half its rank');
+  // Flock: still playable (it is a real sound from the yard), but a surer bird wins the key.
+  const B = S.buildKeys(notes);
+  assert.equal(B.keys[75][B.pick[75]].sci, 'Crow');
+  assert.ok(B.keys[75].some((n) => n.sci === 'Phoebe'));
+  // Solo and the range ranking are that bird and nothing else.
+  assert.deepEqual(S.buildKeys(notes, { sci: 'Phoebe' }).list, [100, 103, 108]);
+  assert.deepEqual(S.speciesRanges(notes).find((r) => r.sci === 'Phoebe').keys, [100, 103, 108]);
+  // Too little to go on (fewer than three recordings): nothing is doubted.
+  const few = S.rankNotes([N('Owl', 'a', 60), N('Owl', 'b', 60.1), N('Owl', 'b', 90)]);
+  assert.ok(few.every((n) => !n.odd));
+});
+
+test('fitMelody keeps a tune where it can be heard as one', () => {
+  assert.equal(S.melodic(84), 1);
+  assert.equal(S.melodic(108), 1);
+  assert.ok(S.melodic(112) < 0.7 && S.melodic(120) <= 0.3 && S.melodic(120) > 0);
+  assert.ok(S.melodic(45) < 1 && S.melodic(45) >= 0.6);
+  // Every key from C6 to C9 exists, and the high ones are the "better" notes.
+  // The tune must still land at or below C8, not up where the quality is.
+  const has = (k) => (k >= 84 && k <= 120 ? (k > 108 ? 0.8 : 0.6) : 0);
+  const mel = S.parseMelody('C4 D E F G A B C5').notes;
+  const fit = S.fitMelody(mel, has, { lo: 84, hi: 120 });
+  assert.equal(fit.exact, 8);
+  assert.ok(fit.notes.every((n) => n.key <= 108), 'placed at ' + fit.notes.map((n) => n.key).join(' '));
+  // Worth giving up a little exactness for: the birds have every note up high,
+  // but below C8 one note of the tune is missing and has to borrow an octave.
+  const gap = (k) => (k >= 110 && k <= 122 ? 1 : (k >= 84 && k <= 96 && k !== 88 ? 0.6 : 0));
+  const low = S.fitMelody(mel, gap, { lo: 84, hi: 122 });
+  assert.ok(low.notes.filter((n) => n.key != null && n.key <= 108).length >= 7, 'placed at ' + low.notes.map((n) => n.key).join(' '));
+  // With nothing below C8 at all, the tune still plays up there.
+  const onlyHigh = S.fitMelody(mel, (k) => (k >= 109 && k <= 121 ? 1 : 0), { lo: 109, hi: 121 });
+  assert.equal(onlyHigh.exact, 8);
+});
+
 test('parseMelody: octaves stick, lengths, rests, bars, mistakes', () => {
   const m = S.parseMelody('C4 D:0.5 e:0.5 | F#:2 r G3 | Bb A♭5:1.5 r:0.5 xyz H2');
   assert.deepEqual(m.notes.map((n) => n.m), [60, 62, 64, 66, 55, 58, 80]);

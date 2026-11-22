@@ -110,15 +110,20 @@
     var src = c.createBufferSource();
     src.buffer = buf; src.playbackRate.value = rate;
     // Rumble below the bird (wind, traffic, the house) is not part of its voice.
-    var hp = c.createBiquadFilter();
-    hp.type = 'highpass'; hp.frequency.value = hpHz; hp.Q.value = 0.5;
+    // On the yard's real clips a hum at 300-400 Hz was often LOUDER than a high
+    // note riding over it, so this is a steep cut (two stages, 24 dB/octave)
+    // placed more than an octave under the note: nothing the bird sang is lost.
+    var hp = c.createBiquadFilter(), hp2 = c.createBiquadFilter();
+    hp.type = hp2.type = 'highpass';
+    hp.frequency.value = hp2.frequency.value = hpHz;
+    hp.Q.value = 0.541; hp2.Q.value = 1.307;
     var g = c.createGain();
     var att = offset > 0.002 ? 0.005 : 0.002, rel = Math.min(0.045, outDur * 0.4);
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(level, t + att);
     g.gain.setValueAtTime(level, t + Math.max(att, outDur - rel));
     g.gain.linearRampToValueAtTime(0, t + outDur);
-    src.connect(hp); hp.connect(g); g.connect(master);
+    src.connect(hp); hp.connect(hp2); hp2.connect(g); g.connect(master);
     src.start(t, offset, srcDur + 0.05);
     src.stop(t + outDur + 0.03);
     var v = { src: src, g: g, at: t, dur: outDur };
@@ -156,7 +161,7 @@
     // The whole of "fine-tune": never more than ±50 cents, i.e. under 3 % speed.
     var rate = state.tune ? Math.pow(2, -clamp(n.cents, -50, 50) / 1200) : 1;
     var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, 2.5);
-    return startVoice(buf, when, a, z - a, rate, level, clamp(n.hz * 0.45, 120, 1500), maxOut);
+    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), maxOut);
   }
   function playPhrase(ph) {
     if (!ph || !audio()) return null;
@@ -803,7 +808,10 @@
       '<div class="pn-art" style="--c:var(--ch-' + species[n.sci].hue + ')">' + birdImg(n.sci, n.com) + '</div>' +
       '<div class="pn-text">' +
         '<div class="pn-name"><b>' + esc(n.com) + '</b><span class="pn-note">' + esc(S.noteName(k)) + '</span></div>' +
-        '<div class="pn-meta">' + esc((clipWhen(n.clip) ? 'recorded ' + clipWhen(n.clip) + ' · ' : '') + tuningText(n)) + '</div>' +
+        // Honest about a doubtful credit (sampler-core's rankNotes): the sound is
+        // real and from this bird's recording, but perhaps not from this bird.
+        '<div class="pn-meta"' + (n.odd ? ' title="Heard in only one of this bird\u2019s recordings, and far from its usual notes."' : '') + '>' +
+          esc((n.odd ? 'may be a neighbour in the background · ' : '') + (clipWhen(n.clip) ? 'recorded ' + clipWhen(n.clip) + ' · ' : '') + tuningText(n)) + '</div>' +
         (others ? '<div class="pn-others">' + others + '</div>' : '') +
       '</div>' +
       '<div class="pn-actions">' +
