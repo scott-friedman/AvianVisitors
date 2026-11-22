@@ -17,8 +17,11 @@
 //   - Node (module.exports), for avian/tests/sampler-core.test.mjs.
 //
 // TRUE SOUNDS ONLY. Nothing here synthesises, stretches or re-pitches audio. The
-// analysis only MEASURES; playback (instrument.js) plays the recorded samples as
-// they are, with at most a ±50 cent nudge so a note lands on its key.
+// analysis MEASURES, and the one thing it changes is the background: when a note
+// is cut out, whatever is not the call (steady hiss, hum, rumble) is turned down
+// by CFG.cleanDb — turned down, never removed, and nothing is added. Playback
+// (instrument.js) plays those samples with at most a ±50 cent nudge so a note
+// lands on its key.
 //
 // This is deliberately NOT spectral-core.js. That file is the song-signature
 // analysis (240 coarse columns, one ridge, the 1.8–8.5 kHz songbird band) and
@@ -38,6 +41,7 @@
       try {
         res = api.analyzeClip(m.pcm, m.sr, m.opts);
         if (m.opts && m.opts.cut) transfer = api.cutClip(m.pcm, m.sr, res, m.opts);
+        delete res.nr;
       } catch (e) { res = { error: String((e && e.message) || e), notes: [], phrase: null }; transfer = []; }
       root.postMessage({ id: m.id, result: res }, transfer);
     };
@@ -47,7 +51,7 @@
 
   // Bump when the analysis changes in a way that alters its output: instrument.js
   // keys its IndexedDB cache of per-clip results on this.
-  var VERSION = 1;
+  var VERSION = 2;
 
   // ---------------------------------------------------------------- FFT ----
   // In-place radix-2 FFT with cached bit-reversal + twiddle tables (a few
@@ -119,6 +123,19 @@
     steadyBand: 110,            // cents a note's pitch may wander and still be "one note"
     minSteadyMs: 48,
     preMs: 90, postMs: 320,     // most of the bird's own lead-in / tail kept around it
+    singMs: 1500,               // how far past its note a call is followed ("sings on")...
+    singGapMs: 600,             // ...until the bird pauses for longer than this (a held key
+                                //    then gives a call, its pause, and the call again)
+    liveOwn: 0.08, liveMax: 0.04,   // "still calling": ridges within this × the note's own level
+                                //    (and never asking for more than liveMax × the clip's loudest)
+    junkUp: 2,                  // ...or noise takes over: sound no ridge accounts for, this many ×
+    junkOwn: 0.5,               //    the steady hiss, at least this × the note, and louder than
+    junkMs: 50,                 //    the ridges — for this long (a rustle, rain, a door, a gust)
+    cleanDb: 12,                // steady background around a call is turned down this far (0 = off)
+    loudK: 12,                  // ...but a bin this many × above its own floor is left alone
+    bgOk: -3, bgBad: 9,         // noise around a note, in dB next to the note: fine below bgOk,
+    bgMax: 12,                  //    marked down towards bgBad, not used at all above bgMax
+    singBonus: 0.2,             // a note the bird sings on from is preferred by up to this much
     perKey: 2,                  // takes of the same key kept per clip (a repeated call)
     bodyCents: 100,             // the call is "on the note" while within a semitone of it
     pickBand: 0.8,              // keys go to different birds only among near-equal notes
@@ -150,7 +167,9 @@
   // Listen to one clip. pcm: Float32Array (mono), sr: its sample rate.
   // Returns { sr, dur, notes: [...], phrase: {t0,t1,snr} | null }. Every time is
   // in seconds from the start of the clip. A note is:
-  //   t0,t1   the bird's whole syllable around the note (what gets cut out)
+  //   t0,t1   the bird's whole syllable around the note
+  //   z1      where the bird's call ends after it (>= t1): the rest of the
+  //           phrase, up to its next real pause. What gets cut out is t0..z1.
   //   b0,b1   the "body": the stretch of it that stays within a semitone of the note
   //   s0,s1   the steady part alone (what the pitch was measured on)
   //   hz,midi its pitch (midi is fractional: 93.31 = a slightly sharp A6)
@@ -307,6 +326,38 @@
     var relMin = loudest * Math.pow(10, cfg.relFloorDb / 10);
     tracks = tracks.filter(function (x) { return x.eMean >= relMin; });
     tracks.sort(function (x, y) { return x.fMed - y.fMed; });
+
+    // What is "the call" and what is background, bin by bin: used when a note is
+    // cut out (cutClip turns the background down), to tell a bird singing on
+    // from a rustle, and to say how noisy a note is.
+    //   ridge  a ridge runs through the bin: the tonal part of a call.
+    //   pass   that, plus any bin standing far above its own usual level: a
+    //          harsh caw, a click, a fast trill no ridge could follow. Measured
+    //          against the bin's steady floor and nothing else, so only what is
+    //          ALWAYS there (hiss, hum, rumble) counts as background. The first
+    //          cut of this judged a frame against its own average instead, and
+    //          on the real clips that turned a loud jay or cardinal into "noise".
+    //   ridgeP what each ridge carries (its lobe, above the floor), at its bin.
+    var ridge = new Uint8Array(T * nb), pass = new Uint8Array(T * nb), ridgeP = new Float32Array(T * nb);
+    var maxRidge = 0;
+    for (i = 0; i < tracks.length; i++) {
+      tr = tracks[i];
+      for (j = -2; j < tr.n + 2; j++) {             // two frames early (the attack) and late
+        t = tr.t0 + j;
+        if (t < 0 || t >= T) continue;
+        var tq = j < 0 ? 0 : (j >= tr.n ? tr.n - 1 : j);
+        var cb = Math.max(0, Math.min(nb - 1, Math.round(tr.f[tq] / binHz) - b0));
+        if (j >= 0 && j < tr.n) { ridgeP[t * nb + cb] += tr.e[j]; if (tr.e[j] > maxRidge) maxRidge = tr.e[j]; }
+        for (b = Math.max(0, cb - 3); b <= Math.min(nb - 1, cb + 3); b++) ridge[t * nb + b] = 1;
+      }
+    }
+    for (t = 0; t < T; t++) {
+      row = t * nb;
+      for (b = 0; b < nb; b++) if (ridge[row + b]) pass[row + b] = 1;
+      for (b = 1; b < nb - 1; b++) {
+        if (P[row + b] >= floor[b] * cfg.loudK) { pass[row + b - 1] = 1; pass[row + b] = 1; pass[row + b + 1] = 1; }
+      }
+    }
 
     // --- 5. Stack harmonics ---
     // A ridge that shadows a lower one at 2×, 3×, 4×… is that sound's overtone,
@@ -550,6 +601,7 @@
       var tn = (nt.div > 1 ? 0.8 : (nt.harm >= 3 ? 0.92 : 1)) * (0.5 + 0.5 * clamp01((nt.tone - 0.6) / 0.25));
       nt.q = Math.pow(nt.purity, 0.5) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce * tn;
       nt.dur = nt.t1 - nt.t0;
+      nt.z1 = nt.t1;
       delete nt.e; delete nt.mid;
       if (nt.purity < cfg.minPurity || nt.sd > cfg.maxSd || nt.rel < cfg.minRelDb) continue;
       if (nt.q >= cfg.minQ) notes.push(nt);
@@ -600,7 +652,89 @@
       var mean = 0; for (t = pa; t <= pb; t++) mean += Es[t];
       mean /= (pb - pa + 1);
       out.phrase = { t0: ph0, t1: ph1, snr: 10 * Math.log((mean + eps) / (medE + eps)) / Math.LN10 };
+
+      // --- 9. How far the bird sings on after each note ---
+      // One syllable is a note; the run of syllables after it is what makes it
+      // a BIRD. Follow the call past the note until it pauses for longer than
+      // singGapMs (or singMs is up).
+      //
+      // "Calling" is judged on the RIDGES, not on loudness: on the yard's real
+      // clips a whistle is often no louder than the hiss across the whole band
+      // (it only stands out in its own few bins), so a loudness gate threw most
+      // calls away. A ridge is by construction a tone well clear of the noise,
+      // so the bird is calling while ridges carry something within reach of the
+      // note's own level. And it is NOT a call when a lot of sound turns up that
+      // no ridge accounts for — well above the usual hiss, loud next to the
+      // note, and louder than whatever ridges there are: a rustle, rain, a door.
+      //
+      // Both are heard the way the note will be played: only above its rumble
+      // cut. A dove cooing on under a kinglet is filtered out of that key, so
+      // it is not the kinglet singing on, and a thump down there is no bother.
+      var gapF = Math.max(1, Math.round(cfg.singGapMs / hopMs));
+      var junkF = Math.max(1, Math.round(cfg.junkMs / hopMs));
+      // Es trails the sound (a 50 ms mean over windows N long), and so do the
+      // means below: the note's own dying echo in them must not be mistaken
+      // for the bird singing on.
+      var echoF = Math.ceil((50 + 500 * N / sr) / hopMs) + 1;
+      var frameOf = function (sec) { return Math.max(0, Math.min(T - 1, Math.round((sec * sr - N / 2) / H))); };
+      var gmin2 = Math.pow(10, -cfg.cleanDb / 10), quiet = [];
+      var Rb = new Float32Array(T), Xb = new Float32Array(T);
+      for (i = 0; i < notes.length; i++) {
+        nt = notes[i];
+        var hpB = Math.max(lo, Math.ceil(rumbleCut(nt.hz) / binHz) - b0);
+        var fa0 = frameOf(nt.s0), fa1 = frameOf(nt.s1);
+        var f1 = frameOf(nt.t1), fEnd = frameOf(nt.t1 + cfg.singMs / 1000);
+        // From the note's steady part to as far as the call may be followed:
+        // what the ridges carry (Rb) and what nothing accounts for beyond the
+        // steady hiss (Xb), frame by frame, then as 50 ms means.
+        var hissB = 0;
+        for (b = hpB; b <= hi; b++) hissB += floor[b];
+        var fr0 = Math.max(0, fa0 - sm);
+        for (t = fr0; t <= fEnd; t++) {
+          row = t * nb;
+          var rsum = 0, xsum = 0;
+          for (b = hpB; b <= hi; b++) { rsum += ridgeP[row + b]; if (!ridge[row + b]) xsum += P[row + b]; }
+          Rb[t] = rsum; Xb[t] = xsum > hissB ? xsum - hissB : 0;
+        }
+        var runR = 0, runX = 0, own = 0, lastOn = f1, hush = 0, junk = 0, live = 0, loud = 0;
+        for (t = fr0; t <= fEnd; t++) {
+          runR += Rb[t]; runX += Xb[t];
+          if (t - sm >= fr0) { runR -= Rb[t - sm]; runX -= Xb[t - sm]; }
+          var cnt = Math.min(t - fr0 + 1, sm), rs = runR / cnt, xs = runX / cnt;
+          if (t <= fa1) { if (t >= fa0 && rs > own) own = rs; continue; }
+          if (t <= f1) continue;
+          if (t === f1 + 1) {
+            if (!(own > 0)) break;
+            live = Math.min(maxRidge * cfg.liveMax, own * cfg.liveOwn);
+            loud = Math.max(own * cfg.junkOwn, hissB * cfg.junkUp);
+          }
+          if (xs >= loud && rs < xs) {
+            if (++junk > junkF) break;              // the noise wins from here: stop before it
+            hush = 0;
+          } else if (rs >= live && t > f1 + echoF) { lastOn = t; junk = 0; hush = 0; }
+          else if (++hush > gapF) break;
+        }
+        if (lastOn > f1) nt.z1 = Math.min(dur, Math.max(nt.t1, centerSec(lastOn) + 0.03));
+        // How noisy the note itself is: everything around its tone, as it will
+        // be played (above the rumble cut, the steady background already turned
+        // down), against the tone. In dB: 0 = as much noise as note. A rough
+        // voice counts as noise here too; that is what `tone` and `purity`
+        // already say about it, in other words.
+        var fz0 = frameOf(nt.b0), fz1 = frameOf(nt.b1), toneE = 0, restN = 0;
+        for (t = fz0; t <= fz1; t++) {
+          row = t * nb;
+          for (b = hpB; b <= hi; b++) {
+            pw = P[row + b];
+            if (ridge[row + b]) toneE += pw; else restN += pass[row + b] ? pw : pw * gmin2;
+          }
+        }
+        nt.bg = 10 * Math.log((restN + eps) / (toneE + eps)) / Math.LN10;
+        if (nt.bg <= cfg.bgMax) quiet.push(nt);     // too loud a background: not used at all
+      }
+      out.notes = quiet;
     }
+    // Scratch for cutClip (which removes it): what is call and what is background.
+    out.nr = { N: N, H: H, T: T, b0: b0, nb: nb, pass: pass };
     return out;
   }
 
@@ -651,17 +785,98 @@
     for (i = 0; i < n; i++) out[i] = Math.round(pcm[a + i] * g * 32767);
     return { pcm: out, gain: g };
   }
+  // Samples [a,z) of the clip with the background turned down: every STFT bin
+  // that analyzeClip did not mark as part of a call (nr.pass) is scaled by
+  // cleanDb, the rest is left exactly as recorded, and the frames are overlap-
+  // added back. Nothing is added and nothing is gated to silence, so there is no
+  // "underwater" warble: the hiss is still there, a good deal quieter.
+  function cleanSlice(pcm, sr, nr, a, z) {
+    var N = nr.N, H = nr.H, nb = nr.nb, b0 = nr.b0, half = N >> 1;
+    var n = z - a, out = new Float32Array(n), wsum = new Float32Array(n);
+    var gmin = Math.pow(10, -CFG.cleanDb / 20), i, k, b;
+    var win = new Float32Array(N);
+    for (i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
+    var re = new Float32Array(N), im = new Float32Array(N), G = new Float32Array(half + 1), Gs = new Float32Array(half + 1);
+    var f0 = Math.max(0, Math.floor((a - N) / H) + 1), f1 = Math.min(nr.T - 1, Math.floor((z - 1) / H));
+    for (var f = f0; f <= f1; f++) {
+      var off = f * H, row = f * nb;
+      for (i = 0; i < N; i++) { re[i] = pcm[off + i] * win[i]; im[i] = 0; }
+      fft(re, im);
+      for (k = 0; k <= half; k++) { b = k - b0; G[k] = (b >= 0 && b < nb && nr.pass[row + b]) ? 1 : gmin; }
+      Gs[0] = G[0]; Gs[half] = G[half];             // soften the mask's edges across frequency
+      for (k = 1; k < half; k++) Gs[k] = 0.25 * G[k - 1] + 0.5 * G[k] + 0.25 * G[k + 1];
+      for (k = 0; k <= half; k++) {
+        re[k] *= Gs[k]; im[k] *= -Gs[k];            // (negated: inverse FFT by conjugation)
+        if (k > 0 && k < half) { re[N - k] *= Gs[k]; im[N - k] *= -Gs[k]; }
+      }
+      fft(re, im);
+      for (i = 0; i < N; i++) {
+        var q = off + i - a;
+        if (q < 0 || q >= n) continue;
+        out[q] += (re[i] / N) * win[i];
+        wsum[q] += win[i] * win[i];
+      }
+    }
+    for (i = 0; i < n; i++) out[i] = wsum[i] > 0.05 ? out[i] / wsum[i] : pcm[a + i] * gmin;
+    return out;
+  }
+
+  // The loudest the sound gets between two times: the highest RMS of any 50 ms
+  // stretch (stepped by 10 ms). 0 when there is less than 60 ms to measure.
+  function loudestOf(pcm, sr, from, to) {
+    var a = Math.max(0, Math.round(from * sr)), z = Math.min(pcm.length, Math.round(to * sr));
+    var w = Math.round(0.05 * sr), step = Math.max(1, Math.round(0.01 * sr)), best = 0;
+    if (z - a < Math.round(0.06 * sr)) return 0;
+    for (var i = a; i + w <= z; i += step) {
+      var e = 0;
+      for (var j = i; j < i + w; j++) e += pcm[j] * pcm[j];
+      if (e > best) best = e;
+    }
+    return Math.sqrt(best / w);
+  }
+  // A copy of x with everything below `hz` filtered away, the way the page
+  // plays a note (two high-pass stages = 24 dB per octave at rumbleCut). Only
+  // for MEASURING how loud a slice will sound; the samples that are kept are
+  // not filtered here.
+  function heardAbove(x, sr, hz) {
+    var y = new Float32Array(x.length), src = x, qs = [0.541, 1.307];
+    for (var s = 0; s < 2; s++) {
+      var w = 2 * Math.PI * Math.min(hz, sr * 0.45) / sr, cs = Math.cos(w), al = Math.sin(w) / (2 * qs[s]);
+      var a0 = 1 + al, k0 = (1 + cs) / 2 / a0, k1 = -(1 + cs) / a0, a1 = -2 * cs / a0, a2 = (1 - al) / a0;
+      var x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (var i = 0; i < src.length; i++) {
+        var xi = src[i], yi = k0 * xi + k1 * x1 + k0 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = xi; y2 = y1; y1 = yi; y[i] = yi;
+      }
+      src = y;
+    }
+    return y;
+  }
   // Attach the playable samples to an analyzeClip() result: note.pcm for every
   // note (note.rms is rescaled to match), and — with opts.phrase — phrase.pcm.
+  // A note's samples run from t0 to z1: its syllable and then the rest of the
+  // call. note.tail is the loudest that "rest" gets, on the same scale as rms,
+  // so playback can keep the note in front of what follows it.
   // Returns the list of ArrayBuffers, ready to hand to postMessage as transfers.
   function cutClip(pcm, sr, res, opts) {
     var o = opts || {}, bufs = [], c;
+    var nr = res.nr, clean = !!(nr && CFG.cleanDb > 0 && o.clean !== false);
     for (var i = 0; i < res.notes.length; i++) {
       var n = res.notes[i];
-      c = cutPcm(pcm, sr, n.t0, n.t1);
-      n.pcm = c.pcm; n.rms *= c.gain;
+      var end = n.z1 > n.t1 ? n.z1 : n.t1;
+      var a = Math.max(0, Math.floor(n.t0 * sr)), z = Math.min(pcm.length, Math.ceil(end * sr)), base = a / sr;
+      // The note's slice — with the steady background turned down, unless told
+      // not to. Its loudness is measured on what will actually be heard: this
+      // slice, above the note's rumble cut.
+      var sl = clean ? cleanSlice(pcm, sr, nr, a, z) : pcm.subarray(a, z);
+      c = cutPcm(sl, sr, 0, sl.length / sr);
+      var heard = heardAbove(sl, sr, rumbleCut(n.hz));
+      n.rms = rmsOf(heard, sr, n.s0 - base, n.s1 - base) * c.gain;
+      n.tail = loudestOf(heard, sr, n.b1 - base, end - base) * c.gain;
+      n.pcm = c.pcm;
       bufs.push(c.pcm.buffer);
     }
+    delete res.nr;
     if (res.phrase && o.phrase) {
       c = cutPcm(pcm, sr, res.phrase.t0, res.phrase.t1);
       res.phrase.pcm = c.pcm;
@@ -711,7 +926,7 @@
   // has (it is a real sound from the yard), but it is the last choice for one,
   // it stays out of the bird's solo board, and the page says so.
   // Sets note.key, .cents, .sup, .odd, .rank on each note. Notes need
-  // { sci, clip, midi, q }.
+  // { sci, clip, midi, q }; bg, t1 and z1 are used when they are there.
   function rankNotes(notes) {
     var bySci = {}, i;
     for (i = 0; i < notes.length; i++) (bySci[notes[i].sci] = bySci[notes[i].sci] || []).push(notes[i]);
@@ -734,7 +949,12 @@
       list.forEach(function (n) {
         n.odd = !n.sup && nClips >= 3 && sN >= 2 && (n.midi < sLo - CFG.oddSemis || n.midi > sHi + CFG.oddSemis);
         var trust = n.sup > 0 ? 1 + 0.1 * Math.min(n.sup, 3) : (n.odd ? 0.5 : (nClips >= 3 ? 0.8 : 1));
-        n.rank = n.q * (1 - 0.35 * Math.abs(n.cents) / 50) * trust;
+        // Two things about the slice the note is cut from (when they are known):
+        // noise around the note marks it down, and a note the bird sings on
+        // from is worth a little more than one that just stops.
+        var clear = n.bg > CFG.bgOk ? Math.max(0.5, 1 - 0.5 * (n.bg - CFG.bgOk) / (CFG.bgBad - CFG.bgOk)) : 1;
+        var on = n.z1 > n.t1 ? 1 + CFG.singBonus * Math.min(1, (n.z1 - n.t1) / 0.4) : 1;
+        n.rank = n.q * (1 - 0.35 * Math.abs(n.cents) / 50) * trust * clear * on;
       });
     });
     return notes;
@@ -861,6 +1081,8 @@
   // better notes, wins. A note with no key is then (when fill is on) moved an
   // octave to a key that exists, else to the nearest key within two semitones,
   // else left silent. `how` on each note says which: exact | octave | near | rest.
+  // opts.shift pins the transposition instead of searching for it: the roll call
+  // is already written on the birds' own keys and must not be slid anywhere.
   function fitMelody(mel, has, opts) {
     var o = opts || {}, fill = o.fill !== false;
     var res = { shift: 0, notes: [], exact: 0, octave: 0, near: 0, rest: 0, total: mel.length, pct: 0 };
@@ -908,7 +1130,9 @@
     }
     var VAL = { exact: 1, octave: 0.5, near: 0.2, rest: 0 };
     var bestShift = null, bestScore = -Infinity;
-    for (var s = lo - mx - 12; s <= hi - mn + 12; s++) {
+    var sFrom = lo - mx - 12, sTo = hi - mn + 12;
+    if (o.shift != null) sFrom = sTo = o.shift;
+    for (var s = sFrom; s <= sTo; s++) {
       var score = 0, reg = 0, sounding = 0;
       for (i = 0; i < mel.length; i++) {
         var pl = place(mel[i].m + s, s);
@@ -1044,7 +1268,7 @@
     VERSION: VERSION, CFG: CFG,
     fft: fft, hzToMidi: hzToMidi, midiToHz: midiToHz, noteName: noteName,
     analyzeClip: analyzeClip, steadyWindows: steadyWindows, onsetTime: onsetTime,
-    cutPcm: cutPcm, cutClip: cutClip,
+    cutPcm: cutPcm, cutClip: cutClip, cleanSlice: cleanSlice,
     keyOf: keyOf, rankNotes: rankNotes, buildKeys: buildKeys, speciesRanges: speciesRanges,
     parseMelody: parseMelody, fitMelody: fitMelody, melodic: melodic, rollCall: rollCall, rumbleCut: rumbleCut,
     parseMidi: parseMidi, midiTunePart: midiTunePart, midiMelody: midiMelody

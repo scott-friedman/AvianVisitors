@@ -205,7 +205,8 @@
          each key, "solo" plays one bird's whole range. Below the keys: a
          songbook the birds sing with the notes they really have, and a pad per
          species that plays its call exactly as recorded. True sounds only -
-         nothing is synthesised or stretched (see the note at the foot).
+         nothing is synthesised or stretched; only the background around a
+         call is turned down (see the note at the foot).
          Everything here is built and driven by instrument.js; nothing loads
          until the view is first opened. Window-picker independent. -->
     <section class="view" id="v4" aria-label="Play the birds">
@@ -218,8 +219,9 @@
           </div>
           <div class="chorus-seg" id="playCut" role="tablist" aria-label="how much of each call to play">
             <i class="seg-pill" aria-hidden="true"></i>
-            <button type="button" data-cut="whole" title="the bird's whole call, slides and all">whole call</button>
-            <button type="button" data-cut="balanced" aria-current="true" title="the part of the call that stays on the note">balanced</button>
+            <button type="button" data-cut="sing" aria-current="true" title="the note, then the bird carries on with the rest of its call. Hold a key and it keeps singing">sings on</button>
+            <button type="button" data-cut="whole" title="one syllable of the call, slides and all">one call</button>
+            <button type="button" data-cut="balanced" title="the part of the call that stays on the note">balanced</button>
             <button type="button" data-cut="note" title="just the steady, in-tune part">just the note</button>
           </div>
           <button type="button" class="chorus-toggle" id="playTune" aria-pressed="true" title="nudge each note by less than half a semitone so it lands on its key. Off = exactly as the bird sang it">fine-tune</button>
@@ -275,7 +277,7 @@
           <div class="play-pads" id="playPads"></div>
         </section>
 
-        <p class="play-foot">True sounds only. Every note is cut from this yard's own recordings; nothing is synthesised, stretched or looped, and only the rumble far below a note is filtered out. “Fine-tune” plays a note up to half a semitone fast or slow so it lands on its key. Turn it off to hear every note exactly as the bird sang it. Each key is named for the bird its recording was of; now and then that is a neighbour calling in the background.</p>
+        <p class="play-foot">True sounds only. Every note is cut from this yard's own recordings; nothing is synthesised, stretched or looped. The background around a call (hiss, hum, rumble) is turned down, never the call itself, and in “sings on” the rest of the call sits a little behind its first note. “Fine-tune” plays a note up to half a semitone fast or slow so it lands on its key. Turn it off to hear every note exactly as the bird sang it; the “voices” above are always exactly as the microphone caught them. Each key is named for the bird its recording was of; now and then that is a neighbour calling in the background.</p>
       </div>
     </section>
 

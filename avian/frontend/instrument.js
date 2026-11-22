@@ -53,12 +53,33 @@
   //              instrument)
   // [seconds kept before, after] the chosen stretch, so nothing starts or ends
   // with a click.
-  var CUTS = { whole: null, balanced: ['b0', 'b1', 0.012, 0.03], note: ['s0', 's1', 0.008, 0.03] };
+  //   sing     — starts on the note like "balanced", then the bird carries on
+  //              with the rest of its call (to z1) for as long as the note
+  //              lasts or the key is held. The default: one syllable is a
+  //              pitch, the run after it is what makes it a bird.
+  var CUTS = { sing: ['b0', 'z1', 0.012, 0], whole: ['t0', 't1', 0, 0], balanced: ['b0', 'b1', 0.012, 0.03], note: ['s0', 's1', 0.008, 0.03] };
+  // Tuned on the yard's real recordings by rendering the songbook and checking,
+  // note by note, that the written pitch is still the loudest thing where each
+  // note starts (see CLAUDE.md → "The play view"). With these, a tune in "sings
+  // on" holds its notes as well as the short "balanced" cut does.
+  var SING = {
+    minOut: 0.6,      // a tapped key gives at least this much of the bird (s)
+    ring: 0.30,       // a tune note rings on past its written length: half as long again,
+    ringShare: 0.5,   //    but no more than `ring` and no less than `ringMin` (s), so a quick
+    ringMin: 0.08,    //    passage is not smeared and a slow one lets the bird carry on
+    last: 1.2,        // ...and the last note of a tune this much longer: let it finish its call
+    front: 0.45,      // the loudest thing after the note sits this far under it (× its level)
+    tailMin: 0.06,    // ...however loud the rest of the call is (a faint note before a shout)
+    duck: 0.035,      // how quickly it drops back once the note is over (s)
+    release: 0.14     // the fade when a note is let go (s)
+  };
 
   var state = {
     inited: false, visible: false, failed: false,
     mode: ls('mode', 'flock') === 'solo' ? 'solo' : 'flock',
-    cut: CUTS.hasOwnProperty(ls('cut', '')) ? ls('cut', '') : 'balanced',
+    // ('cut2': a choice made before "sings on" existed is not carried over, so
+    // everyone hears the new default once; what they pick after that sticks.)
+    cut: CUTS.hasOwnProperty(ls('cut2', '')) ? ls('cut2', '') : 'sing',
     tune: ls('tune', '1') !== '0',
     turns: ls('turns', '0') === '1',
     loop: ls('loop', '0') === '1',
@@ -103,7 +124,10 @@
     for (var i = 0; i < p.length; i++) d[i] = p[i] / 32768;
     return (item.buf = b);
   }
-  function startVoice(buf, when, offset, srcDur, rate, level, hpHz, maxOut) {
+  // shape (the "sing" cut): { body, tail, held }. The first `body` seconds are
+  // the note and play at full level; after that the rest of the call drops to
+  // level × tail, so the note stays in front of what follows it.
+  function startVoice(buf, when, offset, srcDur, rate, level, hpHz, maxOut, shape) {
     var c = ctx, t = Math.max(c.currentTime + 0.004, when || 0);
     var outDur = srcDur / rate;
     if (maxOut != null && maxOut < outDur) outDur = Math.max(0.05, maxOut);
@@ -117,21 +141,35 @@
     hp.type = hp2.type = 'highpass';
     hp.frequency.value = hp2.frequency.value = hpHz;
     hp.Q.value = 0.541; hp2.Q.value = 1.307;
-    var g = c.createGain();
-    var att = offset > 0.002 ? 0.005 : 0.002, rel = Math.min(0.045, outDur * 0.4);
+    var g = c.createGain(), gate = c.createGain();
+    var att = offset > 0.002 ? 0.005 : 0.002, rel = Math.min(shape ? SING.release : 0.045, outDur * 0.4);
+    var sus = level;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(level, t + att);
-    g.gain.setValueAtTime(level, t + Math.max(att, outDur - rel));
-    g.gain.linearRampToValueAtTime(0, t + outDur);
-    src.connect(hp); hp.connect(hp2); hp2.connect(g); g.connect(master);
+    var bodyEnd = shape ? Math.max(att, shape.body) : 0, faded = false;
+    if (shape && shape.tail < 1 && bodyEnd + SING.duck < outDur - rel) {
+      g.gain.setValueAtTime(level, t + bodyEnd);
+      g.gain.linearRampToValueAtTime(level * shape.tail, t + bodyEnd + SING.duck);
+      sus = level * shape.tail;
+    } else if (shape && shape.tail < 1 && bodyEnd < outDur - 0.03) {
+      // No room to settle at the quieter level: fade from the end of the note.
+      g.gain.setValueAtTime(level, t + bodyEnd);
+      g.gain.linearRampToValueAtTime(0, t + outDur);
+      faded = true;
+    }
+    if (!faded) {
+      g.gain.setValueAtTime(sus, t + Math.max(att, outDur - rel));
+      g.gain.linearRampToValueAtTime(0, t + outDur);
+    }
+    src.connect(hp); hp.connect(hp2); hp2.connect(g); g.connect(gate); gate.connect(master);
     src.start(t, offset, srcDur + 0.05);
     src.stop(t + outDur + 0.03);
-    var v = { src: src, g: g, at: t, dur: outDur };
+    var v = { src: src, g: g, gate: gate, at: t, dur: outDur, held: !!(shape && shape.held) };
     voices.push(v);
     src.onended = function () {
       var i = voices.indexOf(v);
       if (i >= 0) voices.splice(i, 1);
-      try { g.disconnect(); } catch (e) {}
+      try { g.disconnect(); gate.disconnect(); } catch (e) {}
     };
     if (voices.length > MAX_VOICES) killVoice(voices[0]);
     return v;
@@ -144,24 +182,46 @@
       v.src.stop(now + 0.07);
     } catch (e) {}
   }
-  // One note. `when` is an AudioContext time (0 = now); maxOut caps how long it
-  // rings (the tune player passes the note's length). Returns { at, dur }.
-  function playNote(n, when, maxOut) {
+  // A held note (a key kept down) is let go: it fades from here, though never
+  // before it has had SING.minOut to be heard as a bird.
+  function letGo(v) {
+    if (!v || !v.held || v.gone || !ctx) return;
+    v.gone = true;
+    var at = Math.max(ctx.currentTime, v.at + SING.minOut - SING.release);
+    if (at + SING.release >= v.at + v.dur) return;          // it is ending by itself anyway
+    try {
+      v.gate.gain.setValueAtTime(1, at);
+      v.gate.gain.linearRampToValueAtTime(0, at + SING.release);
+      v.src.stop(at + SING.release + 0.03);
+    } catch (e) {}
+    v.dur = at + SING.release - v.at;
+  }
+  // One note. `when` is an AudioContext time (0 = now); maxOut is how long the
+  // note is written to last (the tune player passes it); `held` means a key is
+  // being held down and letGo() will end it. Returns { at, dur, … }.
+  function playNote(n, when, maxOut, held) {
     if (!n || !audio()) return null;
     var buf = bufferOf(n);
     if (!buf) return null;
-    var len = buf.duration, cut = CUTS[state.cut];
-    var a = 0, z = len;
-    if (cut) {
-      var from = n[cut[0]] != null ? n[cut[0]] : n.s0, to = n[cut[1]] != null ? n[cut[1]] : n.s1;
-      a = Math.max(0, (from - n.t0) - cut[2]);
-      z = Math.min(len, (to - n.t0) + cut[3]);
-    }
-    if (z - a < 0.03) { a = 0; z = len; }
+    var len = buf.duration, cut = CUTS[state.cut] || CUTS.sing, sing = cut === CUTS.sing;
+    var syl = Math.min(len, n.t1 - n.t0);                   // the samples run on past the syllable
+    var from = n[cut[0]] != null ? n[cut[0]] : n.s0, to = n[cut[1]] != null ? n[cut[1]] : n.t1;
+    var a = Math.max(0, (from - n.t0) - cut[2]);
+    var z = sing ? len : Math.min(syl, (to - n.t0) + cut[3]);
+    if (z - a < 0.03) { a = 0; z = sing ? len : syl; }
     // The whole of "fine-tune": never more than ±50 cents, i.e. under 3 % speed.
     var rate = state.tune ? Math.pow(2, -clamp(n.cents, -50, 50) / 1200) : 1;
     var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, 2.5);
-    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), maxOut);
+    if (!sing) return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), maxOut);
+    // "Sings on". The note lands on pitch and at full level; then the bird
+    // carries on with its call, a step behind, until the note is over.
+    // In a tune the note stays in front only for as long as it is written: a
+    // long-bodied bird must not sit at full level over the next note.
+    var body = Math.max(0.06, ((n.b1 != null ? n.b1 : n.s1) - n.t0 - a) / rate);
+    if (maxOut != null) body = Math.min(body, Math.max(0.06, maxOut - 0.07));
+    var tail = n.tail > 0 ? clamp(SING.front * n.rms / n.tail, SING.tailMin, 1) : 1;
+    var out = held ? null : (maxOut != null ? maxOut + clamp(SING.ringShare * maxOut, SING.ringMin, SING.ring) : SING.minOut);
+    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), out, { body: body, tail: tail, held: !!held });
   }
   function playPhrase(ph) {
     if (!ph || !audio()) return null;
@@ -693,23 +753,33 @@
 
   // Pressing a key.
   var flashT = {};
-  function flashKey(k, ms) {
+  function flashKey(k, ms, keep) {
     var el = keyEls[k];
     if (!el) return;
-    el.classList.remove('on');
-    void el.offsetWidth;                  // restart the pop
-    el.classList.add('on');
+    if (!keep) {
+      el.classList.remove('on');
+      void el.offsetWidth;                // restart the pop
+      el.classList.add('on');
+    }
     clearTimeout(flashT[k]);
-    flashT[k] = setTimeout(function () { el.classList.remove('on'); }, clamp(ms || 160, 110, 900));
+    flashT[k] = setTimeout(function () { el.classList.remove('on'); }, clamp(ms || 160, 110, 2000));
   }
-  function press(k) {
+  // `held`: a finger or a key is down and release(k, v) will follow. In the
+  // "sings on" cut the bird then sings for as long as it is held.
+  function press(k, held) {
     var n = singerFor(k, true);
-    if (!n) { flashKey(k, 110); return; }
+    if (!n) { flashKey(k, 110); return null; }
     claim();
-    var v = playNote(n, 0, null);
+    var v = playNote(n, 0, null, !!held);
     if (state.turns) { updateKey(k); }
     flashKey(k, v ? v.dur * 1000 : 160);
     showNow(k, n);
+    return v;
+  }
+  function release(k, v) {
+    if (!v || !v.held || v.gone) return;
+    letGo(v);
+    flashKey(k, Math.max(60, (v.at + v.dur - ctx.currentTime) * 1000), true);
   }
   (function () {
     var ptr = {};
@@ -723,17 +793,22 @@
       var k = keyAt(e);
       if (k == null) return;
       e.preventDefault();
-      ptr[e.pointerId] = k;
       try { kbEl.setPointerCapture(e.pointerId); } catch (err) {}
-      press(k);
+      ptr[e.pointerId] = { k: k, v: press(k, true) };
     });
     kbEl.addEventListener('pointermove', function (e) {       // slide across keys = a run of notes
-      if (!(e.pointerId in ptr)) return;
+      var p = ptr[e.pointerId];
+      if (!p) return;
       var k = keyAt(e);
-      if (k != null && k !== ptr[e.pointerId]) { ptr[e.pointerId] = k; press(k); }
+      if (k != null && k !== p.k) { release(p.k, p.v); ptr[e.pointerId] = { k: k, v: press(k, true) }; }
     });
     ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (t) {
-      kbEl.addEventListener(t, function (e) { delete ptr[e.pointerId]; });
+      kbEl.addEventListener(t, function (e) {
+        var p = ptr[e.pointerId];
+        if (!p) return;
+        delete ptr[e.pointerId];
+        release(p.k, p.v);
+      });
     });
     // Tab + Enter/Space on a key (a click with no pointer behind it).
     kbEl.addEventListener('click', function (e) {
@@ -769,10 +844,18 @@
     if (i == null || kbBase == null) return;
     e.preventDefault();
     if (e.repeat || held[e.code]) return;
-    held[e.code] = 1;
-    press(kbBase + i);
+    held[e.code] = { k: kbBase + i, v: press(kbBase + i, true) };
   });
-  document.addEventListener('keyup', function (e) { delete held[e.code]; });
+  function keyUp(code) {
+    var h = held[code];
+    if (!h) return;
+    delete held[code];
+    release(h.k, h.v);
+  }
+  document.addEventListener('keyup', function (e) { keyUp(e.code); });
+  // A key-up that never arrives (the window lost focus mid-press) must not
+  // leave a key stuck down.
+  window.addEventListener('blur', function () { Object.keys(held).forEach(keyUp); });
 
   // --------------------------------------------------------- now singing ----
   var nowEl = $('playNow'), nowKey = null, nowNote = null;
@@ -967,7 +1050,8 @@
     var arr = cur.keys[k];
     return arr && arr.length ? clamp(arr[shownIdx(k)].rank, 0.05, 1) : 0;
   }
-  function fitOf(notes) { return S.fitMelody(notes, hasKey, { lo: cur.lo, hi: cur.hi, fill: state.fill }); }
+  // `shift` pins where the tune sits (the roll call: exactly on its own keys).
+  function fitOf(notes, shift) { return S.fitMelody(notes, hasKey, { lo: cur.lo, hi: cur.hi, fill: state.fill, shift: shift }); }
 
   function buildSongList() {
     var html = '<optgroup label="start here"><option value="roll">Roll call: every note, low to high</option></optgroup><optgroup label="songbook">';
@@ -999,7 +1083,7 @@
   function refitSong() {
     var t = tuneNotes(song.id);
     song.notes = t.notes; song.beats = t.beats; song.title = t.title;
-    song.fit = fitOf(t.notes);
+    song.fit = fitOf(t.notes, song.id === 'roll' ? 0 : null);
     if (song.id === 'own') {
       ownErr.textContent = (t.errors && t.errors.length) ? 'Couldn’t read: ' + t.errors.slice(0, 6).join(' ') : '';
     }
@@ -1111,7 +1195,7 @@
     cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(frame);
   }
-  function stopSong() {
+  function stopSong(ringOut) {
     if (!play) return;
     clearInterval(play.timer);
     play = null; visuals = [];
@@ -1120,7 +1204,7 @@
     wrap.classList.remove('is-playing');
     var head = rollEl.querySelector('.roll-head');
     if (head) head.style.transform = '';
-    stopVoices();
+    if (!ringOut) stopVoices();
   }
   function toggleSong() { if (play) stopSong(); else startSong(); }
   function tick() {
@@ -1134,7 +1218,7 @@
           play.t0 = end; play.i = 0;
           continue;
         }
-        if (ctx.currentTime > end + 0.35) stopSong();
+        if (ctx.currentTime > end + 0.35) stopSong(true);      // the last notes ring out
         break;
       }
       var n = notes[play.i], at = play.t0 + n.t * play.spb;
@@ -1142,8 +1226,10 @@
       if (n.key != null && at > ctx.currentTime - 0.06) {
         var who = singerFor(n.key, true);
         // A note rings for its written length, then fades just into the next
-        // one (30 ms) — legato, without a long bird smearing a quick passage.
-        var v = playNote(who, at, Math.max(0.09, n.d * play.spb) + 0.03);
+        // one — legato, without a long bird smearing a quick passage. ("Sings
+        // on" adds its own ring, and lets the very last note finish its call.)
+        var lastOne = play.i === notes.length - 1 && !state.loop && state.cut === 'sing';
+        var v = playNote(who, at, Math.max(0.09, n.d * play.spb) + 0.03 + (lastOne ? SING.last : 0));
         if (v) visuals.push({ at: v.at, key: n.key, i: play.i, note: who, ms: v.dur * 1000 });
       }
       play.i++;
@@ -1234,7 +1320,7 @@
   // --------------------------------------------------------------- status ----
   var statusEl = $('playStatus');
   function idleNow() {
-    return '<p class="pn-idle">' + (COARSE ? 'Tap a key. Slide your finger along them for a run of notes.' : 'Click a key, or play from your keyboard: the Z and Q rows are the keys, ← → move up and down, space plays the tune.') + '</p>';
+    return '<p class="pn-idle">' + (COARSE ? 'Tap a key, or hold one and the bird sings on. Slide along them for a run of notes.' : 'Click a key (hold it and the bird sings on), or play from your keyboard: the Z and Q rows are the keys, ← → move up and down, space plays the tune.') + '</p>';
   }
   function renderStatus(msg) {
     if (!statusEl) return;
@@ -1310,7 +1396,7 @@
     }
     rebuild();
   });
-  wireSeg(cutEl, 'data-cut', function (cut) { state.cut = cut; lsSet('cut', cut); });
+  wireSeg(cutEl, 'data-cut', function (cut) { state.cut = cut; lsSet('cut2', cut); });
   wireToggle(tuneBtn, 'tune', function () { if (nowNote && nowKey != null) showNow(nowKey, nowNote); });
   wireToggle(turnsBtn, 'turns', function () {
     if (!state.turns) { turn = {}; if (kbRange) { for (var k = kbRange[0]; k <= kbRange[1]; k++) updateKey(k); renderRange(); } }

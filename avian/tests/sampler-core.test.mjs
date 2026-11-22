@@ -248,12 +248,204 @@ test('cutClip hands back full-scale 16-bit samples and rescales rms to match', (
   const bufs = S.cutClip(a, SR, r, { phrase: true });
   const n = r.notes[0];
   assert.ok(n.pcm instanceof Int16Array);
+  assert.equal(n.z1, n.t1, 'a lone note has nothing after it');
   near(n.pcm.length, Math.ceil(n.t1 * SR) - Math.floor(n.t0 * SR), 1, 'sample length');
   let peak = 0; for (const v of n.pcm) peak = Math.max(peak, Math.abs(v));
   near(peak / 32767, 0.92, 0.01, 'peak normalised');
   assert.ok(n.rms / before > 16 && n.rms / before < 18.5, `rms follows the gain (×${n.rms / before})`);   // ≈ 0.92 / 0.05
   assert.ok(r.phrase.pcm instanceof Int16Array && r.phrase.rms > 0);
   assert.equal(bufs.length, 2);
+});
+
+test('a note is followed through the rest of the bird\'s call, up to its next pause', () => {
+  // "tsee … tu-tu-tu": the note, then three more syllables 90 ms apart, then
+  // nothing for a long second, then a different call.
+  const a = clip(5);
+  tone(a, 1.00, 0.16, 4000);
+  tone(a, 1.25, 0.10, 3300); tone(a, 1.44, 0.10, 3100); tone(a, 1.63, 0.10, 2900);
+  tone(a, 2.90, 0.20, 5000);
+  const r = S.analyzeClip(a, SR);
+  const first = r.notes.find((n) => Math.abs(n.hz - 4000) < 60);
+  assert.ok(first, 'the first note is found');
+  assert.ok(first.t1 < 1.25, `its own syllable ends before the next one (t1 ${first.t1})`);
+  near(first.z1, 1.73, 0.09, 'the call is followed to the end of its last syllable');
+  // The last syllable of the run has nothing after it but a long pause.
+  const last = r.notes.find((n) => Math.abs(n.hz - 2900) < 60);
+  assert.ok(last && last.z1 - last.t1 < 0.05, `nothing follows the last syllable (z1 ${last && last.z1}, t1 ${last && last.t1})`);
+  // The cut carries the whole run, and says how loud the rest of it gets.
+  S.cutClip(a, SR, r);
+  near(first.pcm.length / SR, first.z1 - first.t0, 0.002, 'samples run from t0 to z1');
+  assert.ok(first.tail > 0.5 * first.rms && first.tail < 2 * first.rms, `tail loudness is on the note's scale (${first.tail} vs ${first.rms})`);
+  assert.equal(last.tail, 0, 'no tail, no tail loudness');
+});
+
+test('a lone note, or one in steady hiss, is not stretched', () => {
+  const lone = S.analyzeClip(tone(clip(3), 1.0, 0.25, 3000), SR).notes[0];
+  assert.equal(lone.z1, lone.t1);
+  const hissy = S.analyzeClip(tone(clip(3, 0.03), 1.0, 0.25, 3000, 0.3), SR).notes[0];
+  assert.ok(hissy, 'still found in hiss');
+  assert.ok(hissy.z1 - hissy.t1 < 0.05, `hiss is not the bird singing on (z1 ${hissy.z1}, t1 ${hissy.t1})`);
+});
+
+test('a long call is followed no further than singMs', () => {
+  const a = clip(6);
+  tone(a, 1.0, 0.15, 3500);
+  for (let t = 1.25; t < 5; t += 0.2) tone(a, t, 0.12, 2600);          // a trill that goes on and on
+  const n = S.analyzeClip(a, SR).notes.find((x) => Math.abs(x.hz - 3500) < 60);
+  assert.ok(n, 'note found');
+  near(n.z1 - n.t1, S.CFG.singMs / 1000, 0.08, 'followed for singMs, no more');
+});
+
+// A burst of plain noise (no pitch): a rustle, a slammed door.
+function burst(a, at, dur, amp, seed = 11) {
+  const r = rng(seed), n0 = Math.round(at * SR), n = Math.round(dur * SR);
+  for (let i = 0; i < n && n0 + i < a.length; i++) a[n0 + i] += (r() * 2 - 1) * amp * Math.min(1, i / 200, (n - i) / 200);
+  return a;
+}
+const rmsIn = (x, from, to) => { let e = 0; const a = Math.round(from * SR), z = Math.round(to * SR); for (let i = a; i < z; i++) e += x[i] * x[i]; return Math.sqrt(e / (z - a)); };
+
+test('the background is turned down around a call, and the call is left as it was', () => {
+  const a = tone(clip(3, 0.02), 1.0, 0.4, 3000, 0.3);
+  const r = S.analyzeClip(a, SR);
+  assert.ok(r.nr && r.nr.pass instanceof Uint8Array, 'the call/background map is there for cutClip');
+  const c = S.cleanSlice(a, SR, r.nr, 0, a.length);
+  assert.equal(c.length, a.length);
+  // Hiss on its own: down by cleanDb (12 dB = ×0.25).
+  near(rmsIn(c, 0.2, 0.8) / rmsIn(a, 0.2, 0.8), Math.pow(10, -S.CFG.cleanDb / 20), 0.05, 'hiss level, as a share of what it was');
+  // The whistle: untouched (its level within a hair), with less hiss riding on it.
+  near(rmsIn(c, 1.05, 1.35), 0.3 / Math.SQRT2, 0.006, 'tone level after cleaning');
+  assert.ok(rmsIn(c, 1.05, 1.35) <= rmsIn(a, 1.05, 1.35), 'nothing was added');
+  // And it joins up with no click at the edges of a slice cut from the middle.
+  const mid = S.cleanSlice(a, SR, r.nr, Math.round(0.9 * SR), Math.round(1.5 * SR));
+  for (let i = 0; i < mid.length; i += 97) near(mid[i], c[Math.round(0.9 * SR) + i], 1e-4, `sample ${i} of a slice matches the whole`);
+});
+
+// Noise confined to a band of frequencies (a windowed-sinc band-pass over white
+// noise): what a crow's caw or a jay's scream is made of.
+function harsh(a, at, dur, amp, loHz, hiHz, seed = 5) {
+  const r = rng(seed), n0 = Math.round(at * SR), n = Math.round(dur * SR), L = 129, h = new Float64Array(L);
+  for (let i = 0; i < L; i++) {
+    const m = i - (L - 1) / 2, w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (L - 1));
+    const sinc = (f) => (m === 0 ? 2 * f / SR : Math.sin(2 * Math.PI * f * m / SR) / (Math.PI * m));
+    h[i] = (sinc(hiHz) - sinc(loHz)) * w;
+  }
+  const white = new Float64Array(n + L);
+  for (let i = 0; i < white.length; i++) white[i] = r() * 2 - 1;
+  let peak = 0; const y = new Float64Array(n);
+  for (let i = 0; i < n; i++) { let v = 0; for (let k = 0; k < L; k++) v += h[k] * white[i + k]; y[i] = v; peak = Math.max(peak, Math.abs(v)); }
+  for (let i = 0; i < n && n0 + i < a.length; i++) a[n0 + i] += amp * (y[i] / peak) * Math.min(1, i / 200, (n - i) / 200);
+  return a;
+}
+
+test('a loud rough call is not thinned out, however much of the band it fills', () => {
+  // A caw: loud noise between 1.5 and 4.5 kHz. It is the bird, so it stays.
+  const a = harsh(clip(3, 0.004), 1.0, 0.3, 0.3, 1500, 4500);
+  const ca = S.cleanSlice(a, SR, S.analyzeClip(a, SR).nr, 0, a.length);
+  const cawDb = 20 * Math.log10(rmsIn(ca, 1.05, 1.25) / rmsIn(a, 1.05, 1.25));
+  assert.ok(cawDb > -1.5, `the caw keeps its level (${cawDb.toFixed(2)} dB)`);
+  // A jay's scream fills most of the band. Still the bird. (On the real clips
+  // the first cut of this took a loud, close jay or cardinal for noise and
+  // turned it down; only what is ALWAYS there counts as background.)
+  const b = harsh(clip(3, 0.004), 1.0, 0.3, 0.3, 1200, 10000);
+  const cb = S.cleanSlice(b, SR, S.analyzeClip(b, SR).nr, 0, b.length);
+  const jayDb = 20 * Math.log10(rmsIn(cb, 1.05, 1.25) / rmsIn(b, 1.05, 1.25));
+  assert.ok(jayDb > -1.5, `the scream keeps its level (${jayDb.toFixed(2)} dB)`);
+  // ...while the hiss before it is down by the full amount.
+  near(rmsIn(cb, 0.2, 0.8) / rmsIn(b, 0.2, 0.8), Math.pow(10, -S.CFG.cleanDb / 20), 0.05, 'hiss level, as a share of what it was');
+});
+
+test('a note with a racket over it is marked down, and one drowned by it is not used', () => {
+  // The same quiet whistle with a rustle over it, louder each time.
+  const under = (amp) => {
+    const a = tone(clip(3), 1.0, 0.3, 3000, 0.1);
+    if (amp) burst(a, 0.9, 0.5, amp);
+    return S.analyzeClip(a, SR).notes.find((x) => Math.abs(x.hz - 3000) < 60);
+  };
+  const clean = under(0), some = under(0.1), lots = under(0.2);
+  assert.ok(clean.bg < -20, `a clean note has next to nothing around it (${clean.bg.toFixed(1)} dB)`);
+  assert.ok(some.bg > clean.bg + 15 && lots.bg > some.bg + 3, `noise around the note is measured (${some.bg.toFixed(1)}, ${lots.bg.toFixed(1)} dB)`);
+  assert.ok(lots.bg > 0, 'a rustle louder than the note reads as more noise than note');
+  assert.equal(under(0.8), undefined, 'a drowned note is not offered at all');
+  // The same three as takes of one key: the cleaner the slice, the better its rank.
+  const takes = [clean, some, lots].map((n, i) => Object.assign({}, n, { sci: 'a', clip: 'c' + i }));
+  S.rankNotes(takes);
+  assert.ok(takes[0].rank > takes[1].rank && takes[1].rank > takes[2].rank, 'cleaner takes rank higher');
+  assert.ok(takes[2].rank < 0.8 * takes[2].q, 'and noise costs more than the note\'s own score says');
+});
+
+test('a note the bird sings on from is preferred, a little', () => {
+  const lone = { sci: 'a', clip: '1', midi: 80, q: 0.8, t1: 1.2, z1: 1.2 };
+  const sung = { sci: 'a', clip: '2', midi: 80, q: 0.8, t1: 1.2, z1: 2.0 };
+  const best = { sci: 'a', clip: '3', midi: 80, q: 1.0, t1: 1.2, z1: 1.2 };
+  S.rankNotes([lone, sung, best]);
+  assert.ok(sung.rank > lone.rank, 'between equals, the one with a call after it');
+  near(sung.rank / lone.rank, 1 + S.CFG.singBonus, 1e-9, 'by singBonus at most');
+  assert.ok(best.rank > sung.rank, 'but a clearly better note still wins');
+});
+
+test('cutClip plays back the cleaned slice, and can be told not to', () => {
+  const mk = () => tone(tone(clip(3, 0.02), 1.0, 0.16, 4000, 0.3), 1.3, 0.2, 3300, 0.3);
+  const a = mk(), r = S.analyzeClip(a, SR);
+  S.cutClip(a, SR, r);
+  assert.equal(r.nr, undefined, 'the scratch map is gone once the notes are cut');
+  const b = mk(), raw = S.analyzeClip(b, SR);
+  S.cutClip(b, SR, raw, { clean: false });
+  const n = r.notes[0], m = raw.notes[0];
+  assert.ok(n.z1 > n.t1, 'the second syllable is followed');
+  assert.equal(n.pcm.length, m.pcm.length);
+  // The gap between the two syllables holds only hiss: quieter in the cleaned cut.
+  const gap = (x) => { let e = 0; const i0 = Math.round((1.2 - x.t0) * SR), i1 = Math.round((1.27 - x.t0) * SR); for (let i = i0; i < i1; i++) e += x.pcm[i] * x.pcm[i]; return Math.sqrt(e / (i1 - i0)); };
+  assert.ok(gap(n) < 0.4 * gap(m), `hiss between syllables is turned down (${gap(n).toFixed(1)} vs ${gap(m).toFixed(1)})`);
+  near(n.rms / m.rms, 1, 0.08, 'the note itself is as loud as before');
+});
+
+test('a call is not followed into a rustle or a slam', () => {
+  // The note, then 250 ms later a loud burst of plain noise where a second
+  // syllable might have been.
+  const a = clip(4);
+  tone(a, 1.0, 0.18, 3500);
+  burst(a, 1.3, 0.5, 0.12);
+  const n = S.analyzeClip(a, SR).notes.find((x) => Math.abs(x.hz - 3500) < 60);
+  assert.ok(n, 'the note is found');
+  assert.ok(n.z1 < 1.36, `the slice stops before the noise takes over (z1 ${n.z1})`);
+});
+
+test('what sings on is judged the way the key is played: above its rumble cut', () => {
+  // A kinglet's thin note, then a dove cooing on underneath. Playback filters
+  // the dove out of that key, so the slice must not be stretched over it.
+  const a = clip(4);
+  tone(a, 1.0, 0.16, 7000);
+  for (let k = 0; k < 4; k++) tone(a, 1.3 + k * 0.2, 0.15, 500, 0.3);
+  const hi = S.analyzeClip(a, SR).notes.find((x) => Math.abs(x.hz - 7000) < 100);
+  assert.ok(hi, 'the high note is found');
+  assert.equal(hi.z1, hi.t1, 'a coo far below the note is not the bird singing on');
+  // The other way round, the low note IS followed by higher syllables.
+  const b = clip(4);
+  tone(b, 1.0, 0.16, 1200);
+  for (let k = 0; k < 3; k++) tone(b, 1.3 + k * 0.2, 0.15, 3000, 0.3);
+  const lo = S.analyzeClip(b, SR).notes.find((x) => Math.abs(x.hz - 1200) < 40);
+  assert.ok(lo && lo.z1 > 1.8, `higher syllables after a low note are followed (z1 ${lo && lo.z1})`);
+});
+
+test('a note is levelled by what will be heard of it, not by a hum underneath', () => {
+  const mk = (hum) => {
+    const a = tone(clip(3), 1.0, 0.3, 6000, 0.1);
+    if (hum) for (let i = 0; i < a.length; i++) a[i] += hum * Math.sin(2 * Math.PI * 300 * i / SR);
+    const r = S.analyzeClip(a, SR);
+    S.cutClip(a, SR, r);
+    return r.notes.find((x) => Math.abs(x.hz - 6000) < 80);
+  };
+  // How strong the 6 kHz tone itself is in the stored samples, as an RMS.
+  const toneRms = (n) => {
+    const i0 = Math.round((n.s0 - n.t0) * SR), i1 = Math.round((n.s1 - n.t0) * SR);
+    let c = 0, q = 0;
+    for (let i = i0; i < i1; i++) { const v = n.pcm[i] / 32767, w = 2 * Math.PI * n.hz * i / SR; c += v * Math.cos(w); q += v * Math.sin(w); }
+    return Math.hypot(c, q) * 2 / (i1 - i0) / Math.SQRT2;
+  };
+  const plain = mk(0), hummed = mk(0.3);
+  assert.ok(plain && hummed, 'found with and without the hum');
+  near(plain.rms / toneRms(plain), 1, 0.08, 'a clean note: rms is the tone');
+  near(hummed.rms / toneRms(hummed), 1, 0.08, 'a hum three times the note does not count towards its loudness');
 });
 
 test('answers analysis jobs when loaded as a Web Worker', () => {
@@ -448,6 +640,24 @@ test('fitMelody with no birds at all rests every note; an empty tune is fine', (
 
 test('rollCall walks every key the birds have', () => {
   assert.deepEqual(S.rollCall([70, 75, 90]).map((n) => [n.m, n.t, n.d]), [[70, 0, 0.5], [75, 0.5, 0.5], [90, 1, 0.5]]);
+});
+
+test('a pinned fit leaves the roll call on its own keys', () => {
+  // The real yard's board on the day this went live (2026-11-22): A3, A♭4, then
+  // B4 to D9 with one gap. Left free, the fitter slid the roll call down nine
+  // semitones to where a melody is easier to hear, borrowing ten notes from an
+  // octave away. Right for a song, wrong for "every note, low to high".
+  const keys = [57, 68];
+  for (let k = 71; k <= 122; k++) if (k !== 79) keys.push(k);
+  const has = (k) => (keys.includes(k) ? 0.8 : 0);
+  const roll = S.rollCall(keys);
+  const free = S.fitMelody(roll, has, { lo: 57, hi: 122 });
+  assert.notEqual(free.shift, 0, 'this board is the case that slid the roll call');
+  assert.ok(free.exact < keys.length);
+  const pinned = S.fitMelody(roll, has, { lo: 57, hi: 122, shift: 0 });
+  assert.equal(pinned.shift, 0);
+  assert.equal(pinned.exact, keys.length);
+  assert.deepEqual(pinned.notes.map((n) => n.key), keys);
 });
 
 // ------------------------------------------------------------- songbook ----
