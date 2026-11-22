@@ -468,6 +468,18 @@ describe('recording (GET /api/recording) Range handling', () => {
     expect(res.headers.get('Cache-Control')).toBe('no-store');
   });
 
+  it("Mojo's bark never goes quiet: the master copy answers when clips/ has expired", async () => {
+    const MOJO_FILE = 'Mojo-93-2026-07-03-birdnet-08:12:47.mp3';
+    const url = '/api/recording?file=' + encodeURIComponent(MOJO_FILE);
+    const expired = env(new FakeDB(), { CLIPS: new FakeR2({ 'master/mojo-bark.mp3': 'woofwoof' }) });
+    const res = await get(url, expired);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Length')).toBe('8');
+    // ...but only for him: no other name reaches master/.
+    expect((await get('/api/recording?file=mojo-bark.mp3', expired)).status).toBe(404);
+    expect((await fetchRec(expired)).status).toBe(404);
+  });
+
   it('errors are JSON like every other endpoint', async () => {
     const e = env(new FakeDB(), { CLIPS: new FakeR2() });
     const res = await fetchRec(e);
@@ -676,6 +688,15 @@ describe('clip listing for the instrument (GET /api/clips)', () => {
     expect((await get('/api/clips?sci=Not%20a%20bird', e)).status).toBe(404);
     expect((await get('/api/clips?sci=' + 'x'.repeat(500), e)).status).toBe(404);
     expect(db.count('ORDER BY conf DESC, ts DESC LIMIT ?')).toBe(0);
+  });
+
+  it('Mojo keeps his voice while his clips/ copy is expired (master copy only)', async () => {
+    const r2 = bucket();
+    delete r2.objects['clips/' + MOJO_FILE];
+    r2.objects['master/mojo-bark.mp3'] = 'woof';
+    const body = await (await get('/api/clips', env(dbWith(), { CLIPS: r2 }))).json();
+    const mojo = body.species.find((s) => s.sci === 'Canis volaticus');
+    expect(mojo.clips).toEqual([{ file: MOJO_FILE, conf: 0.93 }]);
   });
 
   it('Mojo in solo mode is just his bark (no hot-set query)', async () => {

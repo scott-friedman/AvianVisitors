@@ -54,6 +54,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       # severity=error keeps this high-signal (syntax-level breakage only);
       # tighten once the existing scripts are shellcheck-clean at lower levels.
       - run: shellcheck --severity=error pi/*.sh avian/build-site.sh newinstaller.sh
@@ -62,9 +65,6 @@ jobs:
       - run: for f in sampler-core songbook instrument; do node --check "avian/frontend/$f.js"; done
       # The play view's engine: note-finding on synthetic sound, tune fitting,
       # the MIDI reader, and every songbook tune's bar lengths.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - run: node --test avian/tests/sampler-core.test.mjs
       # Fixture test locking build-site.sh's cache-hash rewrites (the
       # clip-version → json-hash ordering burned two deploy cycles).

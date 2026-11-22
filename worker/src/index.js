@@ -623,6 +623,11 @@ async function recording(request, env, url) {
       if (best) objKey = best.key;
     }
   }
+  // Mojo's bark is restored under clips/ only when he next "visits"
+  // (mojoVisit), so after the 7-day lifecycle takes it there can be days with
+  // no copy there (found 2026-11-22: his play button was 404ing). His master
+  // copy never expires: serve that rather than go quiet.
+  if (!objKey && key === MOJO.file && (await env.CLIPS.head(MOJO.master))) objKey = MOJO.master;
   if (!objKey) return json({ error: 'not found' }, 404);
 
   const meta = await env.CLIPS.head(objKey);
@@ -763,8 +768,9 @@ async function clipsIndex(env) {
 
   // Mojo is kept out of rare/ on purpose (his cron self-heals one bark under
   // clips/), so offer that bark directly: the family dog gets a voice too.
+  // /api/recording falls back to his master copy, so either one will do.
   const mojo = bySci.get(MOJO.sci);
-  if (mojo && (await env.CLIPS.head('clips/' + MOJO.file))) {
+  if (mojo && ((await env.CLIPS.head('clips/' + MOJO.file)) || (await env.CLIPS.head(MOJO.master)))) {
     mojo.clips = [{ file: MOJO.file, conf: (parseClipName(MOJO.file) || { conf: MOJO.confHi }).conf }];
   }
 
