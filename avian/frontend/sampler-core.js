@@ -125,11 +125,16 @@
     preMs: 90, postMs: 320,     // most of the bird's own lead-in / tail kept around it
     singMs: 1500,               // how far past its note a call is followed ("sings on")...
     singGapMs: 300,             // ...until the bird pauses for longer than this
-    junkShare: 0.25,            // ...or what follows is mostly not-a-call (ridges carry < this)
-    junkMs: 50,                 //    for this long: rustle, rain, a door, a gust
-    burstGain: 4,               // the whole band up this many × at once = a broadband burst
-    cleanDb: 12,                // background around a call is turned down this far (0 = off)
-    loudK: 12,                  // ...but anything this many × above the noise is left alone
+    liveOwn: 0.08, liveMax: 0.04,   // "still calling": ridges within this × the note's own level
+                                //    (and never asking for more than liveMax × the clip's loudest)
+    junkUp: 2,                  // ...or noise takes over: sound no ridge accounts for, this many ×
+    junkOwn: 0.5,               //    the steady hiss, at least this × the note, and louder than
+    junkMs: 50,                 //    the ridges — for this long (a rustle, rain, a door, a gust)
+    cleanDb: 12,                // steady background around a call is turned down this far (0 = off)
+    loudK: 12,                  // ...but a bin this many × above its own floor is left alone
+    bgOk: -3, bgBad: 9,         // noise around a note, in dB next to the note: fine below bgOk,
+    bgMax: 12,                  //    marked down towards bgBad, not used at all above bgMax
+    singBonus: 0.2,             // a note the bird sings on from is preferred by up to this much
     perKey: 2,                  // takes of the same key kept per clip (a repeated call)
     bodyCents: 100,             // the call is "on the note" while within a semitone of it
     pickBand: 0.8,              // keys go to different birds only among near-equal notes
@@ -322,11 +327,16 @@
     tracks.sort(function (x, y) { return x.fMed - y.fMed; });
 
     // What is "the call" and what is background, bin by bin: used when a note is
-    // cut out (cutClip turns the background down) and to tell a bird singing on
-    // from a rustle. A bin belongs to the call if a ridge runs through it, or if
-    // it stands far above the noise on its own (a harsh caw, a click, a fast
-    // trill no ridge could follow). Everything else is background.
-    var pass = new Uint8Array(T * nb), ridgeE = new Float32Array(T);
+    // cut out (cutClip turns the background down), to tell a bird singing on
+    // from a rustle, and to say how noisy a note is.
+    //   ridge  a ridge runs through the bin: the tonal part of a call.
+    //   pass   that, plus any bin standing far above its own usual level: a
+    //          harsh caw, a click, a fast trill no ridge could follow. Measured
+    //          against the bin's steady floor and nothing else, so only what is
+    //          ALWAYS there (hiss, hum, rumble) counts as background. The first
+    //          cut of this judged a frame against its own average instead, and
+    //          on the real clips that turned a loud jay or cardinal into "noise".
+    var ridge = new Uint8Array(T * nb), pass = new Uint8Array(T * nb), ridgeE = new Float32Array(T);
     for (i = 0; i < tracks.length; i++) {
       tr = tracks[i];
       for (j = -2; j < tr.n + 2; j++) {             // two frames early (the attack) and late
@@ -335,13 +345,21 @@
         var tq = j < 0 ? 0 : (j >= tr.n ? tr.n - 1 : j);
         if (j >= 0 && j < tr.n) ridgeE[t] += tr.e[j];
         var cb = Math.round(tr.f[tq] / binHz) - b0;
-        for (b = Math.max(0, cb - 3); b <= Math.min(nb - 1, cb + 3); b++) pass[t * nb + b] = 1;
+        for (b = Math.max(0, cb - 3); b <= Math.min(nb - 1, cb + 3); b++) ridge[t * nb + b] = 1;
       }
     }
+    // Per frame, the sound no ridge accounts for, over and above the steady
+    // hiss: a rustle, rain, a door, a gust — or a bird with a rough voice.
+    var floorSum = 0, restE = new Float32Array(T);
+    for (b = lo; b <= hi; b++) floorSum += floor[b];
     for (t = 0; t < T; t++) {
-      row = t * nb; g = gain[t] * cfg.loudK;
+      row = t * nb;
+      var rs = 0;
+      for (b = lo; b <= hi; b++) if (!ridge[row + b]) rs += P[row + b];
+      restE[t] = rs > floorSum ? rs - floorSum : 0;
+      for (b = 0; b < nb; b++) if (ridge[row + b]) pass[row + b] = 1;
       for (b = 1; b < nb - 1; b++) {
-        if (P[row + b] >= floor[b] * g) { pass[row + b - 1] = 1; pass[row + b] = 1; pass[row + b + 1] = 1; }
+        if (P[row + b] >= floor[b] * cfg.loudK) { pass[row + b - 1] = 1; pass[row + b] = 1; pass[row + b + 1] = 1; }
       }
     }
 
@@ -642,53 +660,65 @@
       // --- 9. How far the bird sings on after each note ---
       // One syllable is a note; the run of syllables after it is what makes it
       // a BIRD. Follow the call past the note until it pauses for longer than
-      // singGapMs (or singMs is up). "Calling" means louder than the clip's
-      // quiet moments by a clear margin and not far below the note itself, so a
-      // faint bird's own faint phrase is followed, and hiss is not.
-      var quietE = sorted[(T * 0.2) | 0];
+      // singGapMs (or singMs is up).
+      //
+      // "Calling" is judged on the RIDGES, not on loudness: on the yard's real
+      // clips a whistle is often no louder than the hiss across the whole band
+      // (it only stands out in its own few bins), so a loudness gate threw most
+      // calls away. A ridge is by construction a tone well clear of the noise,
+      // so the bird is calling while ridges carry something within reach of the
+      // note's own level. And it is NOT a call when a lot of sound turns up that
+      // no ridge accounts for — well above the usual hiss, loud next to the
+      // note, and louder than whatever ridges there are: a rustle, rain, a door.
       var gapF = Math.max(1, Math.round(cfg.singGapMs / hopMs));
       var junkF = Math.max(1, Math.round(cfg.junkMs / hopMs));
-      // The same 50 ms mean of what the ridges alone carry: a call is mostly
-      // ridges, a rustle or a slammed door is not.
-      var Rs = new Float32Array(T);
+      // The same 50 ms mean as Es, of what the ridges carry and of the rest.
+      var Rs = new Float32Array(T), Xs = new Float32Array(T), maxR = 0, runX = 0;
       run = 0;
       for (t = 0; t < T; t++) {
-        run += ridgeE[t]; if (t >= sm) run -= ridgeE[t - sm];
-        Rs[t] = run / Math.min(t + 1, sm);
+        run += ridgeE[t]; runX += restE[t];
+        if (t >= sm) { run -= ridgeE[t - sm]; runX -= restE[t - sm]; }
+        Rs[t] = run / Math.min(t + 1, sm); Xs[t] = runX / Math.min(t + 1, sm);
+        if (Rs[t] > maxR) maxR = Rs[t];
       }
-      // Es trails the sound (a 50 ms mean over windows N long), so the note's
+      // Rs trails the sound (a 50 ms mean over windows N long), so the note's
       // own dying echo in it must not be mistaken for the bird singing on.
       var echoF = Math.ceil((50 + 500 * N / sr) / hopMs) + 1;
       var frameOf = function (sec) { return Math.max(0, Math.min(T - 1, Math.round((sec * sr - N / 2) / H))); };
+      var gmin2 = Math.pow(10, -cfg.cleanDb / 10), quiet = [];
       for (i = 0; i < notes.length; i++) {
         nt = notes[i];
         var fa0 = frameOf(nt.s0), fa1 = frameOf(nt.s1), own = 0;
-        for (t = fa0; t <= fa1; t++) if (Es[t] > own) own = Es[t];
-        var live = Math.max(quietE * 4, Math.min(maxE * 0.04, own * 0.08));
+        for (t = fa0; t <= fa1; t++) if (Rs[t] > own) own = Rs[t];
+        var live = Math.min(maxR * cfg.liveMax, own * cfg.liveOwn);
+        var loud = Math.max(own * cfg.junkOwn, floorSum * cfg.junkUp);
         var f1 = frameOf(nt.t1), fEnd = frameOf(nt.t1 + cfg.singMs / 1000), lastOn = f1, hush = 0, junk = 0;
         for (t = f1 + 1; t <= fEnd; t++) {
-          if (Es[t] >= live && t > f1 + echoF) {
-            // Loud, but is it the bird? Not if the ridges carry little of it, or
-            // the whole band has jumped at once.
-            if (Rs[t] < cfg.junkShare * Es[t] || gain[t] >= cfg.burstGain) {
-              if (++junk > junkF) break;            // the noise wins from here: stop before it
-            } else { lastOn = t; junk = 0; }
+          if (Xs[t] >= loud && Rs[t] < Xs[t]) {
+            if (++junk > junkF) break;              // the noise wins from here: stop before it
             hush = 0;
-          } else if (++hush > gapF) break;
+          } else if (Rs[t] >= live && t > f1 + echoF) { lastOn = t; junk = 0; hush = 0; }
+          else if (++hush > gapF) break;
         }
         if (lastOn > f1) nt.z1 = Math.min(dur, Math.max(nt.t1, centerSec(lastOn) + 0.03));
-        // How loud the background is next to the call in what will be played
-        // (b0..z1, above the rumble cut), BEFORE it is turned down: everything
-        // that is not the call against everything that is. In dB; 0 = as much
-        // noise as bird.
-        var hpB = Math.max(0, Math.ceil(rumbleCut(nt.hz) / binHz) - b0);
-        var fz0 = frameOf(nt.b0), fz1 = frameOf(nt.z1), callE = 0, backE = 0;
+        // How noisy the note itself is: everything around its tone, as it will
+        // be played (above the rumble cut, the steady background already turned
+        // down), against the tone. In dB: 0 = as much noise as note. A rough
+        // voice counts as noise here too; that is what `tone` and `purity`
+        // already say about it, in other words.
+        var hpB = Math.max(lo, Math.ceil(rumbleCut(nt.hz) / binHz) - b0);
+        var fz0 = frameOf(nt.b0), fz1 = frameOf(nt.b1), toneE = 0, restN = 0;
         for (t = fz0; t <= fz1; t++) {
           row = t * nb;
-          for (b = hpB; b < nb; b++) { if (pass[row + b]) callE += P[row + b]; else backE += P[row + b]; }
+          for (b = hpB; b <= hi; b++) {
+            pw = P[row + b];
+            if (ridge[row + b]) toneE += pw; else restN += pass[row + b] ? pw : pw * gmin2;
+          }
         }
-        nt.bg = 10 * Math.log((backE + eps) / (callE + eps)) / Math.LN10;
+        nt.bg = 10 * Math.log((restN + eps) / (toneE + eps)) / Math.LN10;
+        if (nt.bg <= cfg.bgMax) quiet.push(nt);     // too loud a background: not used at all
       }
+      out.notes = quiet;
     }
     // Scratch for cutClip (which removes it): what is call and what is background.
     out.nr = { N: N, H: H, T: T, b0: b0, nb: nb, pass: pass };
@@ -869,7 +899,7 @@
   // has (it is a real sound from the yard), but it is the last choice for one,
   // it stays out of the bird's solo board, and the page says so.
   // Sets note.key, .cents, .sup, .odd, .rank on each note. Notes need
-  // { sci, clip, midi, q }.
+  // { sci, clip, midi, q }; bg, t1 and z1 are used when they are there.
   function rankNotes(notes) {
     var bySci = {}, i;
     for (i = 0; i < notes.length; i++) (bySci[notes[i].sci] = bySci[notes[i].sci] || []).push(notes[i]);
@@ -892,7 +922,12 @@
       list.forEach(function (n) {
         n.odd = !n.sup && nClips >= 3 && sN >= 2 && (n.midi < sLo - CFG.oddSemis || n.midi > sHi + CFG.oddSemis);
         var trust = n.sup > 0 ? 1 + 0.1 * Math.min(n.sup, 3) : (n.odd ? 0.5 : (nClips >= 3 ? 0.8 : 1));
-        n.rank = n.q * (1 - 0.35 * Math.abs(n.cents) / 50) * trust;
+        // Two things about the slice the note is cut from (when they are known):
+        // noise around the note marks it down, and a note the bird sings on
+        // from is worth a little more than one that just stops.
+        var clear = n.bg > CFG.bgOk ? Math.max(0.5, 1 - 0.5 * (n.bg - CFG.bgOk) / (CFG.bgBad - CFG.bgOk)) : 1;
+        var on = n.z1 > n.t1 ? 1 + CFG.singBonus * Math.min(1, (n.z1 - n.t1) / 0.4) : 1;
+        n.rank = n.q * (1 - 0.35 * Math.abs(n.cents) / 50) * trust * clear * on;
       });
     });
     return notes;

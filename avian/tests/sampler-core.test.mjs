@@ -337,17 +337,50 @@ function harsh(a, at, dur, amp, loHz, hiHz, seed = 5) {
   return a;
 }
 
-test('a loud harsh call is not thinned out, but a slam across the whole band is', () => {
+test('a loud rough call is not thinned out, however much of the band it fills', () => {
   // A caw: loud noise between 1.5 and 4.5 kHz. It is the bird, so it stays.
   const a = harsh(clip(3, 0.004), 1.0, 0.3, 0.3, 1500, 4500);
   const ca = S.cleanSlice(a, SR, S.analyzeClip(a, SR).nr, 0, a.length);
   const cawDb = 20 * Math.log10(rmsIn(ca, 1.05, 1.25) / rmsIn(a, 1.05, 1.25));
   assert.ok(cawDb > -1.5, `the caw keeps its level (${cawDb.toFixed(2)} dB)`);
-  // A slam: every frequency at once. That is the room, not a voice.
-  const b = burst(clip(3, 0.004), 1.0, 0.3, 0.25);
+  // A jay's scream fills most of the band. Still the bird. (On the real clips
+  // the first cut of this took a loud, close jay or cardinal for noise and
+  // turned it down; only what is ALWAYS there counts as background.)
+  const b = harsh(clip(3, 0.004), 1.0, 0.3, 0.3, 1200, 10000);
   const cb = S.cleanSlice(b, SR, S.analyzeClip(b, SR).nr, 0, b.length);
-  const slamDb = 20 * Math.log10(rmsIn(cb, 1.05, 1.25) / rmsIn(b, 1.05, 1.25));
-  assert.ok(slamDb < -8, `the slam is turned down (${slamDb.toFixed(2)} dB)`);
+  const jayDb = 20 * Math.log10(rmsIn(cb, 1.05, 1.25) / rmsIn(b, 1.05, 1.25));
+  assert.ok(jayDb > -1.5, `the scream keeps its level (${jayDb.toFixed(2)} dB)`);
+  // ...while the hiss before it is down by the full amount.
+  near(rmsIn(cb, 0.2, 0.8) / rmsIn(b, 0.2, 0.8), Math.pow(10, -S.CFG.cleanDb / 20), 0.05, 'hiss level, as a share of what it was');
+});
+
+test('a note with a racket over it is marked down, and one drowned by it is not used', () => {
+  // The same quiet whistle with a rustle over it, louder each time.
+  const under = (amp) => {
+    const a = tone(clip(3), 1.0, 0.3, 3000, 0.1);
+    if (amp) burst(a, 0.9, 0.5, amp);
+    return S.analyzeClip(a, SR).notes.find((x) => Math.abs(x.hz - 3000) < 60);
+  };
+  const clean = under(0), some = under(0.1), lots = under(0.2);
+  assert.ok(clean.bg < -20, `a clean note has next to nothing around it (${clean.bg.toFixed(1)} dB)`);
+  assert.ok(some.bg > clean.bg + 15 && lots.bg > some.bg + 3, `noise around the note is measured (${some.bg.toFixed(1)}, ${lots.bg.toFixed(1)} dB)`);
+  assert.ok(lots.bg > 0, 'a rustle louder than the note reads as more noise than note');
+  assert.equal(under(0.8), undefined, 'a drowned note is not offered at all');
+  // The same three as takes of one key: the cleaner the slice, the better its rank.
+  const takes = [clean, some, lots].map((n, i) => Object.assign({}, n, { sci: 'a', clip: 'c' + i }));
+  S.rankNotes(takes);
+  assert.ok(takes[0].rank > takes[1].rank && takes[1].rank > takes[2].rank, 'cleaner takes rank higher');
+  assert.ok(takes[2].rank < 0.8 * takes[2].q, 'and noise costs more than the note\'s own score says');
+});
+
+test('a note the bird sings on from is preferred, a little', () => {
+  const lone = { sci: 'a', clip: '1', midi: 80, q: 0.8, t1: 1.2, z1: 1.2 };
+  const sung = { sci: 'a', clip: '2', midi: 80, q: 0.8, t1: 1.2, z1: 2.0 };
+  const best = { sci: 'a', clip: '3', midi: 80, q: 1.0, t1: 1.2, z1: 1.2 };
+  S.rankNotes([lone, sung, best]);
+  assert.ok(sung.rank > lone.rank, 'between equals, the one with a call after it');
+  near(sung.rank / lone.rank, 1 + S.CFG.singBonus, 1e-9, 'by singBonus at most');
+  assert.ok(best.rank > sung.rank, 'but a clearly better note still wins');
 });
 
 test('cutClip plays back the cleaned slice, and can be told not to', () => {
