@@ -124,7 +124,8 @@
     minSteadyMs: 48,
     preMs: 90, postMs: 320,     // most of the bird's own lead-in / tail kept around it
     singMs: 1500,               // how far past its note a call is followed ("sings on")...
-    singGapMs: 300,             // ...until the bird pauses for longer than this
+    singGapMs: 600,             // ...until the bird pauses for longer than this (a held key
+                                //    then gives a call, its pause, and the call again)
     liveOwn: 0.08, liveMax: 0.04,   // "still calling": ridges within this × the note's own level
                                 //    (and never asking for more than liveMax × the clip's loudest)
     junkUp: 2,                  // ...or noise takes over: sound no ridge accounts for, this many ×

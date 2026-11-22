@@ -58,13 +58,19 @@
   //              lasts or the key is held. The default: one syllable is a
   //              pitch, the run after it is what makes it a bird.
   var CUTS = { sing: ['b0', 'z1', 0.012, 0], whole: ['t0', 't1', 0, 0], balanced: ['b0', 'b1', 0.012, 0.03], note: ['s0', 's1', 0.008, 0.03] };
+  // Tuned on the yard's real recordings by rendering the songbook and checking,
+  // note by note, that the written pitch is still the loudest thing where each
+  // note starts (see CLAUDE.md → "The play view"). With these, a tune in "sings
+  // on" holds its notes as well as the short "balanced" cut does.
   var SING = {
-    minOut: 0.42,     // even a tap or a quick note gets this much of the bird (s)
-    ring: 0.30,       // a tune note rings on this long past its written length (s)
-    last: 1.2,        // ...and the last note of a tune this long: let it finish its call
-    front: 0.6,       // the loudest thing after the note sits this far under it (× its level)
-    tailMin: 0.2,     // ...but the rest of the call is never turned down further than this
-    duck: 0.12,       // how quickly it drops back once the note is over (s)
+    minOut: 0.6,      // a tapped key gives at least this much of the bird (s)
+    ring: 0.30,       // a tune note rings on past its written length: half as long again,
+    ringShare: 0.5,   //    but no more than `ring` and no less than `ringMin` (s), so a quick
+    ringMin: 0.08,    //    passage is not smeared and a slow one lets the bird carry on
+    last: 1.2,        // ...and the last note of a tune this much longer: let it finish its call
+    front: 0.45,      // the loudest thing after the note sits this far under it (× its level)
+    tailMin: 0.06,    // ...however loud the rest of the call is (a faint note before a shout)
+    duck: 0.035,      // how quickly it drops back once the note is over (s)
     release: 0.14     // the fade when a note is let go (s)
   };
 
@@ -138,13 +144,21 @@
     var sus = level;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(level, t + att);
-    if (shape && shape.tail < 1 && shape.body + SING.duck < outDur - rel) {
-      g.gain.setValueAtTime(level, t + Math.max(att, shape.body));
-      g.gain.linearRampToValueAtTime(level * shape.tail, t + Math.max(att, shape.body) + SING.duck);
+    var bodyEnd = shape ? Math.max(att, shape.body) : 0, faded = false;
+    if (shape && shape.tail < 1 && bodyEnd + SING.duck < outDur - rel) {
+      g.gain.setValueAtTime(level, t + bodyEnd);
+      g.gain.linearRampToValueAtTime(level * shape.tail, t + bodyEnd + SING.duck);
       sus = level * shape.tail;
+    } else if (shape && shape.tail < 1 && bodyEnd < outDur - 0.03) {
+      // No room to settle at the quieter level: fade from the end of the note.
+      g.gain.setValueAtTime(level, t + bodyEnd);
+      g.gain.linearRampToValueAtTime(0, t + outDur);
+      faded = true;
     }
-    g.gain.setValueAtTime(sus, t + Math.max(att, outDur - rel));
-    g.gain.linearRampToValueAtTime(0, t + outDur);
+    if (!faded) {
+      g.gain.setValueAtTime(sus, t + Math.max(att, outDur - rel));
+      g.gain.linearRampToValueAtTime(0, t + outDur);
+    }
     src.connect(hp); hp.connect(hp2); hp2.connect(g); g.connect(gate); gate.connect(master);
     src.start(t, offset, srcDur + 0.05);
     src.stop(t + outDur + 0.03);
@@ -199,9 +213,12 @@
     if (!sing) return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), maxOut);
     // "Sings on". The note lands on pitch and at full level; then the bird
     // carries on with its call, a step behind, until the note is over.
-    var body = Math.max(0.06, ((n.b1 != null ? n.b1 : n.s1) - n.t0 + 0.02 - a) / rate);
+    // In a tune the note stays in front only for as long as it is written: a
+    // long-bodied bird must not sit at full level over the next note.
+    var body = Math.max(0.06, ((n.b1 != null ? n.b1 : n.s1) - n.t0 - a) / rate);
+    if (maxOut != null) body = Math.min(body, Math.max(0.06, maxOut - 0.07));
     var tail = n.tail > 0 ? clamp(SING.front * n.rms / n.tail, SING.tailMin, 1) : 1;
-    var out = held ? null : Math.max(SING.minOut, (maxOut != null ? maxOut : 0) + SING.ring);
+    var out = held ? null : (maxOut != null ? maxOut + clamp(SING.ringShare * maxOut, SING.ringMin, SING.ring) : SING.minOut);
     return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), out, { body: body, tail: tail, held: !!held });
   }
   function playPhrase(ph) {
