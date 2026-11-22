@@ -336,27 +336,22 @@
     //          ALWAYS there (hiss, hum, rumble) counts as background. The first
     //          cut of this judged a frame against its own average instead, and
     //          on the real clips that turned a loud jay or cardinal into "noise".
-    var ridge = new Uint8Array(T * nb), pass = new Uint8Array(T * nb), ridgeE = new Float32Array(T);
+    //   ridgeP what each ridge carries (its lobe, above the floor), at its bin.
+    var ridge = new Uint8Array(T * nb), pass = new Uint8Array(T * nb), ridgeP = new Float32Array(T * nb);
+    var maxRidge = 0;
     for (i = 0; i < tracks.length; i++) {
       tr = tracks[i];
       for (j = -2; j < tr.n + 2; j++) {             // two frames early (the attack) and late
         t = tr.t0 + j;
         if (t < 0 || t >= T) continue;
         var tq = j < 0 ? 0 : (j >= tr.n ? tr.n - 1 : j);
-        if (j >= 0 && j < tr.n) ridgeE[t] += tr.e[j];
-        var cb = Math.round(tr.f[tq] / binHz) - b0;
+        var cb = Math.max(0, Math.min(nb - 1, Math.round(tr.f[tq] / binHz) - b0));
+        if (j >= 0 && j < tr.n) { ridgeP[t * nb + cb] += tr.e[j]; if (tr.e[j] > maxRidge) maxRidge = tr.e[j]; }
         for (b = Math.max(0, cb - 3); b <= Math.min(nb - 1, cb + 3); b++) ridge[t * nb + b] = 1;
       }
     }
-    // Per frame, the sound no ridge accounts for, over and above the steady
-    // hiss: a rustle, rain, a door, a gust — or a bird with a rough voice.
-    var floorSum = 0, restE = new Float32Array(T);
-    for (b = lo; b <= hi; b++) floorSum += floor[b];
     for (t = 0; t < T; t++) {
       row = t * nb;
-      var rs = 0;
-      for (b = lo; b <= hi; b++) if (!ridge[row + b]) rs += P[row + b];
-      restE[t] = rs > floorSum ? rs - floorSum : 0;
       for (b = 0; b < nb; b++) if (ridge[row + b]) pass[row + b] = 1;
       for (b = 1; b < nb - 1; b++) {
         if (P[row + b] >= floor[b] * cfg.loudK) { pass[row + b - 1] = 1; pass[row + b] = 1; pass[row + b + 1] = 1; }
@@ -670,34 +665,52 @@
       // note's own level. And it is NOT a call when a lot of sound turns up that
       // no ridge accounts for — well above the usual hiss, loud next to the
       // note, and louder than whatever ridges there are: a rustle, rain, a door.
+      //
+      // Both are heard the way the note will be played: only above its rumble
+      // cut. A dove cooing on under a kinglet is filtered out of that key, so
+      // it is not the kinglet singing on, and a thump down there is no bother.
       var gapF = Math.max(1, Math.round(cfg.singGapMs / hopMs));
       var junkF = Math.max(1, Math.round(cfg.junkMs / hopMs));
-      // The same 50 ms mean as Es, of what the ridges carry and of the rest.
-      var Rs = new Float32Array(T), Xs = new Float32Array(T), maxR = 0, runX = 0;
-      run = 0;
-      for (t = 0; t < T; t++) {
-        run += ridgeE[t]; runX += restE[t];
-        if (t >= sm) { run -= ridgeE[t - sm]; runX -= restE[t - sm]; }
-        Rs[t] = run / Math.min(t + 1, sm); Xs[t] = runX / Math.min(t + 1, sm);
-        if (Rs[t] > maxR) maxR = Rs[t];
-      }
-      // Rs trails the sound (a 50 ms mean over windows N long), so the note's
-      // own dying echo in it must not be mistaken for the bird singing on.
+      // Es trails the sound (a 50 ms mean over windows N long), and so do the
+      // means below: the note's own dying echo in them must not be mistaken
+      // for the bird singing on.
       var echoF = Math.ceil((50 + 500 * N / sr) / hopMs) + 1;
       var frameOf = function (sec) { return Math.max(0, Math.min(T - 1, Math.round((sec * sr - N / 2) / H))); };
       var gmin2 = Math.pow(10, -cfg.cleanDb / 10), quiet = [];
+      var Rb = new Float32Array(T), Xb = new Float32Array(T);
       for (i = 0; i < notes.length; i++) {
         nt = notes[i];
-        var fa0 = frameOf(nt.s0), fa1 = frameOf(nt.s1), own = 0;
-        for (t = fa0; t <= fa1; t++) if (Rs[t] > own) own = Rs[t];
-        var live = Math.min(maxR * cfg.liveMax, own * cfg.liveOwn);
-        var loud = Math.max(own * cfg.junkOwn, floorSum * cfg.junkUp);
-        var f1 = frameOf(nt.t1), fEnd = frameOf(nt.t1 + cfg.singMs / 1000), lastOn = f1, hush = 0, junk = 0;
-        for (t = f1 + 1; t <= fEnd; t++) {
-          if (Xs[t] >= loud && Rs[t] < Xs[t]) {
+        var hpB = Math.max(lo, Math.ceil(rumbleCut(nt.hz) / binHz) - b0);
+        var fa0 = frameOf(nt.s0), fa1 = frameOf(nt.s1);
+        var f1 = frameOf(nt.t1), fEnd = frameOf(nt.t1 + cfg.singMs / 1000);
+        // From the note's steady part to as far as the call may be followed:
+        // what the ridges carry (Rb) and what nothing accounts for beyond the
+        // steady hiss (Xb), frame by frame, then as 50 ms means.
+        var hissB = 0;
+        for (b = hpB; b <= hi; b++) hissB += floor[b];
+        var fr0 = Math.max(0, fa0 - sm);
+        for (t = fr0; t <= fEnd; t++) {
+          row = t * nb;
+          var rsum = 0, xsum = 0;
+          for (b = hpB; b <= hi; b++) { rsum += ridgeP[row + b]; if (!ridge[row + b]) xsum += P[row + b]; }
+          Rb[t] = rsum; Xb[t] = xsum > hissB ? xsum - hissB : 0;
+        }
+        var runR = 0, runX = 0, own = 0, lastOn = f1, hush = 0, junk = 0, live = 0, loud = 0;
+        for (t = fr0; t <= fEnd; t++) {
+          runR += Rb[t]; runX += Xb[t];
+          if (t - sm >= fr0) { runR -= Rb[t - sm]; runX -= Xb[t - sm]; }
+          var cnt = Math.min(t - fr0 + 1, sm), rs = runR / cnt, xs = runX / cnt;
+          if (t <= fa1) { if (t >= fa0 && rs > own) own = rs; continue; }
+          if (t <= f1) continue;
+          if (t === f1 + 1) {
+            if (!(own > 0)) break;
+            live = Math.min(maxRidge * cfg.liveMax, own * cfg.liveOwn);
+            loud = Math.max(own * cfg.junkOwn, hissB * cfg.junkUp);
+          }
+          if (xs >= loud && rs < xs) {
             if (++junk > junkF) break;              // the noise wins from here: stop before it
             hush = 0;
-          } else if (Rs[t] >= live && t > f1 + echoF) { lastOn = t; junk = 0; hush = 0; }
+          } else if (rs >= live && t > f1 + echoF) { lastOn = t; junk = 0; hush = 0; }
           else if (++hush > gapF) break;
         }
         if (lastOn > f1) nt.z1 = Math.min(dur, Math.max(nt.t1, centerSec(lastOn) + 0.03));
@@ -706,7 +719,6 @@
         // down), against the tone. In dB: 0 = as much noise as note. A rough
         // voice counts as noise here too; that is what `tone` and `purity`
         // already say about it, in other words.
-        var hpB = Math.max(lo, Math.ceil(rumbleCut(nt.hz) / binHz) - b0);
         var fz0 = frameOf(nt.b0), fz1 = frameOf(nt.b1), toneE = 0, restN = 0;
         for (t = fz0; t <= fz1; t++) {
           row = t * nb;
@@ -821,6 +833,24 @@
     }
     return Math.sqrt(best / w);
   }
+  // A copy of x with everything below `hz` filtered away, the way the page
+  // plays a note (two high-pass stages = 24 dB per octave at rumbleCut). Only
+  // for MEASURING how loud a slice will sound; the samples that are kept are
+  // not filtered here.
+  function heardAbove(x, sr, hz) {
+    var y = new Float32Array(x.length), src = x, qs = [0.541, 1.307];
+    for (var s = 0; s < 2; s++) {
+      var w = 2 * Math.PI * Math.min(hz, sr * 0.45) / sr, cs = Math.cos(w), al = Math.sin(w) / (2 * qs[s]);
+      var a0 = 1 + al, k0 = (1 + cs) / 2 / a0, k1 = -(1 + cs) / a0, a1 = -2 * cs / a0, a2 = (1 - al) / a0;
+      var x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+      for (var i = 0; i < src.length; i++) {
+        var xi = src[i], yi = k0 * xi + k1 * x1 + k0 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = xi; y2 = y1; y1 = yi; y[i] = yi;
+      }
+      src = y;
+    }
+    return y;
+  }
   // Attach the playable samples to an analyzeClip() result: note.pcm for every
   // note (note.rms is rescaled to match), and — with opts.phrase — phrase.pcm.
   // A note's samples run from t0 to z1: its syllable and then the rest of the
@@ -833,19 +863,15 @@
     for (var i = 0; i < res.notes.length; i++) {
       var n = res.notes[i];
       var end = n.z1 > n.t1 ? n.z1 : n.t1;
-      if (clean) {
-        // The note's slice with the background turned down; its loudness is
-        // measured again, on what will actually be played.
-        var a = Math.max(0, Math.floor(n.t0 * sr)), z = Math.min(pcm.length, Math.ceil(end * sr));
-        var sl = cleanSlice(pcm, sr, nr, a, z), base = a / sr;
-        c = cutPcm(sl, sr, 0, sl.length / sr);
-        n.rms = rmsOf(sl, sr, n.s0 - base, n.s1 - base) * c.gain;
-        n.tail = loudestOf(sl, sr, n.b1 - base, end - base) * c.gain;
-      } else {
-        c = cutPcm(pcm, sr, n.t0, end);
-        n.rms *= c.gain;
-        n.tail = loudestOf(pcm, sr, n.b1, end) * c.gain;
-      }
+      var a = Math.max(0, Math.floor(n.t0 * sr)), z = Math.min(pcm.length, Math.ceil(end * sr)), base = a / sr;
+      // The note's slice — with the steady background turned down, unless told
+      // not to. Its loudness is measured on what will actually be heard: this
+      // slice, above the note's rumble cut.
+      var sl = clean ? cleanSlice(pcm, sr, nr, a, z) : pcm.subarray(a, z);
+      c = cutPcm(sl, sr, 0, sl.length / sr);
+      var heard = heardAbove(sl, sr, rumbleCut(n.hz));
+      n.rms = rmsOf(heard, sr, n.s0 - base, n.s1 - base) * c.gain;
+      n.tail = loudestOf(heard, sr, n.b1 - base, end - base) * c.gain;
       n.pcm = c.pcm;
       bufs.push(c.pcm.buffer);
     }

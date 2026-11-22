@@ -410,6 +410,44 @@ test('a call is not followed into a rustle or a slam', () => {
   assert.ok(n.z1 < 1.36, `the slice stops before the noise takes over (z1 ${n.z1})`);
 });
 
+test('what sings on is judged the way the key is played: above its rumble cut', () => {
+  // A kinglet's thin note, then a dove cooing on underneath. Playback filters
+  // the dove out of that key, so the slice must not be stretched over it.
+  const a = clip(4);
+  tone(a, 1.0, 0.16, 7000);
+  for (let k = 0; k < 4; k++) tone(a, 1.3 + k * 0.2, 0.15, 500, 0.3);
+  const hi = S.analyzeClip(a, SR).notes.find((x) => Math.abs(x.hz - 7000) < 100);
+  assert.ok(hi, 'the high note is found');
+  assert.equal(hi.z1, hi.t1, 'a coo far below the note is not the bird singing on');
+  // The other way round, the low note IS followed by higher syllables.
+  const b = clip(4);
+  tone(b, 1.0, 0.16, 1200);
+  for (let k = 0; k < 3; k++) tone(b, 1.3 + k * 0.2, 0.15, 3000, 0.3);
+  const lo = S.analyzeClip(b, SR).notes.find((x) => Math.abs(x.hz - 1200) < 40);
+  assert.ok(lo && lo.z1 > 1.8, `higher syllables after a low note are followed (z1 ${lo && lo.z1})`);
+});
+
+test('a note is levelled by what will be heard of it, not by a hum underneath', () => {
+  const mk = (hum) => {
+    const a = tone(clip(3), 1.0, 0.3, 6000, 0.1);
+    if (hum) for (let i = 0; i < a.length; i++) a[i] += hum * Math.sin(2 * Math.PI * 300 * i / SR);
+    const r = S.analyzeClip(a, SR);
+    S.cutClip(a, SR, r);
+    return r.notes.find((x) => Math.abs(x.hz - 6000) < 80);
+  };
+  // How strong the 6 kHz tone itself is in the stored samples, as an RMS.
+  const toneRms = (n) => {
+    const i0 = Math.round((n.s0 - n.t0) * SR), i1 = Math.round((n.s1 - n.t0) * SR);
+    let c = 0, q = 0;
+    for (let i = i0; i < i1; i++) { const v = n.pcm[i] / 32767, w = 2 * Math.PI * n.hz * i / SR; c += v * Math.cos(w); q += v * Math.sin(w); }
+    return Math.hypot(c, q) * 2 / (i1 - i0) / Math.SQRT2;
+  };
+  const plain = mk(0), hummed = mk(0.3);
+  assert.ok(plain && hummed, 'found with and without the hum');
+  near(plain.rms / toneRms(plain), 1, 0.08, 'a clean note: rms is the tone');
+  near(hummed.rms / toneRms(hummed), 1, 0.08, 'a hum three times the note does not count towards its loudness');
+});
+
 test('answers analysis jobs when loaded as a Web Worker', () => {
   const posted = [];
   function WorkerGlobalScope() {}
