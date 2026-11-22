@@ -332,11 +332,18 @@ test('buildKeys solo: one bird, several takes per key', () => {
   assert.deepEqual(S.buildKeys([], {}).list, []);
 });
 
-test('speciesRanges ranks birds by how many different notes they sing', () => {
+test('speciesRanges ranks birds by how many different notes they sing, and how well', () => {
   const R = S.speciesRanges(S.rankNotes([N('Wren', 'a', 80), N('Wren', 'a', 85), N('Wren', 'b', 92), N('Dove', 'x', 70), N('Dove', 'y', 70.2)]));
   assert.equal(R[0].sci, 'Wren');
   assert.deepEqual([R[0].count, R[0].lo, R[0].hi, R[0].span], [3, 80, 92, 12]);
   assert.deepEqual([R[1].sci, R[1].count, R[1].notes], ['Dove', 1, 2]);
+  // Four rough notes do not outrank three clean ones.
+  const Q = S.speciesRanges(S.rankNotes([
+    N('Kinglet', 'a', 100, 0.9), N('Kinglet', 'a', 102, 0.9), N('Kinglet', 'b', 104, 0.9),
+    N('Woodpecker', 'x', 90, 0.3), N('Woodpecker', 'x', 92, 0.3), N('Woodpecker', 'y', 94, 0.3), N('Woodpecker', 'y', 96, 0.3),
+  ]));
+  assert.deepEqual(Q.map((r) => r.sci), ['Kinglet', 'Woodpecker']);
+  assert.equal(Q[1].count, 4);
 });
 
 // --------------------------------------------------------------- melody ----

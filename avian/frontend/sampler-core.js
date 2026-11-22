@@ -455,17 +455,15 @@
             var ba = Math.max(cutB, Math.floor(fa / binHz) - b0 - 2), bz = Math.min(hi, Math.ceil(fz / binHz) - b0 + 2);
             if (bz < ba) continue;
             var os = 0;
-            for (b = ba; b <= bz; b++) os += peakAcc[b];
+            for (b = ba; b <= bz; b++) if (peakAcc[b] > os) os = peakAcc[b];
             if (os > ownTop) ownTop = os;
             bands.push(ba, bz);
           }
           var rival = 0;
-          for (b = cutB + 2; b <= hi - 2; b++) {
+          for (b = cutB; b <= hi; b++) {
             var mine = false;
-            for (k = 0; k < bands.length; k += 2) if (b + 2 >= bands[k] && b - 2 <= bands[k + 1]) { mine = true; break; }
-            if (mine) continue;
-            var rs = peakAcc[b - 2] + peakAcc[b - 1] + peakAcc[b] + peakAcc[b + 1] + peakAcc[b + 2];
-            if (rs > rival) rival = rs;
+            for (k = 0; k < bands.length; k += 2) if (b >= bands[k] && b <= bands[k + 1]) { mine = true; break; }
+            if (!mine && peakAcc[b] > rival) rival = peakAcc[b];
           }
           if (!(ownTop > 0 && ownTop >= cfg.leadBy * rival)) continue;
           // How much of a TONE it is: the share of the partial's energy that
@@ -549,7 +547,7 @@
       // fundamental is missing altogether (a jay's scream, a nuthatch's "yank")
       // only implies it. All three are playable, but given the choice a tune
       // is better carried by the plainer voice.
-      var tn = (nt.div > 1 ? 0.8 : (nt.harm >= 3 ? 0.92 : 1)) * (0.4 + 0.6 * clamp01((nt.tone - 0.55) / 0.4));
+      var tn = (nt.div > 1 ? 0.8 : (nt.harm >= 3 ? 0.92 : 1)) * (0.5 + 0.5 * clamp01((nt.tone - 0.6) / 0.25));
       nt.q = Math.pow(nt.purity, 0.5) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce * tn;
       nt.dur = nt.t1 - nt.t0;
       delete nt.e; delete nt.mid;
@@ -792,18 +790,25 @@
   }
 
   // What each species can sing: its distinct keys and their span. Drives the
-  // solo picker ("Northern Cardinal — 14 notes across 2 octaves").
+  // solo picker ("Northern Cardinal — 14 notes across 2 octaves"). Best solo
+  // voices first: a bird is ranked by its keys weighed by how good the note on
+  // each one is, so a kinglet's twelve clean whistles come before a
+  // woodpecker's fifteen rough ones. Doubted (`odd`) notes are not counted.
   function speciesRanges(notes) {
     var by = {};
     notes.forEach(function (n) {
       if (n.key == null || n.odd) return;
       var s = by[n.sci] || (by[n.sci] = { sci: n.sci, keys: {}, notes: 0 });
-      s.keys[n.key] = 1; s.notes++;
+      var r = n.rank == null ? 1 : n.rank;
+      if (!(s.keys[n.key] >= r)) s.keys[n.key] = r;
+      s.notes++;
     });
     return Object.keys(by).map(function (sci) {
       var s = by[sci], ks = Object.keys(s.keys).map(Number).sort(function (a, b) { return a - b; });
-      return { sci: sci, keys: ks, count: ks.length, notes: s.notes, lo: ks[0], hi: ks[ks.length - 1], span: ks[ks.length - 1] - ks[0] };
-    }).sort(function (a, b) { return b.count - a.count || b.span - a.span; });
+      var score = 0;
+      ks.forEach(function (k) { score += Math.min(1, s.keys[k]); });
+      return { sci: sci, keys: ks, count: ks.length, notes: s.notes, score: score, lo: ks[0], hi: ks[ks.length - 1], span: ks[ks.length - 1] - ks[0] };
+    }).sort(function (a, b) { return b.score - a.score || b.count - a.count || b.span - a.span; });
   }
 
   // ------------------------------------------------------------ melody ----

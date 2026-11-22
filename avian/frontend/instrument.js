@@ -485,7 +485,7 @@
     ranges = S.speciesRanges(all);
     if (state.mode === 'solo') {
       if (!species[state.soloSci] || !liveNotes(species[state.soloSci]).length) {
-        // No choice yet (or the saved one has gone): start on the widest-ranging bird.
+        // No choice yet (or the saved one has gone): start on the best solo voice.
         if (ranges.length && (!species[state.soloSci] || !inflightFor(state.soloSci))) setSolo(ranges[0].sci, true);
       }
       var sp = species[state.soloSci];
@@ -1252,7 +1252,7 @@
         html = '<span>Listening to the recordings: ' + done + ' of ' + total + (have ? ' · ' + have + ' so far' : '') + '</span>' +
           '<i class="st-bar"><b style="width:' + (total ? Math.round(100 * done / total) : 0) + '%"></b></i>';
       } else {
-        if (state.mode === 'solo') html = '<span>' + (ranges.length ? 'Pick a bird. The ones with the most notes come first.' : 'No bird has playable notes yet.') + '</span>';
+        if (state.mode === 'solo') html = '<span>' + (ranges.length ? 'Pick a bird. The clearest singers with the most notes come first.' : 'No bird has playable notes yet.') + '</span>';
         else html = '<span>' + (have ? have + ', cut from ' + plural(done - stats.failed, 'recording') + '.' : 'No playable notes found yet.') + '</span>';
         if (state.mode !== 'solo' && state.depth + 1 < DEPTHS.length) {
           var more = flockRemaining(state.depth + 1);
