@@ -450,6 +450,24 @@ test('rollCall walks every key the birds have', () => {
   assert.deepEqual(S.rollCall([70, 75, 90]).map((n) => [n.m, n.t, n.d]), [[70, 0, 0.5], [75, 0.5, 0.5], [90, 1, 0.5]]);
 });
 
+test('a pinned fit leaves the roll call on its own keys', () => {
+  // The real yard's board on the day this went live (2026-11-22): A3, A♭4, then
+  // B4 to D9 with one gap. Left free, the fitter slid the roll call down nine
+  // semitones to where a melody is easier to hear, borrowing ten notes from an
+  // octave away. Right for a song, wrong for "every note, low to high".
+  const keys = [57, 68];
+  for (let k = 71; k <= 122; k++) if (k !== 79) keys.push(k);
+  const has = (k) => (keys.includes(k) ? 0.8 : 0);
+  const roll = S.rollCall(keys);
+  const free = S.fitMelody(roll, has, { lo: 57, hi: 122 });
+  assert.notEqual(free.shift, 0, 'this board is the case that slid the roll call');
+  assert.ok(free.exact < keys.length);
+  const pinned = S.fitMelody(roll, has, { lo: 57, hi: 122, shift: 0 });
+  assert.equal(pinned.shift, 0);
+  assert.equal(pinned.exact, keys.length);
+  assert.deepEqual(pinned.notes.map((n) => n.key), keys);
+});
+
 // ------------------------------------------------------------- songbook ----
 test('songbook: every tune parses, and every bar adds up', () => {
   assert.ok(BOOK.length >= 20);

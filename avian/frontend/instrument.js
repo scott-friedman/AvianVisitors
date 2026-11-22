@@ -967,7 +967,8 @@
     var arr = cur.keys[k];
     return arr && arr.length ? clamp(arr[shownIdx(k)].rank, 0.05, 1) : 0;
   }
-  function fitOf(notes) { return S.fitMelody(notes, hasKey, { lo: cur.lo, hi: cur.hi, fill: state.fill }); }
+  // `shift` pins where the tune sits (the roll call: exactly on its own keys).
+  function fitOf(notes, shift) { return S.fitMelody(notes, hasKey, { lo: cur.lo, hi: cur.hi, fill: state.fill, shift: shift }); }
 
   function buildSongList() {
     var html = '<optgroup label="start here"><option value="roll">Roll call: every note, low to high</option></optgroup><optgroup label="songbook">';
@@ -999,7 +1000,7 @@
   function refitSong() {
     var t = tuneNotes(song.id);
     song.notes = t.notes; song.beats = t.beats; song.title = t.title;
-    song.fit = fitOf(t.notes);
+    song.fit = fitOf(t.notes, song.id === 'roll' ? 0 : null);
     if (song.id === 'own') {
       ownErr.textContent = (t.errors && t.errors.length) ? 'Couldn’t read: ' + t.errors.slice(0, 6).join(' ') : '';
     }

@@ -861,6 +861,8 @@
   // better notes, wins. A note with no key is then (when fill is on) moved an
   // octave to a key that exists, else to the nearest key within two semitones,
   // else left silent. `how` on each note says which: exact | octave | near | rest.
+  // opts.shift pins the transposition instead of searching for it: the roll call
+  // is already written on the birds' own keys and must not be slid anywhere.
   function fitMelody(mel, has, opts) {
     var o = opts || {}, fill = o.fill !== false;
     var res = { shift: 0, notes: [], exact: 0, octave: 0, near: 0, rest: 0, total: mel.length, pct: 0 };
@@ -908,7 +910,9 @@
     }
     var VAL = { exact: 1, octave: 0.5, near: 0.2, rest: 0 };
     var bestShift = null, bestScore = -Infinity;
-    for (var s = lo - mx - 12; s <= hi - mn + 12; s++) {
+    var sFrom = lo - mx - 12, sTo = hi - mn + 12;
+    if (o.shift != null) sFrom = sTo = o.shift;
+    for (var s = sFrom; s <= sTo; s++) {
       var score = 0, reg = 0, sounding = 0;
       for (i = 0; i < mel.length; i++) {
         var pl = place(mel[i].m + s, s);
