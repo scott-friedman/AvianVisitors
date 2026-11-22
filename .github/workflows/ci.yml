@@ -37,7 +37,11 @@ jobs:
       - run: npm test
 
   pi:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: once `latest` became Ubuntu 26.04, setup-python
+    # had no Python 3.9 build for it ("version '3.9' ... was not found for
+    # Ubuntu 26.04") and this job failed before running a single test. Move to a
+    # newer image only together with dropping 3.9 from the matrix.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ['3.9', '3.11'] # Mac system python / Pi Bookworm
