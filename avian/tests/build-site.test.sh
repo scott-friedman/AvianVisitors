@@ -26,9 +26,15 @@ cat > "$FIX/avian/frontend/index.html" <<'HTML'
 <script src="./config.js"></script>
 <script src="./spectral-core.js"></script>
 <script src="./apt.js"></script>
+<script src="./sampler-core.js"></script>
+<script src="./songbook.js"></script>
+<script src="./instrument.js"></script>
 HTML
 echo 'fetch("assets/signatures.json");var x=1;' > "$FIX/avian/frontend/apt.js"
 echo 'var core=1;' > "$FIX/avian/frontend/spectral-core.js"
+echo 'var sampler=1;' > "$FIX/avian/frontend/sampler-core.js"
+echo 'var book=1;'    > "$FIX/avian/frontend/songbook.js"
+echo 'var play=1;'    > "$FIX/avian/frontend/instrument.js"
 echo 'var cfg=1;'  > "$FIX/avian/frontend/config.js"
 echo 'body{}'      > "$FIX/avian/frontend/styles.css"
 printf 'PNG' > "$FIX/avian/frontend/favicon.png"
@@ -48,11 +54,11 @@ AVIAN_ROOT="$FIX" bash "$BUILD" "$OUT" > "$WORK/build.log" \
   || fail "build-site.sh exited nonzero on the happy path: $(cat "$WORK/build.log")"
 
 # 1. every shell asset reference in index.html is ?v=<8-hex> stamped
-for f in apt.js spectral-core.js config.js styles.css favicon.png; do
+for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js config.js styles.css favicon.png; do
   grep -Eq "\./$f\?v=[0-9a-f]{8}\"" "$OUT/index.html" \
     || fail "index.html reference to $f is not content-hash stamped"
 done
-ok "index.html stamps all five shell assets"
+ok "index.html stamps all eight shell assets"
 grep -q '"\./apt\.js"' "$OUT/index.html" && fail "bare ./apt.js reference survived"
 ok "no bare shell-asset references survive"
 
@@ -71,6 +77,14 @@ sigv="$(grep -o 'assets/signatures\.json?v=[0-9a-f]\{8\}' "$OUT/apt.js" | head -
 finalh="$( (md5 -q "$OUT/assets/signatures.json" 2>/dev/null || md5sum "$OUT/assets/signatures.json" | awk '{print $1}') | cut -c1-8)"
 [ "$sigv" = "$finalh" ] || fail "apt.js stamp ($sigv) != hash of DEPLOYED json ($finalh) — clip-version/json-hash ordering broke"
 ok "apt.js stamped with the post-rewrite json hash"
+
+# 3b. the play view's engine is shipped, and stamped: instrument.js starts its
+#     Web Worker from that <script> tag's URL, so a bare reference would pin
+#     the worker to a day-old cached engine while the page ran the new one.
+for f in sampler-core.js songbook.js instrument.js; do
+  [ -f "$OUT/$f" ] || fail "$f was not copied into the site"
+done
+ok "play view files shipped"
 
 # 4. art-manifest excludes flight (-2) slugs
 grep -q '"a-b"' "$OUT/assets/art-manifest.json" || fail "art-manifest missing a-b"

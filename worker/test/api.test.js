@@ -4,7 +4,7 @@
 // clip archive + first-seen coverage webhook, and /api/frame-config's abuse
 // hardening (2026-07-10).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import worker, { POLL_CACHE, RARE_MAX, parseClipName } from '../src/index.js';
+import worker, { POLL_CACHE, RARE_MAX, parseClipName, CLIPS_CACHE, CLIPS_RECENT_MAX, comSafe } from '../src/index.js';
 
 // Fake D1: routes SQL (by substring) to canned results or functions; records
 // every call. INSERT/REPLACE semantics are NOT emulated — tests assert the SQL
@@ -73,6 +73,7 @@ const post = (path, e, body, headers = {}) =>
 
 beforeEach(() => {
   POLL_CACHE.clear();
+  CLIPS_CACHE.clear();
   vi.spyOn(console, 'error').mockImplementation(() => {}); // exercised on purpose below
 });
 afterEach(() => {
@@ -581,5 +582,110 @@ describe('recording ?sci= picks the clearest clip', () => {
     const res = await get('/api/recording?sci=Catharus%20fuscescens', e);
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Length')).toBe('5');
+  });
+});
+
+describe('clip listing for the instrument (GET /api/clips)', () => {
+  const SPECIES = [
+    { sci: 'Poecile atricapillus', com: 'Black-capped Chickadee', n: 900, confirmed: 1 },
+    { sci: 'Accipiter cooperii', com: "Cooper's Hawk", n: 12, confirmed: 1 },
+    { sci: 'Catharus fuscescens', com: 'Veery', n: 1, confirmed: 0 },
+    { sci: 'Canis volaticus', com: 'Mojo', n: 40, confirmed: 1 },
+    { sci: 'Corvus corax', com: 'Common Raven', n: 3, confirmed: 1 }, // heard, but nothing archived
+  ];
+  const MOJO_FILE = 'Mojo-93-2026-07-03-birdnet-08:12:47.mp3';
+  const bucket = () => {
+    const r2 = new FakeR2({
+      'rare/Black-capped_Chickadee-81-2026-07-01-birdnet-06:00:00.mp3': 'a',
+      'rare/Black-capped_Chickadee-97-2026-07-02-birdnet-06:00:00.mp3': 'a',
+      'rare/Black-capped_Chickadee-90-2026-07-03-birdnet-06:00:00.mp3': 'a',
+      'rare/Coopers_Hawk-88-2026-07-04-birdnet-09:00:00.mp3': 'a',        // apostrophe dropped by BirdNET-Pi
+      'rare/Veery-75-2026-07-01-birdnet-09:21:12.mp3': 'a',
+      'rare/Some_Vanished_Bird-80-2026-07-01-birdnet-09:00:00.mp3': 'a',  // not on the life list
+      'rare/not-a-birdnet-name.mp3': 'a',
+      ['clips/' + MOJO_FILE]: 'woof',
+      'clips/Black-capped_Chickadee-70-2026-11-20-birdnet-07:00:00.mp3': 'a', // hot set: not listed by default
+    });
+    // A newer archive entry carries its species + exact confidence as metadata.
+    r2.meta['rare/Black-capped_Chickadee-90-2026-07-03-birdnet-06:00:00.mp3'] = { sci: 'Poecile atricapillus', conf: '0.985' };
+    return r2;
+  };
+  const dbWith = () => new FakeDB().on('ORDER BY COUNT(*) DESC', SPECIES);
+
+  it('maps the BirdNET-Pi safe name', () => {
+    expect(comSafe("Cooper's Hawk")).toBe('Coopers_Hawk');
+    expect(comSafe('Black-capped Chickadee')).toBe('Black-capped_Chickadee');
+  });
+
+  it('groups archived clips by species, clearest first, with the confirmed flag', async () => {
+    const res = await get('/api/clips', env(dbWith(), { CLIPS: bucket() }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=300');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    const body = await res.json();
+    const by = Object.fromEntries(body.species.map((s) => [s.sci, s]));
+    // Metadata confidence (0.985) outranks the filename's rounded 97/81.
+    expect(by['Poecile atricapillus'].clips.map((c) => c.conf)).toEqual([0.985, 0.97, 0.81]);
+    expect(by['Accipiter cooperii'].clips).toEqual([{ file: 'Coopers_Hawk-88-2026-07-04-birdnet-09:00:00.mp3', conf: 0.88 }]);
+    expect(by['Catharus fuscescens'].confirmed).toBe(0);
+    expect(by['Poecile atricapillus'].confirmed).toBe(1);
+    // Species with nothing archived, vanished species and odd keys are left out.
+    expect(by['Corvus corax']).toBeUndefined();
+    expect(body.species.every((s) => s.clips.length > 0)).toBe(true);
+    // Mojo's one bark lives under clips/, not rare/.
+    expect(by['Canis volaticus'].clips).toEqual([{ file: MOJO_FILE, conf: 0.93 }]);
+    expect(body.total_clips).toBe(6);
+    // Most-heard species first.
+    expect(body.species[0].sci).toBe('Poecile atricapillus');
+  });
+
+  it('caches the listing per isolate (one GROUP BY + one R2 list across requests)', async () => {
+    const db = dbWith();
+    const r2 = bucket();
+    let lists = 0;
+    const list = r2.list.bind(r2);
+    r2.list = async (o) => { lists += 1; return list(o); };
+    const e = env(db, { CLIPS: r2 });
+    await get('/api/clips', e);
+    await get('/api/clips?junk=1', e);
+    await get('/api/clips?sci=Poecile%20atricapillus', e);
+    expect(db.count('ORDER BY COUNT(*) DESC')).toBe(1);
+    expect(lists).toBe(1);
+  });
+
+  it('?sci= adds the clearest recent clips, without repeating archived ones', async () => {
+    const db = dbWith().on('ORDER BY conf DESC, ts DESC LIMIT ?', [
+      { file: 'Black-capped_Chickadee-97-2026-07-02-birdnet-06:00:00.mp3', conf: 0.97 }, // already archived
+      { file: 'Black-capped_Chickadee-70-2026-11-20-birdnet-07:00:00.mp3', conf: 0.7 },
+      { file: '../escape.mp3', conf: 0.9 },                                               // never trusted
+    ]);
+    const res = await get('/api/clips?sci=Poecile%20atricapillus', env(db, { CLIPS: bucket() }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.com).toBe('Black-capped Chickadee');
+    expect(body.clips.map((c) => c.src)).toEqual(['rare', 'rare', 'rare', 'recent']);
+    expect(body.clips[3].file).toBe('Black-capped_Chickadee-70-2026-11-20-birdnet-07:00:00.mp3');
+    const q = db.find('ORDER BY conf DESC, ts DESC LIMIT ?');
+    expect(q.args[0]).toBe('Poecile atricapillus');
+    expect(q.args[2]).toBe(CLIPS_RECENT_MAX);
+  });
+
+  it('an unknown or junk ?sci= is a 404 that never reaches D1', async () => {
+    const db = dbWith();
+    const e = env(db, { CLIPS: bucket() });
+    expect((await get('/api/clips?sci=Not%20a%20bird', e)).status).toBe(404);
+    expect((await get('/api/clips?sci=' + 'x'.repeat(500), e)).status).toBe(404);
+    expect(db.count('ORDER BY conf DESC, ts DESC LIMIT ?')).toBe(0);
+  });
+
+  it('Mojo in solo mode is just his bark (no hot-set query)', async () => {
+    const db = dbWith();
+    const res = await get('/api/clips?sci=Canis%20volaticus', env(db, { CLIPS: bucket() }));
+    expect((await res.json()).clips).toEqual([{ file: MOJO_FILE, conf: 0.93, src: 'rare' }]);
+    expect(db.count('ORDER BY conf DESC, ts DESC LIMIT ?')).toBe(0);
+  });
+
+  it('503s without clip storage', async () => {
+    expect((await get('/api/clips', env(new FakeDB()))).status).toBe(503);
   });
 });

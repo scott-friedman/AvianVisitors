@@ -11,6 +11,9 @@
  *                          → R2 `avian-clips` (7-day object lifecycle).
  *   GET  /api/recording  — streams a clip from R2 by ?file=<key> or ?sci=
  *                          (newest), with Range/seek + CORS. 404 once expired.
+ *   GET  /api/clips      — which clips exist, per species (the rare/ archive;
+ *                          ?sci= adds that species' recent ones). Feeds the
+ *                          "play" view's bird-call instrument.
  *   POST /api/heartbeat  — the Pi's 15-min liveness ping (same secret) → D1.
  *   GET  /api/status     — 200 (fresh) / 503 (Pi silent) for uptime monitors.
  *   GET  /api/recent     — species-collapsed recent detections. The public
@@ -250,6 +253,9 @@ async function dispatch(request, env, url, path) {
   }
   if (path === '/api/recording' && request.method === 'GET') {
     return await recording(request, env, url);
+  }
+  if (path === '/api/clips' && request.method === 'GET') {
+    return await clips(env, url);
   }
   if (path === '/api/heartbeat' && request.method === 'POST') {
     return await heartbeat(request, env);
@@ -663,6 +669,150 @@ function parseRange(header) {
   const offset = parseInt(startS, 10);
   if (endS === '') return { offset };                             // start → EOF
   return { offset, length: parseInt(endS, 10) - offset + 1 };     // inclusive end
+}
+
+// ---- clip listing for the instrument (/api/clips) -----------------------------
+// The "play" view turns the box's own field recordings into an instrument: it
+// needs to know WHICH clips exist, per species, so the browser can fetch each one
+// through /api/recording?file= and cut notes out of it. Two shapes:
+//
+//   GET /api/clips            → every species' forever-archived clips (rare/,
+//                               each species' ≤RARE_MAX clearest), clearest first.
+//   GET /api/clips?sci=<name> → that one species: its archived clips PLUS its
+//                               clearest recent ones still in the 7-day hot set
+//                               (clips/), for the one-bird "solo" mode, where
+//                               more recordings mean more notes to play with.
+//
+// What exists is read from R2 itself (D1 keeps a clip's key long after the object
+// expires). A clip is tied to its species by the customMetadata.sci stamped at
+// archive time, or — for clips archived before that — by the BirdNET filename's
+// "<Com_safe>-" prefix matched against the life list.
+//
+// Cost control: the listing is a whole-table GROUP BY plus a paged R2 list, so it
+// is cached per isolate for CLIPS_TTL_MS, NOT keyed on MAX(ts) like the poll
+// micro-cache — the archive changes slowly and a clip appearing ten minutes late
+// is invisible in an instrument. ?sci= is validated against that cached listing
+// before it reaches D1, so a junk or randomised name can never trigger a query,
+// and the per-species cache is bounded (FIFO).
+const CLIPS_TTL_MS = 10 * 60 * 1000;
+const CLIPS_RECENT_DAYS = 6;   // inside the 7-day clips/ lifecycle (as recording() does)
+const CLIPS_RECENT_MAX = 40;   // extra hot-set clips offered per species in solo mode
+const CLIPS_LIST_PAGES = 12;   // ≤12k archived objects; far above RARE_MAX × any real life list
+const CLIPS_SPECIES_CACHE_MAX = 64;
+const CLIPS_CACHE = new Map(); // 'all' | 'sci:<name>' → { at, data }
+const CLIPS_HEADERS = { 'Cache-Control': 'public, max-age=300' };
+
+// BirdNET-Pi's Com_safe (scripts/utils/classes.py): apostrophes dropped, spaces → '_'.
+function comSafe(com) {
+  return String(com).replace(/'/g, '').replace(/ /g, '_');
+}
+
+function clipsCacheGet(key) {
+  const hit = CLIPS_CACHE.get(key);
+  return hit && Date.now() - hit.at < CLIPS_TTL_MS ? hit.data : null;
+}
+function clipsCacheSet(key, data) {
+  CLIPS_CACHE.delete(key);
+  if (key !== 'all') {
+    // Bound the per-species entries; never evict the shared 'all' listing.
+    const perSpecies = [...CLIPS_CACHE.keys()].filter((k) => k !== 'all');
+    if (perSpecies.length >= CLIPS_SPECIES_CACHE_MAX) CLIPS_CACHE.delete(perSpecies[0]);
+  }
+  CLIPS_CACHE.set(key, { at: Date.now(), data });
+}
+
+// Every archived clip, grouped by species: { species: [{sci, com, n, confirmed,
+// clips: [{file, conf}]}] }, species most-heard first, clips clearest first.
+async function clipsIndex(env) {
+  const cached = clipsCacheGet('all');
+  if (cached) return cached;
+
+  const { results } = await env.DB.prepare(
+    `SELECT sci, com, COUNT(*) AS n, ${confirmedSql(localSql(env))} AS confirmed
+       FROM detections
+      GROUP BY sci
+      ORDER BY COUNT(*) DESC`
+  ).all();
+  const bySci = new Map();
+  const byName = new Map();
+  for (const r of results || []) {
+    const sp = { sci: r.sci, com: r.com, n: r.n, confirmed: r.confirmed ? 1 : 0, clips: [] };
+    bySci.set(r.sci, sp);
+    byName.set(comSafe(r.com), sp);
+  }
+
+  let cursor;
+  let truncated = false;
+  for (let page = 0; page < CLIPS_LIST_PAGES; page++) {
+    const res = await env.CLIPS.list({ prefix: 'rare/', limit: 1000, include: ['customMetadata'], cursor });
+    for (const o of res.objects || []) {
+      const file = clipKey(o.key.slice(5));
+      const parsed = file && parseClipName(file);
+      if (!parsed) continue; // not a BirdNET clip name: cannot be tied to a species
+      const meta = o.customMetadata || {};
+      const sp = (meta.sci && bySci.get(meta.sci)) || byName.get(parsed.name);
+      if (!sp) continue;     // species no longer on the life list
+      const metaConf = Number(meta.conf);
+      sp.clips.push({ file, conf: Number.isFinite(metaConf) && metaConf > 0 ? metaConf : parsed.conf });
+    }
+    truncated = !!res.truncated;
+    if (!truncated) break;
+    cursor = res.cursor;
+  }
+  if (truncated) console.error('[clips] rare/ listing truncated at', CLIPS_LIST_PAGES, 'pages');
+
+  // Mojo is kept out of rare/ on purpose (his cron self-heals one bark under
+  // clips/), so offer that bark directly: the family dog gets a voice too.
+  const mojo = bySci.get(MOJO.sci);
+  if (mojo && (await env.CLIPS.head('clips/' + MOJO.file))) {
+    mojo.clips = [{ file: MOJO.file, conf: (parseClipName(MOJO.file) || { conf: MOJO.confHi }).conf }];
+  }
+
+  const species = [];
+  let total = 0;
+  for (const sp of bySci.values()) {
+    if (!sp.clips.length) continue;
+    sp.clips.sort((a, b) => b.conf - a.conf || (a.file < b.file ? -1 : 1));
+    sp.clips = sp.clips.slice(0, RARE_MAX);
+    total += sp.clips.length;
+    species.push(sp);
+  }
+  const data = { species, total_clips: total, as_of: new Date().toISOString() };
+  clipsCacheSet('all', data);
+  return data;
+}
+
+async function clips(env, url) {
+  if (!env.CLIPS) return json({ error: 'no clip storage' }, 503);
+  const sci = (url.searchParams.get('sci') || '').trim();
+  const index = await clipsIndex(env);
+  if (!sci) return json(index, 200, CLIPS_HEADERS);
+
+  // Only a species the listing already knows may reach D1 (see header note).
+  const sp = sci.length <= 120 && index.species.find((s) => s.sci === sci);
+  if (!sp) return json({ error: 'unknown species' }, 404);
+  const key = 'sci:' + sci;
+  const cached = clipsCacheGet(key);
+  if (cached) return json(cached, 200, CLIPS_HEADERS);
+
+  const out = { sci: sp.sci, com: sp.com, n: sp.n, confirmed: sp.confirmed, as_of: new Date().toISOString() };
+  out.clips = sp.clips.map((c) => ({ file: c.file, conf: c.conf, src: 'rare' }));
+  if (sci !== MOJO.sci) {
+    // Equality on sci + a ts range = the (sci, ts) dedupe index, exactly as in
+    // recording(); the ORDER BY sorts only that species' week of rows.
+    const { results } = await env.DB.prepare(
+      'SELECT file, conf FROM detections WHERE sci = ? AND ts >= ? AND file IS NOT NULL ORDER BY conf DESC, ts DESC LIMIT ?'
+    ).bind(sci, Math.floor(Date.now() / 1000) - CLIPS_RECENT_DAYS * 86400, CLIPS_RECENT_MAX).all();
+    const have = new Set(out.clips.map((c) => c.file));
+    for (const r of results || []) {
+      const file = clipKey(r.file);
+      if (!file || have.has(file)) continue;
+      have.add(file);
+      out.clips.push({ file, conf: r.conf, src: 'recent' });
+    }
+  }
+  clipsCacheSet(key, out);
+  return json(out, 200, CLIPS_HEADERS);
 }
 
 // ---- liveness (dead-man's switch) -------------------------------------------
@@ -1758,4 +1908,5 @@ export {
   tzOffsetHours, tzMod, localDayStart, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
   isTransientD1, pollKey, frameSignature, secretMatches,
   POLL_CACHE, FRAME_WINDOWS, RARE_MAX, CONFIRM_CONF, parseClipName,
+  CLIPS_CACHE, CLIPS_RECENT_MAX, comSafe,
 };

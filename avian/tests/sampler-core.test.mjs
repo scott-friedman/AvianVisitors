@@ -1,0 +1,432 @@
+// Tests for the "play" view's engine (avian/frontend/sampler-core.js) and its
+// songbook. Run with:  node --test avian/tests/
+//
+// The analysis is checked against SYNTHETIC sound — tones whose pitch, start
+// and length are known exactly — so a regression shows up as a number that is
+// wrong, not as "it sounds a bit off". (No recordings are needed or bundled.)
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const CORE = fileURLToPath(new URL('../frontend/sampler-core.js', import.meta.url));
+const S = require(CORE);
+const BOOK = require('../frontend/songbook.js');
+
+const SR = 32000;
+// A small deterministic noise source, so every run sees the same "weather".
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+function clip(seconds, noise = 0.002, seed = 7) {
+  const r = rng(seed), a = new Float32Array(Math.round(seconds * SR));
+  for (let i = 0; i < a.length; i++) a[i] = (r() + r() + r() - 1.5) * noise;
+  return a;
+}
+// Add a tone. hz may be a number or a function of t (seconds into the tone).
+function tone(a, at, dur, hz, amp = 0.3, ramp = 0.008) {
+  const n0 = Math.round(at * SR), n = Math.round(dur * SR);
+  let ph = 0;
+  for (let i = 0; i < n && n0 + i < a.length; i++) {
+    const t = i / SR, f = typeof hz === 'function' ? hz(t) : hz;
+    ph += 2 * Math.PI * f / SR;
+    const env = Math.min(1, t / ramp, (dur - t) / ramp);
+    a[n0 + i] += amp * env * Math.sin(ph);
+  }
+  return a;
+}
+const cents = (a, b) => 1200 * Math.log2(a / b);
+const near = (got, want, tol, msg) => assert.ok(Math.abs(got - want) <= tol, `${msg}: got ${got}, want ${want} ± ${tol}`);
+
+// ------------------------------------------------------------- analysis ----
+test('finds whistled notes: the right pitch, the right place', () => {
+  const a = clip(3);
+  tone(a, 0.50, 0.25, 2000);
+  tone(a, 1.20, 0.30, 3520);
+  tone(a, 2.00, 0.20, 4186.01);
+  const r = S.analyzeClip(a, SR);
+  assert.equal(r.notes.length, 3);
+  const want = [[0.50, 0.25, 2000], [1.20, 0.30, 3520], [2.00, 0.20, 4186.01]];
+  r.notes.forEach((n, i) => {
+    const [at, dur, hz] = want[i];
+    near(cents(n.hz, hz), 0, 4, `note ${i} pitch (cents)`);
+    near(n.t0, at, 0.012, `note ${i} start`);
+    assert.ok(n.t0 <= at + 0.004, `note ${i} must not start after its attack (t0 ${n.t0})`);
+    assert.ok(n.s0 >= at - 0.02 && n.s1 <= at + dur + 0.02, `note ${i} steady part inside the tone`);
+    assert.ok(n.t1 >= at + dur - 0.03 && n.t1 <= at + dur + 0.06, `note ${i} end (t1 ${n.t1})`);
+    assert.ok(n.q > 0.7, `note ${i} quality ${n.q}`);
+    assert.ok(n.rms > 0.15 && n.rms < 0.25, `note ${i} rms ${n.rms}`);   // 0.3 peak sine ≈ 0.21 rms
+  });
+  assert.equal(S.noteName(r.notes[1].midi), 'A7');
+  assert.equal(S.noteName(r.notes[2].midi), 'C8');
+});
+
+test('measures pitch to within a few cents across the range', () => {
+  for (const hz of [330, 587.33, 1046.5, 1975.53, 2793.83, 5587.65, 7902.13, 9500]) {
+    const r = S.analyzeClip(tone(clip(1.6), 0.6, 0.3, hz), SR);
+    assert.equal(r.notes.length, 1, `${hz} Hz: one note`);
+    near(cents(r.notes[0].hz, hz), 0, 5, `${hz} Hz (cents)`);
+  }
+});
+
+test('works at 44.1 and 48 kHz too (browsers that will not decode at 32 kHz)', () => {
+  for (const sr of [44100, 48000]) {
+    const a = new Float32Array(sr * 2), r0 = rng(3);
+    for (let i = 0; i < a.length; i++) a[i] = (r0() - 0.5) * 0.004;
+    const n0 = Math.round(0.7 * sr), n = Math.round(0.3 * sr);
+    for (let i = 0; i < n; i++) a[n0 + i] += 0.3 * Math.min(1, i / 300, (n - i) / 300) * Math.sin(2 * Math.PI * 3000 * i / sr);
+    const r = S.analyzeClip(a, sr);
+    assert.equal(r.notes.length, 1);
+    near(cents(r.notes[0].hz, 3000), 0, 4, `${sr} pitch`);
+    near(r.notes[0].t0, 0.7, 0.015, `${sr} start`);
+  }
+});
+
+test('a sweep is not a note', () => {
+  const a = clip(2);
+  tone(a, 0.6, 0.18, (t) => 2000 * Math.pow(3, t / 0.18));    // 2 → 6 kHz in 180 ms
+  assert.equal(S.analyzeClip(a, SR).notes.length, 0);
+});
+
+test('keeps the natural slide into a note, but pitches only the steady part', () => {
+  const a = clip(2);
+  // 70 ms slide up from 3 kHz, then 220 ms held at 4 kHz: one continuous call.
+  tone(a, 0.6, 0.29, (t) => (t < 0.07 ? 3000 * Math.pow(4000 / 3000, t / 0.07) : 4000));
+  const r = S.analyzeClip(a, SR);
+  assert.equal(r.notes.length, 1);
+  const n = r.notes[0];
+  near(cents(n.hz, 4000), 0, 8, 'pitch is the held part');
+  assert.ok(n.s0 > 0.6 + 0.04, `steady part starts after the slide (s0 ${n.s0})`);
+  near(n.t0, 0.6, 0.015, 'sample still starts at the slide');
+  // The "body" starts where the slide comes within a semitone of the note
+  // (about 56 ms in), not at the bottom of the slide and not as late as s0.
+  assert.ok(n.b0 > 0.6 + 0.03 && n.b0 < 0.6 + 0.075, `body starts near the top of the slide (b0 ${n.b0})`);
+  assert.ok(n.t0 <= n.b0 && n.b0 <= n.s0 && n.s1 <= n.b1 && n.b1 <= n.t1, 'whole ⊇ body ⊇ steady');
+  near(n.b1, n.t1, 1e-9, 'nothing slides away afterwards, so the body runs to the end');
+});
+
+test('a call that falls away after its note: the fall is kept, but outside the body', () => {
+  const a = clip(2);
+  // 90 ms held at 3350 Hz, then a 100 ms fall of a fourth: a titmouse "peter".
+  tone(a, 0.6, 0.19, (t) => (t < 0.09 ? 3350 : 3350 * Math.pow(0.75, (t - 0.09) / 0.1)));
+  const r = S.analyzeClip(a, SR);
+  assert.equal(r.notes.length, 1);
+  const n = r.notes[0];
+  near(cents(n.hz, 3350), 0, 25, 'pitch is the held part');
+  assert.ok(n.t1 > 0.6 + 0.17, `the whole call includes the fall (t1 ${n.t1})`);
+  assert.ok(n.b1 < 0.6 + 0.14, `the body stops within a semitone of the note (b1 ${n.b1})`);
+  assert.ok(n.b1 >= n.s1 && n.b0 <= n.s0);
+});
+
+test('stacks overtones under their fundamental', () => {
+  const a = clip(2);
+  [1, 2, 3, 4].forEach((k) => tone(a, 0.6, 0.3, 800 * k, 0.24 / k));
+  const r = S.analyzeClip(a, SR);
+  assert.equal(r.notes.length, 1);
+  near(cents(r.notes[0].hz, 800), 0, 5, 'pitch');
+  assert.ok(r.notes[0].harm >= 3, `harmonics stacked: ${r.notes[0].harm}`);
+  assert.equal(r.notes[0].div, 1);
+});
+
+test('hears a missing fundamental (overtones 2·3·4 of 500 Hz)', () => {
+  const a = clip(2);
+  [2, 3, 4].forEach((k) => tone(a, 0.6, 0.3, 500 * k, 0.2));
+  const r = S.analyzeClip(a, SR);
+  assert.equal(r.notes.length, 1);
+  near(cents(r.notes[0].hz, 500), 0, 6, 'pitch');
+  assert.equal(r.notes[0].div, 2);
+});
+
+test('two birds a fifth apart stay two notes (a pair is not a comb)', () => {
+  const a = clip(2);
+  tone(a, 0.6, 0.3, 2000, 0.25);
+  tone(a, 0.6, 0.3, 3000, 0.25);
+  const hz = S.analyzeClip(a, SR).notes.map((n) => Math.round(n.hz)).sort((x, y) => x - y);
+  assert.equal(hz.length, 2);
+  near(hz[0], 2000, 6, 'lower'); near(hz[1], 3000, 8, 'upper');
+});
+
+test('silence, hiss, hum and a thump give no notes', () => {
+  assert.equal(S.analyzeClip(new Float32Array(SR * 2), SR).notes.length, 0, 'digital silence');
+  assert.equal(S.analyzeClip(clip(3, 0.05), SR).notes.length, 0, 'hiss');
+  const hum = clip(3, 0.004);
+  tone(hum, 0, 3, 1000, 0.1, 0.001);                          // a steady drone, start to finish
+  assert.equal(S.analyzeClip(hum, SR).notes.length, 0, 'a constant drone is background, not a note');
+  const thump = clip(3, 0.003), r = rng(11);
+  for (let i = 0; i < 0.12 * SR; i++) thump[SR + i] += (r() - 0.5) * 0.9 * Math.exp(-i / (0.03 * SR));
+  assert.equal(S.analyzeClip(thump, SR).notes.length, 0, 'broadband thump');
+  assert.equal(S.analyzeClip(new Float32Array(100), SR).notes.length, 0, 'too short to analyse');
+});
+
+test('survives field noise: a whistle 10 dB above pink-ish noise', () => {
+  const a = clip(3, 0.0, 5), r = rng(21);
+  let lp = 0;
+  for (let i = 0; i < a.length; i++) { lp = 0.97 * lp + 0.03 * (r() - 0.5); a[i] = lp * 0.9 + (r() - 0.5) * 0.03; }
+  tone(a, 1.2, 0.35, 3136, 0.06);
+  const r1 = S.analyzeClip(a, SR);
+  assert.equal(r1.notes.length, 1);
+  near(cents(r1.notes[0].hz, 3136), 0, 6, 'pitch in noise');
+});
+
+test('a repeated call is capped per key; split calls are separate notes', () => {
+  const a = clip(4);
+  for (let i = 0; i < 9; i++) tone(a, 0.3 + i * 0.38, 0.2, 2637);          // nine identical "cheer"s
+  const r = S.analyzeClip(a, SR);
+  assert.equal(r.notes.length, S.CFG.perKey);
+  const b = clip(2);
+  tone(b, 0.5, 0.15, 3000); tone(b, 0.68, 0.15, 3000);                     // "pe-ter": 30 ms gap
+  assert.equal(S.analyzeClip(b, SR, { maxNotes: 40 }).notes.length, 2);
+});
+
+test('finds the lively stretch of a clip for the soundboard', () => {
+  const a = clip(6);
+  tone(a, 2.4, 0.2, 3000); tone(a, 2.7, 0.2, 3400); tone(a, 3.0, 0.2, 3000);
+  const r = S.analyzeClip(a, SR);
+  assert.ok(r.phrase, 'has a phrase');
+  assert.ok(r.phrase.t0 <= 2.4 && r.phrase.t0 >= 2.0, `phrase start ${r.phrase.t0}`);
+  assert.ok(r.phrase.t1 >= 3.2 && r.phrase.t1 <= 3.6, `phrase end ${r.phrase.t1}`);
+});
+
+test('cutClip hands back full-scale 16-bit samples and rescales rms to match', () => {
+  const a = tone(clip(2), 0.6, 0.3, 2500, 0.05);              // a quiet, far-off bird
+  const r = S.analyzeClip(a, SR);
+  const before = r.notes[0].rms;
+  const bufs = S.cutClip(a, SR, r, { phrase: true });
+  const n = r.notes[0];
+  assert.ok(n.pcm instanceof Int16Array);
+  near(n.pcm.length, Math.ceil(n.t1 * SR) - Math.floor(n.t0 * SR), 1, 'sample length');
+  let peak = 0; for (const v of n.pcm) peak = Math.max(peak, Math.abs(v));
+  near(peak / 32767, 0.92, 0.01, 'peak normalised');
+  assert.ok(n.rms / before > 16 && n.rms / before < 18.5, `rms follows the gain (×${n.rms / before})`);   // ≈ 0.92 / 0.05
+  assert.ok(r.phrase.pcm instanceof Int16Array && r.phrase.rms > 0);
+  assert.equal(bufs.length, 2);
+});
+
+test('answers analysis jobs when loaded as a Web Worker', () => {
+  const posted = [];
+  function WorkerGlobalScope() {}
+  const self = new WorkerGlobalScope();
+  self.postMessage = (msg, transfer) => posted.push({ msg, transfer });
+  const ctx = vm.createContext({ self, WorkerGlobalScope, Math, Float32Array, Float64Array, Int16Array, Uint32Array, Uint8Array, Array, Object, String, Number, Infinity, Error });
+  vm.runInContext(readFileSync(CORE, 'utf8'), ctx);
+  assert.equal(typeof self.onmessage, 'function');
+  assert.equal(typeof self.AvianSampler.analyzeClip, 'function');
+  self.onmessage({ data: { cmd: 'analyze', id: 42, pcm: tone(clip(2), 0.6, 0.3, 3000), sr: SR, opts: { cut: true, phrase: true } } });
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].msg.id, 42);
+  assert.equal(posted[0].msg.result.notes.length, 1);
+  assert.ok(posted[0].msg.result.notes[0].pcm.length > 0);
+  assert.equal(posted[0].transfer.length, 2);
+  self.onmessage({ data: { cmd: 'analyze', id: 43, pcm: null, sr: SR } });   // a bad job must still answer
+  assert.equal(posted[1].msg.id, 43);
+  assert.ok(posted[1].msg.result.error);
+});
+
+// ----------------------------------------------------------------- bank ----
+const N = (sci, clip, midi, q = 0.8) => ({ sci, clip, midi, q });
+
+test('rankNotes: key, cents, and trust from the bird\'s other recordings', () => {
+  const notes = S.rankNotes([
+    N('Wren', 'a', 84.10), N('Wren', 'b', 84.30), N('Wren', 'c', 91.00),   // 91 is heard in one clip only
+    N('Dove', 'x', 70.49)
+  ]);
+  assert.equal(notes[0].key, 84);
+  near(notes[0].cents, 10, 0.01, 'cents');
+  assert.equal(notes[0].sup, 1);
+  assert.equal(notes[2].sup, 0);
+  assert.ok(notes[0].rank > notes[2].rank * 1.2, 'a supported note outranks a lone one of equal quality');
+  near(notes[3].cents, 49, 0.01, 'never more than 50 cents from its key');
+  assert.ok(notes.every((n) => Math.abs(n.cents) <= 50));
+  assert.ok(notes[3].rank < notes[3].q, 'far from its key costs rank');
+});
+
+test('buildKeys spreads the keyboard across species', () => {
+  const notes = [];
+  // A chickadee that could take every key (and, heard in five recordings, ranks
+  // best on each), and five others nearly as good at one key each.
+  for (let k = 80; k <= 84; k++) notes.push(N('Chickadee', 'c' + k, k, 0.9));
+  ['Wren', 'Robin', 'Dove', 'Finch', 'Jay'].forEach((s, i) => notes.push(N(s, s, 80 + i, 0.95)));
+  const B = S.buildKeys(S.rankNotes(notes));
+  assert.deepEqual(B.list, [80, 81, 82, 83, 84]);
+  assert.equal(B.lo, 80); assert.equal(B.hi, 84);
+  const singers = B.list.map((k) => B.keys[k][B.pick[k]].sci);
+  assert.ok(new Set(singers).size >= 4, `diverse singers: ${singers}`);
+  for (let i = 1; i < singers.length; i++) assert.notEqual(singers[i], singers[i - 1], 'neighbouring keys differ');
+  assert.equal(B.keys[80][0].sci, 'Chickadee', 'singers are still listed best-first');
+  assert.equal(B.keys[80].length, 2);
+});
+
+test('buildKeys: variety never costs quality', () => {
+  // The chickadee is far better on every key: a poor note from another bird
+  // must not take a key just to be different.
+  const notes = [];
+  for (let k = 80; k <= 83; k++) { notes.push(N('Chickadee', 'c' + k, k, 0.9)); notes.push(N('Crow', 'x' + k, k, 0.4)); }
+  const B = S.buildKeys(S.rankNotes(notes));
+  assert.deepEqual(B.list.map((k) => B.keys[k][B.pick[k]].sci), ['Chickadee', 'Chickadee', 'Chickadee', 'Chickadee']);
+  assert.ok(B.keys[80].some((n) => n.sci === 'Crow'), 'the crow is still on the key, for "take turns" and the picker');
+});
+
+test('buildKeys solo: one bird, several takes per key', () => {
+  const notes = [];
+  for (let i = 0; i < 9; i++) notes.push(N('Wren', 'w' + i, 84 + (i % 2) * 0.1, 0.5 + i * 0.05));
+  notes.push(N('Robin', 'r', 84, 0.99));
+  const B = S.buildKeys(S.rankNotes(notes), { sci: 'Wren' });
+  assert.deepEqual(B.list, [84]);
+  assert.equal(B.keys[84].length, 6);
+  assert.ok(B.keys[84].every((n) => n.sci === 'Wren'));
+  assert.ok(B.keys[84][0].rank >= B.keys[84][5].rank);
+  assert.deepEqual(S.buildKeys([], {}).list, []);
+});
+
+test('speciesRanges ranks birds by how many different notes they sing', () => {
+  const R = S.speciesRanges(S.rankNotes([N('Wren', 'a', 80), N('Wren', 'a', 85), N('Wren', 'b', 92), N('Dove', 'x', 70), N('Dove', 'y', 70.2)]));
+  assert.equal(R[0].sci, 'Wren');
+  assert.deepEqual([R[0].count, R[0].lo, R[0].hi, R[0].span], [3, 80, 92, 12]);
+  assert.deepEqual([R[1].sci, R[1].count, R[1].notes], ['Dove', 1, 2]);
+});
+
+// --------------------------------------------------------------- melody ----
+test('parseMelody: octaves stick, lengths, rests, bars, mistakes', () => {
+  const m = S.parseMelody('C4 D:0.5 e:0.5 | F#:2 r G3 | Bb A♭5:1.5 r:0.5 xyz H2');
+  assert.deepEqual(m.notes.map((n) => n.m), [60, 62, 64, 66, 55, 58, 80]);
+  assert.deepEqual(m.notes.map((n) => n.t), [0, 1, 1.5, 2, 5, 6, 7]);
+  assert.deepEqual(m.notes.map((n) => n.d), [1, 0.5, 0.5, 2, 1, 1, 1.5]);
+  assert.deepEqual(m.bars, [2, 4, 3]);
+  assert.equal(m.beats, 9);
+  assert.deepEqual(m.errors, ['xyz', 'H2']);
+  assert.deepEqual(S.parseMelody('').notes, []);
+  assert.deepEqual(S.parseMelody('C:0 C:999').errors, ['C:0', 'C:999']);
+  assert.equal(S.parseMelody('C-1').notes[0].m, 0);
+  assert.equal(S.parseMelody('c4,d4, e4').notes.length, 3, 'commas are fine too');
+});
+
+test('fitMelody slides a tune to where the birds have its notes', () => {
+  const have = new Set([84, 86, 88, 89, 91, 93]);             // C7 D E F G A
+  const has = (k) => (have.has(k) ? 1 : 0);
+  const mel = S.parseMelody('C4 C G G A A G:2').notes;
+  const fit = S.fitMelody(mel, has, { lo: 84, hi: 93 });
+  assert.equal(fit.shift, 24);
+  assert.deepEqual(fit.notes.map((n) => n.key), [84, 84, 91, 91, 93, 93, 91]);
+  assert.ok(fit.notes.every((n) => n.how === 'exact'));
+  assert.deepEqual([fit.exact, fit.total, fit.pct], [7, 7, 100]);
+});
+
+test('fitMelody: a missing note borrows an octave, then a neighbour, else rests', () => {
+  const have = new Set([72, 74, 76, 79, 84, 89]);
+  const has = (k) => (have.has(k) ? 1 : 0);
+  // C D E F G with F missing at 77 but present an octave up (89).
+  const mel = [72, 74, 76, 77, 79].map((m, i) => ({ m, t: i, d: 1 }));
+  const fit = S.fitMelody(mel, has, { lo: 72, hi: 89 });
+  assert.equal(fit.shift, 0);
+  assert.deepEqual(fit.notes.map((n) => n.how), ['exact', 'exact', 'exact', 'octave', 'exact']);
+  assert.equal(fit.notes[3].key, 89);
+  assert.equal(fit.pct, 80);
+  const strict = S.fitMelody(mel, has, { lo: 72, hi: 89, fill: false });
+  assert.equal(strict.notes[3].how, 'rest');
+  assert.equal(strict.notes[3].key, null);
+  assert.equal(strict.rest, 1);
+  // No octave anywhere: the nearest real key within two semitones.
+  const has2 = (k) => (k === 60 || k === 62 || k === 66 ? 1 : 0);
+  const fit2 = S.fitMelody([60, 62, 64].map((m, i) => ({ m, t: i, d: 1 })), has2, { lo: 60, hi: 66 });
+  assert.deepEqual(fit2.notes.map((n) => n.how), ['exact', 'exact', 'near']);
+  assert.ok([62, 66].includes(fit2.notes[2].key));
+});
+
+test('fitMelody with no birds at all rests every note; an empty tune is fine', () => {
+  const none = S.fitMelody([{ m: 60, t: 0, d: 1 }], () => 0, { lo: null, hi: null });
+  assert.deepEqual([none.rest, none.pct, none.notes[0].how], [1, 0, 'rest']);
+  assert.equal(S.fitMelody([], () => 1, { lo: 60, hi: 72 }).total, 0);
+});
+
+test('rollCall walks every key the birds have', () => {
+  assert.deepEqual(S.rollCall([70, 75, 90]).map((n) => [n.m, n.t, n.d]), [[70, 0, 0.5], [75, 0.5, 0.5], [90, 1, 0.5]]);
+});
+
+// ------------------------------------------------------------- songbook ----
+test('songbook: every tune parses, and every bar adds up', () => {
+  assert.ok(BOOK.length >= 20);
+  const ids = new Set();
+  for (const tune of BOOK) {
+    assert.ok(tune.id && tune.title && tune.by && tune.bpm > 30 && tune.bpm < 260, `${tune.id}: fields`);
+    assert.ok(!ids.has(tune.id), `${tune.id}: duplicate id`); ids.add(tune.id);
+    const m = S.parseMelody(tune.notes);
+    assert.deepEqual(m.errors, [], `${tune.id}: unreadable tokens`);
+    assert.ok(m.notes.length >= 5, `${tune.id}: has notes`);
+    assert.ok(m.notes.every((n) => n.m >= 36 && n.m <= 96), `${tune.id}: a note landed in a strange octave`);
+    // A forgotten octave number shows up as a wild leap or an absurd range.
+    for (let i = 1; i < m.notes.length; i++) {
+      assert.ok(Math.abs(m.notes[i].m - m.notes[i - 1].m) <= 15, `${tune.id}: a leap of more than a tenth at note ${i} (sticky-octave slip?)`);
+    }
+    const ms = m.notes.map((n) => n.m);
+    assert.ok(Math.max(...ms) - Math.min(...ms) <= 24, `${tune.id}: spans more than two octaves`);
+    if (!tune.meter) continue;
+    m.bars.forEach((len, i) => {
+      const first = i === 0, last = i === m.bars.length - 1;
+      if (first && tune.pickup) return near(len, tune.pickup, 1e-9, `${tune.id}: pickup`);
+      if (last) return assert.ok(len > 0 && len <= tune.meter + 1e-9, `${tune.id}: last bar is ${len} beats`);
+      near(len, tune.meter, 1e-9, `${tune.id}: bar ${i + 1}`);
+    });
+  }
+});
+
+// ----------------------------------------------------------------- MIDI ----
+// Build a tiny two-track Standard MIDI File by hand.
+function vlq(n) { const out = [n & 0x7f]; while ((n >>= 7)) out.unshift((n & 0x7f) | 0x80); return out; }
+function chunk(tag, bytes) {
+  const len = bytes.length;
+  return [...tag].map((c) => c.charCodeAt(0)).concat([len >>> 24 & 255, len >>> 16 & 255, len >>> 8 & 255, len & 255], bytes);
+}
+function smf(ppq, tracks) {
+  return new Uint8Array(chunk('MThd', [0, 1, 0, tracks.length, ppq >> 8, ppq & 255]).concat(...tracks.map((t) => chunk('MTrk', t)))).buffer;
+}
+const END = [0, 0xff, 0x2f, 0];
+
+test('parseMidi reads notes, tempo, names, running status; skips drums', () => {
+  const tempo = [0, 0xff, 0x51, 3, 0x07, 0xa1, 0x20, ...END];                      // 500000 µs = 120 bpm
+  const lead = [
+    0, 0xff, 0x03, 4, 0x4c, 0x65, 0x61, 0x64,                                      // name "Lead"
+    0, 0x90, 60, 100, ...vlq(480), 0x80, 60, 0,                                    // C4, one beat
+    0, 0x90, 64, 100, ...vlq(240), 64, 0,                                          // E4, half a beat, off by running status vel 0
+    0, 67, 90, ...vlq(960), 67, 0,                                                 // G4 two beats (running status)
+    0, 0x99, 36, 100, ...vlq(120), 0x89, 36, 0,                                    // a drum hit: ignored
+    ...END
+  ];
+  const bass = [0, 0x91, 36, 80, 0, 0x91, 48, 80, ...vlq(1920), 0x81, 36, 0, 0, 0x81, 48, 0, ...END];
+  const P = S.parseMidi(smf(480, [tempo, lead, bass]));
+  assert.equal(P.bpm, 120);
+  assert.equal(P.ppq, 480);
+  assert.equal(P.parts.length, 2);
+  assert.equal(P.parts[0].name, 'Lead');
+  assert.deepEqual(P.parts[0].notes.map((n) => [n.m, n.t, n.d]), [[60, 0, 1], [64, 1, 0.5], [67, 1.5, 2]]);
+  assert.equal(P.parts[1].notes.length, 2);
+  assert.equal(S.midiTunePart({ parts: [{ notes: new Array(4).fill({ m: 40 }), mean: 40 }, { notes: new Array(12).fill({ m: 72 }), mean: 72 }] }), 1);
+  // The tune line of everything: the highest note at each moment, trimmed so it never overlaps.
+  const top = S.midiMelody(P, -1, 'top');
+  assert.deepEqual(top.notes.map((n) => n.m), [60, 64, 67]);
+  const all = S.midiMelody(P, -1, 'all');
+  assert.equal(all.notes.length, 5);
+  assert.equal(S.midiMelody(P, 1, 'top').notes.length, 1, 'a chord in one part → its top note');
+  assert.equal(S.midiMelody(P, 0, 'all', 2).notes.length, 2, 'capped');
+});
+
+test('parseMidi rejects what it cannot read', () => {
+  assert.throws(() => S.parseMidi(new Uint8Array([1, 2, 3]).buffer), /not a MIDI file/);
+  assert.throws(() => S.parseMidi(new TextEncoder().encode('RIFF....WAVEfmt ').buffer), /not a MIDI file/);
+  const smpte = new Uint8Array(chunk('MThd', [0, 1, 0, 0, 0xe7, 0x28])).buffer;
+  assert.throws(() => S.parseMidi(smpte), /SMPTE/);
+  // A truncated file must not hang or throw past the end.
+  const cut = smf(480, [[0, 0x90, 60, 100, ...vlq(480)]]);
+  assert.deepEqual(S.parseMidi(cut).parts, []);
+});
+
+test('pitch helpers', () => {
+  assert.equal(S.noteName(60), 'C4');
+  assert.equal(S.noteName(69), 'A4');
+  assert.equal(S.noteName(70), 'B♭4');
+  assert.equal(S.noteName(108), 'C8');
+  assert.equal(S.noteName(84.4), 'C6');
+  near(S.midiToHz(69), 440, 1e-9, 'A4');
+  near(S.hzToMidi(880), 81, 1e-9, 'A5');
+  assert.equal(S.keyOf(83.5), 84);
+});
