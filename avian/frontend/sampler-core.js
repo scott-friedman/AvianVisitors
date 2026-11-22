@@ -156,7 +156,9 @@
   //   hz,midi its pitch (midi is fractional: 93.31 = a slightly sharp A6)
   //   q       0..1 quality: how pure, steady, clear and long it is
   //   rms     loudness of the steady part (linear), for evening notes out
-  //   purity, sd (pitch wobble, cents), snr (dB), rel (dB below the clip's loudest),
+  //   purity  0..1: its share of everything sounding in its band while it holds
+  //   tone    0..1: how whistle-like (1) or trilled / buzzy (0.5) it is
+  //   sd (pitch wobble, cents), snr (dB), rel (dB below the clip's loudest),
   //   harm (partials stacked under it), div (>1: pitch is a missing fundamental)
   function analyzeClip(pcm, sr, opts) {
     var cfg = CFG, o = opts || {};
@@ -466,6 +468,26 @@
             if (rs > rival) rival = rs;
           }
           if (!(ownTop > 0 && ownTop >= cfg.leadBy * rival)) continue;
+          // How much of a TONE it is: the share of the partial's energy that
+          // sits right on its pitch (±1 bin) rather than smeared around it
+          // (±4). A whistle scores ~1; a wren's burble, a bunting's buzz or a
+          // turkey's gobble hold a "steady pitch" on paper but are really a
+          // trill around it, and score 0.5–0.7. They stay playable (that
+          // burble IS the wren) but a clean note is preferred to them.
+          var cn = 0, cd = 0;
+          for (i = w0; i <= w1; i++) {
+            row = (R.t0 + i) * nb; g = gain[R.t0 + i];
+            var pb = Math.round(R.f[i] / binHz) - b0;
+            for (k = -4; k <= 4; k++) {
+              b = pb + k;
+              if (b < 0 || b >= nb) continue;
+              dv = P[row + b] - floor[b] * g;
+              if (dv <= 0) continue;
+              cd += dv;
+              if (k >= -1 && k <= 1) cn += dv;
+            }
+          }
+          var toneShare = cd > 0 ? cn / cd : 0;
           // Sample bounds. [s0,s1] is the steady part alone — the "pure note".
           // [t0,t1] is the bird's whole syllable around it: the slide up into the
           // note, the drop away after it, everything that makes a cardinal sound
@@ -499,7 +521,7 @@
             b0: q0 === p0 ? tA : Math.max(tA, centerSec(R.t0 + q0) - H / (2 * sr)),
             b1: q1 === p1 ? tZ : Math.min(tZ, centerSec(R.t0 + q1) + H / (2 * sr)),
             hz: midiToHz(pitchC / 100), midi: pitchC / 100,
-            steadyMs: steadyMs, sd: sd, purity: purity, snr: R.salDb,
+            steadyMs: steadyMs, sd: sd, purity: purity, tone: toneShare, snr: R.salDb,
             e: tot / (w1 - w0 + 1), harm: members.length, div: R.div, mid: mid,
             rms: rmsOf(pcm, sr, centerSec(R.t0 + w0), centerSec(R.t0 + w1))
           });
@@ -527,7 +549,7 @@
       // fundamental is missing altogether (a jay's scream, a nuthatch's "yank")
       // only implies it. All three are playable, but given the choice a tune
       // is better carried by the plainer voice.
-      var tn = nt.div > 1 ? 0.8 : (nt.harm >= 3 ? 0.92 : 1);
+      var tn = (nt.div > 1 ? 0.8 : (nt.harm >= 3 ? 0.92 : 1)) * (0.4 + 0.6 * clamp01((nt.tone - 0.55) / 0.4));
       nt.q = Math.pow(nt.purity, 0.5) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce * tn;
       nt.dur = nt.t1 - nt.t0;
       delete nt.e; delete nt.mid;

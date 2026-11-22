@@ -119,6 +119,26 @@ test('a call that falls away after its note: the fall is kept, but outside the b
   assert.ok(n.b1 >= n.s1 && n.b0 <= n.s0);
 });
 
+test('a clean whistle outranks a trill on the same pitch', () => {
+  // A wren's burble holds a "steady pitch" on paper, but it is a fast warble
+  // around it. Both are real and both stay playable; the whistle is the better note.
+  const a = clip(3);
+  tone(a, 0.5, 0.25, 3000, 0.3);
+  const at = Math.round(1.6 * SR), n = Math.round(0.25 * SR);
+  let ph = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR, env = Math.min(1, i / 256, (n - i) / 256);
+    ph += 2 * Math.PI * (3000 + 70 * Math.sin(2 * Math.PI * 45 * t)) / SR;     // ±70 Hz, 45 times a second
+    a[at + i] += 0.3 * env * Math.sin(ph);
+  }
+  const notes = S.analyzeClip(a, SR).notes.filter((x) => Math.abs(x.hz - 3000) < 60);
+  const whistle = notes.find((x) => x.t0 < 1), trill = notes.find((x) => x.t0 > 1);
+  assert.ok(whistle && whistle.tone > 0.9, 'whistle tone ' + (whistle && whistle.tone));
+  assert.ok(trill, 'the trill is still found');
+  assert.ok(trill.tone < 0.8, 'trill tone ' + trill.tone);
+  assert.ok(trill.q < whistle.q * 0.85, `trill q ${trill.q} vs whistle q ${whistle.q}`);
+});
+
 test('stacks overtones under their fundamental', () => {
   const a = clip(2);
   [1, 2, 3, 4].forEach((k) => tone(a, 0.6, 0.3, 800 * k, 0.24 / k));
