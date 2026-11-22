@@ -77,7 +77,9 @@
   var state = {
     inited: false, visible: false, failed: false,
     mode: ls('mode', 'flock') === 'solo' ? 'solo' : 'flock',
-    cut: CUTS.hasOwnProperty(ls('cut', '')) ? ls('cut', '') : 'sing',
+    // ('cut2': a choice made before "sings on" existed is not carried over, so
+    // everyone hears the new default once; what they pick after that sticks.)
+    cut: CUTS.hasOwnProperty(ls('cut2', '')) ? ls('cut2', '') : 'sing',
     tune: ls('tune', '1') !== '0',
     turns: ls('turns', '0') === '1',
     loop: ls('loop', '0') === '1',
@@ -1394,7 +1396,7 @@
     }
     rebuild();
   });
-  wireSeg(cutEl, 'data-cut', function (cut) { state.cut = cut; lsSet('cut', cut); });
+  wireSeg(cutEl, 'data-cut', function (cut) { state.cut = cut; lsSet('cut2', cut); });
   wireToggle(tuneBtn, 'tune', function () { if (nowNote && nowKey != null) showNow(nowKey, nowNote); });
   wireToggle(turnsBtn, 'turns', function () {
     if (!state.turns) { turn = {}; if (kbRange) { for (var k = kbRange[0]; k <= kbRange[1]; k++) updateKey(k); renderRange(); } }
