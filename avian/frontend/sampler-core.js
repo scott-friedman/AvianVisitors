@@ -419,17 +419,23 @@
           var topB = -1, topE = 0;
           dsum = 0;
           for (b = cutB; b <= hi; b++) {
-            var be = 0;
-            for (i = w0; i <= w1; i++) { dv = P[(R.t0 + i) * nb + b] - floor[b] * gain[R.t0 + i]; if (dv > 0) be += dv; }
+            var be = 0, raw = 0;
+            for (i = w0; i <= w1; i++) {
+              pw = P[(R.t0 + i) * nb + b]; raw += pw;
+              dv = pw - floor[b] * gain[R.t0 + i]; if (dv > 0) be += dv;
+            }
             dsum += be;
-            if (be > topE) { topE = be; topB = b; }
+            if (raw > topE) { topE = raw; topB = b; }
           }
           var purity = dsum > 0 ? Math.min(1, tot / dsum) : 0;
           // ...and the loudest single thing in that band has to be this sound
           // (its fundamental or one of its own overtones). A note sung under a
           // louder neighbour measures fine and then plays back as the
           // neighbour's pitch: on the real clips that was the one way a tune
-          // still went wrong, so such a note is not offered at all.
+          // still went wrong, so such a note is not offered at all. Judged on
+          // the RAW spectrum, not the denoised one: a steady drone (a tree frog,
+          // a compressor) cancels itself out of the analysis, but it is still
+          // on the tape, and a note quieter than the drone plays as the drone.
           var leads = false, topHz = (topB + b0) * binHz;
           for (k = 0; k < members.length && !leads; k++) {
             M = members[k];

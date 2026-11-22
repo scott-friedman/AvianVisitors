@@ -167,6 +167,17 @@ test('a note sung under a louder neighbour is not offered', () => {
   const high = S.analyzeClip(b, SR).notes.filter((n) => Math.abs(n.hz - 5000) < 12);
   assert.equal(high.length, 1, 'the high note survives the thrum');
   assert.ok(high[0].purity > 0.8, 'and is judged clean: ' + high[0].purity);
+  // A steady drone in the note's own band (a tree frog, a compressor) is on the
+  // tape even though the analysis tunes it out: a note quieter than the drone
+  // would play back as the drone, a louder one is fine.
+  const drone = (amp) => {
+    const c = clip(3);
+    tone(c, 0, 3, 1100, 0.2, 0.05);
+    tone(c, 1.2, 0.3, 1866, amp);
+    return S.analyzeClip(c, SR).notes.filter((n) => Math.abs(n.hz - 1866) < 8).length;
+  };
+  assert.equal(drone(0.08), 0, 'quieter than the drone');
+  assert.equal(drone(0.5), 1, 'louder than the drone');
 });
 
 test('silence, hiss, hum and a thump give no notes', () => {
