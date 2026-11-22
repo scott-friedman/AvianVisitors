@@ -199,6 +199,86 @@
       </div>
     </section>
 
+    <!-- ========== View 5 - Play ========== -->
+    <!-- The yard's own recordings as an instrument. Every key is a real note a
+         real bird sang into the microphone: "flock" puts a different bird on
+         each key, "solo" plays one bird's whole range. Below the keys: a
+         songbook the birds sing with the notes they really have, and a pad per
+         species that plays its call exactly as recorded. True sounds only -
+         nothing is synthesised or stretched (see the note at the foot).
+         Everything here is built and driven by instrument.js; nothing loads
+         until the view is first opened. Window-picker independent. -->
+    <section class="view" id="v4" aria-label="Play the birds">
+      <div class="play-wrap is-empty" id="playWrap">
+        <div class="chorus-controls play-controls">
+          <div class="chorus-seg" id="playMode" role="tablist" aria-label="who sings">
+            <i class="seg-pill" aria-hidden="true"></i>
+            <button type="button" data-mode="flock" aria-current="true" title="a different bird on every key">flock</button>
+            <button type="button" data-mode="solo" title="one bird's whole range">solo</button>
+          </div>
+          <div class="chorus-seg" id="playCut" role="tablist" aria-label="how much of each call to play">
+            <i class="seg-pill" aria-hidden="true"></i>
+            <button type="button" data-cut="whole" title="the bird's whole call, slides and all">whole call</button>
+            <button type="button" data-cut="balanced" aria-current="true" title="the part of the call that stays on the note">balanced</button>
+            <button type="button" data-cut="note" title="just the steady, in-tune part">just the note</button>
+          </div>
+          <button type="button" class="chorus-toggle" id="playTune" aria-pressed="true" title="nudge each note by less than half a semitone so it lands on its key. Off = exactly as the bird sang it">fine-tune</button>
+          <button type="button" class="chorus-toggle" id="playTurns" aria-pressed="false" title="each press of a key passes it to the next bird that has that note">take turns</button>
+          <span class="chorus-hint">every key is a real note a bird sang here</span>
+        </div>
+
+        <div class="play-status" id="playStatus" aria-live="polite"></div>
+        <div class="play-solo" id="playSolo" hidden></div>
+
+        <div class="play-stage">
+          <div class="play-now" id="playNow"></div>
+          <div class="play-range" id="playRange" aria-hidden="true"></div>
+          <div class="play-kb-scroll" id="playKbScroll">
+            <div class="play-kb" id="playKb" role="group" aria-label="bird keyboard"></div>
+          </div>
+        </div>
+
+        <section class="play-panel play-songs" id="playSongs" aria-label="Songs">
+          <header class="play-head">
+            <h3>Songs</h3>
+            <small>the birds sing a tune using only the notes they really have</small>
+          </header>
+          <div class="play-song-row">
+            <button type="button" class="play-go" id="playGo" aria-label="play">▶</button>
+            <select id="playSong" class="play-select" aria-label="tune"></select>
+            <label class="play-tempo"><span>tempo</span><input type="range" id="playTempo" min="40" max="240" step="1" value="120"><output id="playTempoOut" for="playTempo">120</output></label>
+            <button type="button" class="chorus-toggle" id="playLoop" aria-pressed="false">loop</button>
+            <button type="button" class="chorus-toggle" id="playFill" aria-pressed="true" title="when no bird has a note: borrow it from an octave away or the nearest note. Off = leave it silent">fill gaps</button>
+          </div>
+          <div class="play-own" id="playOwn" hidden>
+            <textarea id="playOwnText" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="your tune"></textarea>
+            <p class="play-help">Letters A to G, with # or b for sharps and flats. A number sets the octave and sticks (C4 is middle C). Add :2 for a note twice as long, :0.5 for half. r is a rest. Bar lines | are optional. <span class="play-err" id="playOwnErr"></span></p>
+          </div>
+          <div class="play-midi" id="playMidi" hidden>
+            <button type="button" class="pn-btn" id="playMidiPick">choose a MIDI file</button>
+            <input type="file" id="playMidiFile" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
+            <select id="playMidiPart" class="play-select" aria-label="which part" hidden></select>
+            <button type="button" class="chorus-toggle" id="playMidiTop" aria-pressed="true" title="play only the top line (the tune). Off = chords and all" hidden>tune line only</button>
+            <span class="play-midi-name" id="playMidiName">or drop one anywhere on this panel</span>
+          </div>
+          <div class="play-roll" id="playRoll"></div>
+          <p class="play-legend" aria-hidden="true"><i class="lg exact"></i>sung at this pitch<i class="lg octave"></i>borrowed from an octave away<i class="lg near"></i>nearest note a bird has<i class="lg rest"></i>silent</p>
+          <p class="play-fit" id="playFit"></p>
+          <div class="play-cast" id="playCast"></div>
+        </section>
+
+        <section class="play-panel play-voices" id="playVoices" aria-label="Voices" hidden>
+          <header class="play-head">
+            <h3>Voices</h3>
+            <small id="playVoicesSub">tap a bird to hear its call, exactly as the microphone caught it</small>
+          </header>
+          <div class="play-pads" id="playPads"></div>
+        </section>
+
+        <p class="play-foot">True sounds only. Every note is cut from this yard's own recordings; nothing is synthesised, stretched or looped, and only the rumble far below a note is filtered out. “Fine-tune” plays a note up to half a semitone fast or slow so it lands on its key. Turn it off to hear every note exactly as the bird sang it. Each key is named for the bird its recording was of; now and then that is a neighbour calling in the background.</p>
+      </div>
+    </section>
+
   </div>
 </main>
 
@@ -300,11 +380,18 @@
   <button type="button" data-i="1">stats</button>
   <button type="button" data-i="2">atlas</button>
   <button type="button" data-i="3">chorus</button>
+  <button type="button" data-i="4">play</button>
 </nav>
 
 
 <script src="./config.js"></script>
 <script src="./spectral-core.js"></script>
 <script src="./apt.js"></script>
+<!-- The play view. sampler-core.js is the note-finding engine (the page also
+     starts it as a Web Worker), songbook.js the public-domain tunes,
+     instrument.js the view itself. All three wait for the view to be opened. -->
+<script src="./sampler-core.js"></script>
+<script src="./songbook.js"></script>
+<script src="./instrument.js"></script>
 </body>
 </html>

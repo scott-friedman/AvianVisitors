@@ -37,7 +37,11 @@ jobs:
       - run: npm test
 
   pi:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: once `latest` became Ubuntu 26.04, setup-python
+    # had no Python 3.9 build for it ("version '3.9' ... was not found for
+    # Ubuntu 26.04") and this job failed before running a single test. Move to a
+    # newer image only together with dropping 3.9 from the matrix.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ['3.9', '3.11'] # Mac system python / Pi Bookworm
@@ -54,11 +58,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       # severity=error keeps this high-signal (syntax-level breakage only);
       # tighten once the existing scripts are shellcheck-clean at lower levels.
       - run: shellcheck --severity=error pi/*.sh avian/build-site.sh newinstaller.sh
-      # apt.js ships as-authored (no bundler) — a syntax error is a blank site.
+      # The frontend ships as-authored (no bundler) — a syntax error is a blank site.
       - run: node --check avian/frontend/apt.js
+      - run: for f in sampler-core songbook instrument; do node --check "avian/frontend/$f.js"; done
+      # The play view's engine: note-finding on synthetic sound, tune fitting,
+      # the MIDI reader, and every songbook tune's bar lengths.
+      - run: node --test avian/tests/sampler-core.test.mjs
       # Fixture test locking build-site.sh's cache-hash rewrites (the
       # clip-version → json-hash ordering burned two deploy cycles).
       - run: bash avian/tests/build-site.test.sh

@@ -29,7 +29,8 @@ micro-cache (see "Operational invariants").
 | `GET /api/chorus?hours=&interval=&top=` | public *(cached)* | Binned per-species counts for the Chorus streamgraph. |
 | `GET /api/species?sci=` | public | Per-species detail (uncached — rarely hit). |
 | `GET /api/firstseen?limit=N` | public *(cached)* | Newest life-list additions. |
-| `GET /api/recording?file=` or `?sci=` | public | Streams a clip from R2: `clips/` then the `rare/` forever-archive; `?sci=` also falls back to the species' oldest clip. Range + CORS; **404** once expired. |
+| `GET /api/recording?file=` or `?sci=` | public | Streams a clip from R2: `clips/` then the `rare/` forever-archive; `?sci=` also falls back to the species' oldest clip. Range + CORS; **404** once expired. Mojo's bark falls back to `master/mojo-bark.mp3`, so it never expires. |
+| `GET /api/clips` or `?sci=` | public | Clip index for the **play view** (the bird-call instrument). No param: every life-list species with its archived `rare/` clips, clearest first → `{species:[{sci, com, n, confirmed, clips:[{file, conf}]}], total_clips, as_of}`. `?sci=`: that one bird, plus up to 40 of its recent `clips/` → `{sci, com, n, confirmed, clips:[{file, conf, src:'rare'\|'recent'}]}`; unknown species → **404**. One R2 listing of `rare/` per 10 min per isolate (not D1-polled); `max-age=300`. The page then fetches each clip through `/api/recording?file=`. |
 | `GET /api/wiki?sci=&com=` | public | Wikipedia summary proxy for the bird modal (day-cached; Mojo gets his curated field notes). |
 | `GET /api/frame-config` | public | Read the shared e-ink time window → `{window_hours}` (uncached — must be fresh). |
 | `POST /api/frame-config` | public **by design** | Set the shared window (`{window_hours: 1/12/24/168/1000000}`) — the site's picker writes it. No-op writes are skipped and real changes are rate-limited; the per-window frame cache bounds render burn. |

@@ -56,7 +56,7 @@
   // Each view's title text. The shared static-head shows one of these
   // based on the current view; identical adjacent values mean the title
   // stays put with no fade (collage and stats both say Heard Recently).
-  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Visitors', 'The Last Twelve Hours'];
+  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Visitors', 'The Last Twelve Hours', 'Play the Birds'];
   var staticHead = document.querySelector('.static-head');
   var staticTitle = document.getElementById('staticTitle');
   function setTitleForView(i) {
@@ -84,8 +84,10 @@
   var SWITCH_LEAD = SLIDE_MS - 100;   // atlas
   var STATS_LEAD = SLIDE_MS - 200;    // stats - begin a touch sooner
   var currentView = 0;                // collage shows first (no go() needed)
+  var PLAY_VIEW = 4;                  // the instrument (instrument.js), loaded after this file
   function go(i) {
-    i = Math.max(0, Math.min(3, i));
+    i = Math.max(0, Math.min(PLAY_VIEW, i));
+    var leaving = currentView;
     // Only a genuine view *switch* replays the entrance. Re-selecting the
     // current view (tapping its nav button, or a same-bird re-highlight that
     // calls go() while already there) must not retrigger the load-in.
@@ -97,7 +99,14 @@
     setTitleForView(i);
     // Chorus has its own in-view time controls (fixed 12h), so the global
     // top-bar window picker is hidden while on it and restored elsewhere.
-    if (winPick) winPick.hidden = (i === 3);
+    // The play view is window-independent too (it draws on every recording).
+    if (winPick) winPick.hidden = (i === 3 || i === PLAY_VIEW);
+    // The play view starts its work (and its sound) only while it is on screen.
+    var playView = window.AvianPlay;
+    if (playView) {
+      if (i === PLAY_VIEW) playView.show();
+      else if (leaving === PLAY_VIEW) playView.hide();
+    }
     if (!switching) return;
     // Replay the view's entrance animation on switch (collage bloom,
     // stats left-to-right, atlas row-by-row, chorus ribbons-then-birds).
@@ -2834,6 +2843,7 @@
   function syncRouter() {
     var sci = readHash();
     if (location.hash === '#about') openAbout(); else closeAbout();
+    if (location.hash === '#play') go(PLAY_VIEW);   // a shareable link straight to the instrument
     // Open the modal over the CURRENT view (no forced go(2)) so opening a bird
     // from the collage/stats no longer yanks you to the atlas; closing returns
     // you where you were. The morph self-skips to a centered fade when the
@@ -2842,6 +2852,7 @@
     else     { highlightAtlas(null); closeDetailModal(); }
   }
   if (location.hash === '#about') openAbout();
+  if (location.hash === '#play') go(PLAY_VIEW);
   window.addEventListener('hashchange', syncRouter);
 
   // Modal interactions: backdrop / close button -> clear the hash.
@@ -3656,5 +3667,18 @@
     _origRenderAtlas(animate);
     var s = readHash();
     if (s) highlightAtlas(s);
+  };
+
+  // ---- Bridge for the play view ----
+  // instrument.js is its own file (it is big, and nothing in it runs until the
+  // view is opened), but it should look and behave like the rest of the app:
+  // same escaping, same art lookup, same species colours, same segmented
+  // toggles, and above all the same single-audio coordinator, so starting a
+  // tune stops a modal recording and vice versa.
+  window.AvianApp = {
+    api: AV_API, esc: esc, slugify: slugify, img: avImg, hue: chorusHue,
+    readLS: readLS, writeLS: writeLS, syncPill: syncPill, wireToggleAdvance: wireToggleAdvance,
+    audioClaim: audioClaim, audioRelease: audioRelease,
+    view: function () { return currentView; }
   };
 })();
