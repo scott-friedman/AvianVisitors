@@ -124,6 +124,7 @@
     pickBand: 0.8,              // keys go to different birds only among near-equal notes
     oddSemis: 12,               // a one-off note this far outside a bird's usual range is doubted
     hpRatio: 0.45, hpMaxHz: 3500,   // playback cuts rumble below this × the note (see rumbleCut)
+    leadBy: 2,                  // a note must be this many times stronger than any rival (3 dB)
     minPurity: 0.3,             // a note must own this share of the sound around it
     maxSd: 32,                  // ...hold its pitch this steadily (cents)...
     minRelDb: -30,              // ...and not be a faint bird far behind the main one
@@ -364,6 +365,7 @@
     var minSteady = Math.max(3, Math.ceil(cfg.minSteadyMs / hopMs));
     var preMax = Math.round(cfg.preMs / hopMs), postMax = Math.round(cfg.postMs / hopMs);
     var cand = [];
+    var rawAcc = new Float64Array(nb), peakAcc = new Float64Array(nb), medBuf = new Float64Array(25);
     roots = tracks.filter(function (x) { return !x.parent; });
     for (var ri = 0; ri < roots.length; ri++) {
       var R = roots[ri], Rn = R.n;
@@ -416,7 +418,6 @@
           // cuts all sound well below the note (rumbleCut), so a truck or a
           // crow down there does not make a kinglet's note any less clean.
           var cutB = Math.max(lo, Math.round(rumbleCut(midiToHz(pitchC / 100)) / binHz) - b0);
-          var topB = -1, topE = 0;
           dsum = 0;
           for (b = cutB; b <= hi; b++) {
             var be = 0, raw = 0;
@@ -424,28 +425,47 @@
               pw = P[(R.t0 + i) * nb + b]; raw += pw;
               dv = pw - floor[b] * gain[R.t0 + i]; if (dv > 0) be += dv;
             }
-            dsum += be;
-            if (raw > topE) { topE = raw; topB = b; }
+            dsum += be; rawAcc[b] = raw;
           }
           var purity = dsum > 0 ? Math.min(1, tot / dsum) : 0;
-          // ...and the loudest single thing in that band has to be this sound
-          // (its fundamental or one of its own overtones). A note sung under a
-          // louder neighbour measures fine and then plays back as the
-          // neighbour's pitch: on the real clips that was the one way a tune
-          // still went wrong, so such a note is not offered at all. Judged on
-          // the RAW spectrum, not the denoised one: a steady drone (a tree frog,
-          // a compressor) cancels itself out of the analysis, but it is still
-          // on the tape, and a note quieter than the drone plays as the drone.
-          var leads = false, topHz = (topB + b0) * binHz;
-          for (k = 0; k < members.length && !leads; k++) {
+          // ...and it has to LEAD: stand clear of every other pitched sound in
+          // that band. A note sung under a louder neighbour measures fine and
+          // then plays back as the neighbour's pitch — on the real clips that
+          // was the one way a tune still went wrong — so such a note is not
+          // offered at all. Judged on the RAW spectrum, not the denoised one: a
+          // steady drone (a tree frog, a compressor) cancels itself out of the
+          // analysis, but it is still on the tape. What counts is how far each
+          // sound pokes above the spectrum around it, so plain broadband hiss
+          // or rumble, which has no pitch to mistake, is not a rival.
+          for (b = cutB; b <= hi; b++) {
+            var m0 = Math.max(cutB, b - 12), m1 = Math.min(hi, b + 12), mn = 0;
+            for (k = m0; k <= m1; k++) medBuf[mn++] = rawAcc[k];
+            var ex = rawAcc[b] - 1.5 * sortedMedian(medBuf, mn);
+            peakAcc[b] = ex > 0 ? ex : 0;
+          }
+          var ownTop = 0, bands = [];
+          for (k = 0; k < members.length; k++) {
             M = members[k];
             a0 = Math.max(R.t0 + w0, M.t0); z0 = Math.min(R.t0 + w1, M.t1);
             if (z0 < a0) continue;
             var fa = Infinity, fz = 0;
             for (t = a0; t <= z0; t++) { var mf = M.f[t - M.t0]; if (mf < fa) fa = mf; if (mf > fz) fz = mf; }
-            leads = topHz >= fa - 1.5 * binHz && topHz <= fz + 1.5 * binHz;
+            var ba = Math.max(cutB, Math.floor(fa / binHz) - b0 - 2), bz = Math.min(hi, Math.ceil(fz / binHz) - b0 + 2);
+            if (bz < ba) continue;
+            var os = 0;
+            for (b = ba; b <= bz; b++) os += peakAcc[b];
+            if (os > ownTop) ownTop = os;
+            bands.push(ba, bz);
           }
-          if (!leads) continue;
+          var rival = 0;
+          for (b = cutB + 2; b <= hi - 2; b++) {
+            var mine = false;
+            for (k = 0; k < bands.length; k += 2) if (b + 2 >= bands[k] && b - 2 <= bands[k + 1]) { mine = true; break; }
+            if (mine) continue;
+            var rs = peakAcc[b - 2] + peakAcc[b - 1] + peakAcc[b] + peakAcc[b + 1] + peakAcc[b + 2];
+            if (rs > rival) rival = rs;
+          }
+          if (!(ownTop > 0 && ownTop >= cfg.leadBy * rival)) continue;
           // Sample bounds. [s0,s1] is the steady part alone — the "pure note".
           // [t0,t1] is the bird's whole syllable around it: the slide up into the
           // note, the drop away after it, everything that makes a cardinal sound
