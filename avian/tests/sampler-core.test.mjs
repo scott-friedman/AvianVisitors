@@ -138,13 +138,35 @@ test('hears a missing fundamental (overtones 2·3·4 of 500 Hz)', () => {
   assert.equal(r.notes[0].div, 2);
 });
 
-test('two birds a fifth apart stay two notes (a pair is not a comb)', () => {
+test('two birds a fifth apart are not one deep note (a pair is not a comb)', () => {
+  // Overtones 2 and 3 of 1000 Hz look just like this. With only two partials
+  // to go on, the engine must not invent the 1000 Hz note underneath them.
   const a = clip(2);
-  tone(a, 0.6, 0.3, 2000, 0.25);
-  tone(a, 0.6, 0.3, 3000, 0.25);
-  const hz = S.analyzeClip(a, SR).notes.map((n) => Math.round(n.hz)).sort((x, y) => x - y);
-  assert.equal(hz.length, 2);
-  near(hz[0], 2000, 6, 'lower'); near(hz[1], 3000, 8, 'upper');
+  tone(a, 0.6, 0.3, 2000, 0.3);
+  tone(a, 0.6, 0.3, 3000, 0.15);
+  const hz = S.analyzeClip(a, SR).notes.map((n) => Math.round(n.hz));
+  assert.ok(hz.every((h) => h > 1500), 'no missing fundamental: ' + hz);
+  assert.ok(hz.some((h) => Math.abs(h - 2000) <= 6), 'the louder bird is found at its own pitch: ' + hz);
+});
+
+test('a note sung under a louder neighbour is not offered', () => {
+  // Cut out and played, it would sound as the neighbour's pitch, not its own.
+  const a = clip(3);
+  tone(a, 0.5, 0.3, 2000, 0.3);        // together: the 2000 Hz bird is twice as loud
+  tone(a, 0.5, 0.3, 3000, 0.15);
+  tone(a, 1.6, 0.3, 3000, 0.15);       // the quiet bird alone: a perfectly good note
+  const notes = S.analyzeClip(a, SR).notes;
+  const at3000 = notes.filter((n) => Math.abs(n.hz - 3000) < 10);
+  assert.equal(at3000.length, 1);
+  near(at3000[0].t0, 1.6, 0.012, 'the take kept is the one sung alone');
+  assert.equal(notes.filter((n) => Math.abs(n.hz - 2000) < 8).length, 1);
+  // Rumble far below a note does not count against it: playback cuts it.
+  const b = clip(2);
+  tone(b, 0.5, 0.4, 5000, 0.1);
+  tone(b, 0.45, 0.5, 400, 0.4);        // a loud low thrum under a quiet high note
+  const high = S.analyzeClip(b, SR).notes.filter((n) => Math.abs(n.hz - 5000) < 12);
+  assert.equal(high.length, 1, 'the high note survives the thrum');
+  assert.ok(high[0].purity > 0.8, 'and is judged clean: ' + high[0].purity);
 });
 
 test('silence, hiss, hum and a thump give no notes', () => {

@@ -409,24 +409,37 @@
           for (i = w0; i <= w1; i++) if (Math.abs(cc[i] - medC) <= 30) { sw += ge[i]; sc += ge[i] * cc[i]; }
           var pitchC = sw > 0 ? sc / sw : medC;
           var vs = 0, dsum = 0;
-          for (i = w0; i <= w1; i++) {
-            vs += ge[i] * (cc[i] - pitchC) * (cc[i] - pitchC);
-            dsum += D[R.t0 + i];
-          }
+          for (i = w0; i <= w1; i++) vs += ge[i] * (cc[i] - pitchC) * (cc[i] - pitchC);
           var sd = Math.sqrt(vs / (tot || 1));
           // Purity = this sound's share of everything else going on while it
           // holds its note — judged over what playback lets through. The page
           // cuts all sound well below the note (rumbleCut), so a truck or a
           // crow down there does not make a kinglet's note any less clean.
-          var cutB = Math.round(rumbleCut(midiToHz(pitchC / 100)) / binHz) - b0;
-          if (cutB > lo) {
-            dsum = 0;
-            for (i = w0; i <= w1; i++) {
-              row = (R.t0 + i) * nb; g = gain[R.t0 + i];
-              for (b = cutB; b <= hi; b++) { dv = P[row + b] - floor[b] * g; if (dv > 0) dsum += dv; }
-            }
+          var cutB = Math.max(lo, Math.round(rumbleCut(midiToHz(pitchC / 100)) / binHz) - b0);
+          var topB = -1, topE = 0;
+          dsum = 0;
+          for (b = cutB; b <= hi; b++) {
+            var be = 0;
+            for (i = w0; i <= w1; i++) { dv = P[(R.t0 + i) * nb + b] - floor[b] * gain[R.t0 + i]; if (dv > 0) be += dv; }
+            dsum += be;
+            if (be > topE) { topE = be; topB = b; }
           }
           var purity = dsum > 0 ? Math.min(1, tot / dsum) : 0;
+          // ...and the loudest single thing in that band has to be this sound
+          // (its fundamental or one of its own overtones). A note sung under a
+          // louder neighbour measures fine and then plays back as the
+          // neighbour's pitch: on the real clips that was the one way a tune
+          // still went wrong, so such a note is not offered at all.
+          var leads = false, topHz = (topB + b0) * binHz;
+          for (k = 0; k < members.length && !leads; k++) {
+            M = members[k];
+            a0 = Math.max(R.t0 + w0, M.t0); z0 = Math.min(R.t0 + w1, M.t1);
+            if (z0 < a0) continue;
+            var fa = Infinity, fz = 0;
+            for (t = a0; t <= z0; t++) { var mf = M.f[t - M.t0]; if (mf < fa) fa = mf; if (mf > fz) fz = mf; }
+            leads = topHz >= fa - 1.5 * binHz && topHz <= fz + 1.5 * binHz;
+          }
+          if (!leads) continue;
           // Sample bounds. [s0,s1] is the steady part alone — the "pure note".
           // [t0,t1] is the bird's whole syllable around it: the slide up into the
           // note, the drop away after it, everything that makes a cardinal sound
@@ -483,7 +496,13 @@
       var du = 0.25 + 0.75 * clamp01((nt.steadyMs - 40) / 150);
       var lv = 0.55 + 0.45 * clamp01(1 + nt.rel / 26);
       var ce = (nt.mid >= cLo && nt.mid <= cHi) ? 1 : 0.8;
-      nt.q = Math.pow(nt.purity, 0.5) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce;
+      // How plainly the note states its pitch. A whistle says it outright; a
+      // stack of overtones (a honk, a caw) says it with an accent; a call whose
+      // fundamental is missing altogether (a jay's scream, a nuthatch's "yank")
+      // only implies it. All three are playable, but given the choice a tune
+      // is better carried by the plainer voice.
+      var tn = nt.div > 1 ? 0.8 : (nt.harm >= 3 ? 0.92 : 1);
+      nt.q = Math.pow(nt.purity, 0.5) * Math.pow(st, 0.3) * Math.pow(sn, 0.15) * Math.pow(du, 0.3) * lv * ce * tn;
       nt.dur = nt.t1 - nt.t0;
       delete nt.e; delete nt.mid;
       if (nt.purity < cfg.minPurity || nt.sd > cfg.maxSd || nt.rel < cfg.minRelDb) continue;
@@ -841,7 +860,7 @@
       for (i = 0; i < mel.length; i++) {
         var pl = place(mel[i].m + s, s);
         if (pl[0] == null) continue;
-        score += VAL[pl[1]] * (0.8 + 0.2 * Math.min(1, has(pl[0])));
+        score += VAL[pl[1]] * (0.6 + 0.4 * Math.min(1, has(pl[0])));
         reg += melodic(pl[0]); sounding++;
       }
       // The register counts for the tune as a whole, not note by note: weighing
