@@ -154,6 +154,10 @@ After the retune, on those 161 clips: still 53 keys (A3–D9) from 34 different 
 
 **Owl watch.** `scripts/utils/owlwatch.py` keeps every owl-genus guess ≥ `OWLWATCH_MIN` (0.3, birdnet.conf) that BirdNET did not keep: a ±1.5 s clip in `~/BirdSongs/OwlWatch/<date>/` and a line in `~/BirdSongs/owl_watch.txt` (max one per species per 5 min). It never writes BirdNET's database, so a possible owl is never counted as a bird. The forwarder's `owl_watch_loop` thread sends them to `POST /api/owlwatch` (D1 `owl_watch`, migration 0007) and `POST /api/clip?kind=owlwatch` (R2 prefix `owlwatch/` — give it a 60-day lifecycle rule; never `rare/` or `master/`). The site's `owls.html` lists "heard for sure" (owl rows in `detections`) and "maybe an owl" to listen to and judge. `AVIAN_OWLWATCH_OFF=1` stops the forwarder side; `OWLWATCH_MIN=0` stops the analysis side.
 
+## Live view of the frame (the panel mirror, built 2026-11-26)
+
+The menu's "picture frame" section shows **what the panel is actually showing**, above the shared time-window picker. After each successful redraw `frame/display.py` copies the driver's own quantised buffer (`panel_mirror.snapshot_device`, read before `dev.show()`, kept only once show() returns) and `panel_mirror.publish_pending` uploads it to `POST /api/frame-confirmed` (FRAME_KEY in `X-Frame-Key`, sha256 + display time + `X-Frame-Kind`/`X-Frame-Screen`, which `/frame.png` now sends). D1 `panel_mirror` (migration 0008, one row, only moves forward); the page reads `GET /api/frame-mirror` (JSON) + `GET /api/frame-mirror.png?v=<sha>` every 60 s while the menu is open. **Never fall back to a render**: a picture that was rendered but not shown (quiet hours, a refused stale frame, the Pi offline) must not appear here; "since <time>" is the honest signal. A failed upload is retried each timer tick and can never stop the panel. `mirror = false` in the Pi's config turns it off. Shows nothing until the panel's first redraw after the Pi is updated.
+
 ## Local development (Mac)
 
 - **Collage shell** (`avian/frontend/`): preview in a browser against a sample `/api/recent` JSON.
