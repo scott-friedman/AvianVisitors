@@ -1471,7 +1471,7 @@ async function queryApi(request, env, url) {
   // action-less default to 'recent' is the PHP-shim contract — but only for
   // birdnet-api.php / the bare /api root; an unknown path is a real 404 (it
   // used to silently serve `recent`, masking typos from monitors and probes).
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config', 'chorus'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config', 'chorus', 'day'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   let action = url.searchParams.get('action');
   if (!action) {
@@ -1493,6 +1493,7 @@ async function queryApi(request, env, url) {
       case 'hourly': return hourly(env, url, tz, now);
       case 'rhythm': return rhythm(env, url, tz, now);
       case 'chorus': return chorus(env, url, tz, now);
+      case 'day': return day(env, url, tz, now);
       case 'species': return species(env, url, tz);
       case 'firstseen': return firstseen(env, url, tz);
       case 'frame-config': return getFrameWindow(env).then((h) => json({ window_hours: h }));
@@ -2074,6 +2075,71 @@ async function rhythm(env, url, tz, now) {
 // (slot - firstSlot). Returns the top ?top species by volume; the remainder is rolled
 // into a single neutral "others" ribbon so the total stays honest. Reuses hourly()'s
 // sun + now_local block for the daylight band + "now" edge.
+// One local day's calls, for the play tab's "song of a day": how many times
+// each species called in each `interval`-minute slot of that day (local time,
+// DST-correct: the day is 23, 24 or 25 h long), plus the days before it that
+// had any calls, for the day picker. ?date=YYYY-MM-DD (default today),
+// ?interval=5 (minutes, 1..60). Not polled, so not in the poll cache; a past
+// day never changes, so it is cached at the edge for an hour.
+function localDayBounds(env, date) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date || '');
+  if (!m) return null;
+  const utc = Date.UTC(+m[1], +m[2] - 1, +m[3]) / 1000;
+  if (!Number.isFinite(utc)) return null;
+  // Local midnight = UTC midnight minus the offset in force around then. The
+  // offset is read 3 h either side of the guess, which lands on the right side
+  // of a 2 am DST switch.
+  const start = utc - tzOffsetSecAt(env, utc - tzOffsetSecAt(env, utc) - 3 * 3600);
+  const next = utc + 86400;
+  const end = next - tzOffsetSecAt(env, next - tzOffsetSecAt(env, next) - 3 * 3600);
+  return { start, end };
+}
+function localIsoDate(env, ts) {
+  return new Date((ts + tzOffsetSecAt(env, ts)) * 1000).toISOString().slice(0, 10);
+}
+async function day(env, url, tz, now) {
+  const interval = clampInt(url.searchParams.get('interval'), 5, 1, 60);
+  const iv = interval * 60;
+  const date = url.searchParams.get('date') || localIsoDate(env, now);
+  const b = localDayBounds(env, date);
+  if (!b) return json({ error: 'date must be YYYY-MM-DD' }, 400);
+  const nBins = Math.ceil((b.end - b.start) / iv);
+
+  const { results } = await env.DB.prepare(
+    `SELECT CAST((ts - ?) / ? AS INT) AS slot, sci, com, COUNT(*) AS n
+       FROM detections INDEXED BY idx_detections_ts
+      WHERE ts >= ? AND ts < ?
+      GROUP BY slot, sci
+      ORDER BY slot`
+  ).bind(b.start, iv, b.start, b.end).all();
+
+  const bySci = new Map();
+  let total = 0, first = null, last = null;
+  for (const r of (results || [])) {
+    if (r.slot < 0 || r.slot >= nBins) continue;
+    let s = bySci.get(r.sci);
+    if (!s) { s = { sci: r.sci, com: r.com, n: 0, slots: [] }; bySci.set(r.sci, s); }
+    s.n += r.n; s.slots.push([r.slot, r.n]); total += r.n;
+    if (first == null || r.slot < first) first = r.slot;
+    if (last == null || r.slot > last) last = r.slot;
+  }
+  const species = [...bySci.values()].sort((a, c) => c.n - a.n);
+
+  // The picker: the days in the last two months that had any calls, newest first.
+  const days = ((await env.DB.prepare(
+    `SELECT date(${tz('ts')}, 'unixepoch') AS date, COUNT(*) AS n
+       FROM detections INDEXED BY idx_detections_ts
+      WHERE ts >= ? AND ts < ?
+      GROUP BY date ORDER BY date DESC`
+  ).bind(now - 61 * 86400, now + 60).all()).results || []).slice(0, 60);
+
+  return json({
+    date, start: b.start, end: b.end, interval, bins: nBins, total,
+    first_slot: first, last_slot: last, species, days,
+    as_of: new Date().toISOString(),
+  }, 200, b.end <= now ? { 'Cache-Control': 'public, max-age=3600' } : {});
+}
+
 async function chorus(env, url, tz, now) {
   const hours    = clampInt(url.searchParams.get('hours'), 12, 1, 48);
   const interval = clampInt(url.searchParams.get('interval'), 30, 10, 120); // minutes
@@ -2238,7 +2304,7 @@ function clampInt(raw, dflt, lo, hi) {
 // Exposed for unit tests only (worker/test/*) — not part of any runtime contract.
 export {
   tzOffsetHours, tzMod, localDayStart, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
-  isTransientD1, pollKey, frameSignature, secretMatches, nightData, frameState, sunTimes,
+  isTransientD1, pollKey, localDayBounds, frameSignature, secretMatches, nightData, frameState, sunTimes,
   POLL_CACHE, FRAME_WINDOWS, RARE_MAX, CONFIRM_CONF, parseClipName,
   CLIPS_CACHE, CLIPS_RECENT_MAX, comSafe,
 };
