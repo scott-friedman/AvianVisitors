@@ -859,6 +859,8 @@
   var rollEl = $('playRoll'), castEl = $('playCast');
   var ownBox = $('playOwn'), ownText = $('playOwnText'), ownErr = $('playOwnErr');
   var midiBox = $('playMidi'), midiFile = $('playMidiFile'), midiPart = $('playMidiPart'), midiName = $('playMidiName');
+  var dayBox = $('playDay'), dayPick = $('playDayPick'), daySum = $('playDaySum');
+  var dayState = { data: null, days: null, loading: false, failed: false, date: null, song: null };
   var parsed = {};                         // songbook id → parsed tune
   var midi = null;                         // { name, data, part, top }
   var song = { id: ls('song', 'roll'), notes: [], beats: 0, fit: null, who: [] };
@@ -872,6 +874,13 @@
     if (id === 'own') {
       var o = S.parseMelody(ownText.value);
       return { notes: o.notes, beats: o.beats, bpm: null, title: 'Your tune', errors: o.errors };
+    }
+    if (id === 'day') {
+      // A day in the yard (sampler-core's daySong): written fresh from the
+      // notes the page has, so it gets richer as more recordings are heard.
+      var ds = dayState.data ? S.daySong(dayState.data, cur, { beats: DAY_BEATS }) : null;
+      dayState.song = ds;
+      return { notes: ds ? ds.notes : [], beats: ds ? ds.beats : 0, bpm: DAY_BPM, title: 'A day in the yard', day: ds };
     }
     if (id === 'midi') {
       if (!midi) return { notes: [], beats: 0, bpm: null, title: 'MIDI file' };
@@ -895,7 +904,7 @@
   function buildSongList() {
     var html = '<optgroup label="start here"><option value="roll">Roll call: every note, low to high</option></optgroup><optgroup label="songbook">';
     BOOK.forEach(function (t) { html += '<option value="' + esc(t.id) + '">' + esc(t.title) + '</option>'; });
-    html += '</optgroup><optgroup label="your own"><option value="own">Type a tune…</option><option value="midi">Open a MIDI file…</option></optgroup>';
+    html += '</optgroup><optgroup label="from the recordings"><option value="day">A day in the yard…</option></optgroup><optgroup label="your own"><option value="own">Type a tune…</option><option value="midi">Open a MIDI file…</option></optgroup>';
     songSel.innerHTML = html;
     var ok = [].some.call(songSel.options, function (o) { return o.value === song.id; });
     if (!ok || song.id === 'midi') song.id = 'roll';
@@ -905,14 +914,17 @@
   function refitSong() {
     var t = tuneNotes(song.id);
     song.notes = t.notes; song.beats = t.beats; song.title = t.title;
-    song.fit = fitOf(t.notes, song.id === 'roll' ? 0 : null);
+    song.fit = fitOf(t.notes, song.id === 'roll' || song.id === 'day' ? 0 : null);
     // Who sings each note: a note that comes round again passes to the next
     // bird that sings it well (sampler-core's singTurns). The roll call, one of
     // each note, simply plays every key's own bird.
-    song.who = S.singTurns(song.fit.notes, cur).map(function (i, j) {
-      var k = song.fit.notes[j].key;
-      return i == null ? null : cur.keys[k][i];
-    });
+    song.who = song.id === 'day'
+      ? t.notes.map(function (n) { return cur.keys[n.key] ? cur.keys[n.key][n.idx] || null : null; })   // the bird that called then
+      : S.singTurns(song.fit.notes, cur).map(function (i, j) {
+        var k = song.fit.notes[j].key;
+        return i == null ? null : cur.keys[k][i];
+      });
+    if (song.id === 'day') renderDaySum();
     if (song.id === 'own') {
       ownErr.textContent = (t.errors && t.errors.length) ? 'Couldn’t read: ' + t.errors.slice(0, 6).join(' ') : '';
     }
@@ -924,6 +936,8 @@
     song.id = id; lsSet('song', id);
     ownBox.hidden = id !== 'own';
     midiBox.hidden = id !== 'midi';
+    dayBox.hidden = id !== 'day';
+    if (id === 'day' && !dayState.data && !dayState.loading) loadDay(dayState.date);
     var t = tuneNotes(id);
     if (!keepTempo && t.bpm) setTempo(t.bpm);
     refitSong();
@@ -943,7 +957,7 @@
   function renderRoll() {
     var fit = song.fit;
     if (!fit || !fit.notes.length) {
-      rollEl.innerHTML = '<p class="roll-empty">' + (song.id === 'own' ? 'Type a tune above and it appears here.' : song.id === 'midi' ? 'Choose a MIDI file and the birds will sing it.' : cur.lo == null ? 'The tune appears once the birds have some notes.' : 'Nothing to play yet.') + '</p>';
+      rollEl.innerHTML = '<p class="roll-empty">' + (song.id === 'own' ? 'Type a tune above and it appears here.' : song.id === 'midi' ? 'Choose a MIDI file and the birds will sing it.' : song.id === 'day' ? (dayState.loading ? 'Reading that day’s calls…' : dayState.failed ? 'Couldn’t read that day. Try again in a moment.' : !dayState.data ? 'Pick a day above.' : !dayState.data.total ? 'Nothing was heard that day.' : cur.lo == null ? 'The tune appears once the birds have some notes.' : 'None of the birds heard that day have notes yet.') : cur.lo == null ? 'The tune appears once the birds have some notes.' : 'Nothing to play yet.') + '</p>';
       return;
     }
     var lo = Infinity, hi = -Infinity;
@@ -959,6 +973,9 @@
     fit.notes.forEach(function (n, i) {
       var y = n.key != null ? n.key : n.m + fit.shift;
       html += '<i class="rn ' + n.how + '" data-i="' + i + '" style="left:' + (100 * n.t / beats).toFixed(3) + '%;width:' + Math.max(0.25, 100 * n.d / beats - 0.12).toFixed(3) + '%;top:' + (100 * (hi - y) / span).toFixed(2) + '%;height:' + (100 / span).toFixed(2) + '%;--c:var(--ch-' + singerHue(i) + ')"></i>';
+    });
+    if (song.id === 'day' && dayState.song) dayState.song.sections.forEach(function (sec) {
+      if (dayState.song.sections.length > 1) html += '<span class="roll-sec" style="left:' + (100 * sec.t / beats).toFixed(3) + '%">' + esc(sec.name) + '</span>';
     });
     rollEl.innerHTML = '<div class="roll-in" style="width:' + w + 'px">' + html + '<b class="roll-head"></b></div>';
     rollEl.scrollLeft = 0;
@@ -1076,7 +1093,7 @@
 
   goBtn.addEventListener('click', toggleSong);
   songSel.addEventListener('change', function () { selectSong(songSel.value); });
-  tempoEl.addEventListener('input', function () { setTempo(+tempoEl.value); });
+  tempoEl.addEventListener('input', function () { setTempo(+tempoEl.value); if (song.id === 'day') renderDaySum(); });
   var ownT = 0;
   ownText.addEventListener('input', function () {
     lsSet('mytune', ownText.value);
@@ -1160,6 +1177,76 @@
     if (b && b.getAttribute('data-act') === 'retry') loadIndex();
   });
 
+  // ---------------------------------------------------------- a day ----
+  // The day picker: the days with calls in the last two months (from the same
+  // /api/day answer), yesterday first when it had any, since today is still
+  // being written.
+  var DAY_BPM = 96, DAY_BEATS = 72, TZ = 'America/New_York';
+  function isoOf(d) {                      // a Date → YYYY-MM-DD in the yard's time zone
+    try { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
+    catch (e) { return d.toISOString().slice(0, 10); }
+  }
+  function dayLabel(iso, n) {
+    var today = isoOf(new Date()), yest = isoOf(new Date(Date.now() - 86400000));
+    var d = new Date(iso + 'T12:00:00Z');
+    var name = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+    return (iso === today ? 'today so far, ' : iso === yest ? 'yesterday, ' : '') + name + (n != null ? ' · ' + n.toLocaleString('en-US') + (n === 1 ? ' call' : ' calls') : '');
+  }
+  function clockOf(slot) {
+    var dd = dayState.data;
+    var ts = (dd.start + slot * dd.interval * 60) * 1000;
+    try { return new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: TZ }).toLowerCase(); }
+    catch (e) { return ''; }
+  }
+  function buildDayPick() {
+    var days = dayState.days || [], html = '';
+    days.forEach(function (d) { html += '<option value="' + esc(d.date) + '">' + esc(dayLabel(d.date, d.n)) + '</option>'; });
+    if (!days.length) html = '<option value="">no days with calls yet</option>';
+    dayPick.innerHTML = html;
+    if (dayState.date) dayPick.value = dayState.date;
+  }
+  function loadDay(date) {
+    var want = date || isoOf(new Date(Date.now() - 86400000));
+    dayState.loading = true; dayState.failed = false; dayState.date = want;
+    if (song.id === 'day') { renderRoll(); renderDaySum(); }
+    fetch(API + '/api/day?date=' + encodeURIComponent(want) + '&interval=5')
+      .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+      .then(function (d) {
+        dayState.days = d.days || [];
+        // First visit and yesterday was silent: go to the newest day with calls.
+        if (!date && !d.total && dayState.days.length && dayState.days[0].date !== want) {
+          dayState.loading = false;
+          return loadDay(dayState.days[0].date);
+        }
+        if (dayState.date !== want) return;  // a newer pick is on its way
+        if (!dayState.days.some(function (x) { return x.date === want; })) dayState.days.unshift({ date: want, n: d.total });
+        dayState.data = d; dayState.loading = false;
+        buildDayPick();
+        if (song.id === 'day') { stopSong(); refitSong(); }
+      })
+      .catch(function () {
+        if (dayState.date !== want) return;
+        dayState.loading = false; dayState.failed = true;
+        if (song.id === 'day') { renderRoll(); renderDaySum(); }
+      });
+  }
+  // One line on the day: when it woke and went quiet, how much was heard,
+  // who is singing it and how long it lasts.
+  function renderDaySum() {
+    var dd = dayState.data, ds = dayState.song;
+    if (dayState.loading || !dd) { daySum.textContent = dayState.loading ? 'Reading that day’s calls…' : ''; return; }
+    if (!dd.total) { daySum.textContent = 'Nothing was heard that day.'; return; }
+    var txt = 'Heard ' + dd.total.toLocaleString('en-US') + (dd.total === 1 ? ' call' : ' calls') + ' from ' + plural(dd.species.length, 'bird');
+    if (ds && ds.from != null) txt = 'From ' + clockOf(ds.from) + ' to ' + clockOf(ds.to) + ': ' + txt.charAt(0).toLowerCase() + txt.slice(1);
+    if (ds && ds.notes.length) {
+      var secs = Math.round(ds.beats * 60 / bpm);
+      txt += '. ' + (ds.singers.length === dd.species.length ? (ds.singers.length === 1 ? 'It sings' : 'All of them sing') : ds.singers.length === 1 ? 'One of them sings' : ds.singers.length + ' of them sing') + ' it, squeezed into about ' + secs + ' seconds';
+      if (ds.sections.length > 1) txt += ': dawn, the midday lull, then evening';
+    }
+    daySum.textContent = txt + '.';
+  }
+  dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); } });
+
   // ------------------------------------------------------------ lifecycle ----
   function init() {
     state.inited = true;
@@ -1168,6 +1255,8 @@
     buildSongList();
     ownBox.hidden = song.id !== 'own';
     midiBox.hidden = song.id !== 'midi';
+    dayBox.hidden = song.id !== 'day';
+    if (song.id === 'day') loadDay(null);
     var t = tuneNotes(song.id);
     setTempo(t.bpm || 120);
     renderKeyboard(); renderPads(); refitSong();
