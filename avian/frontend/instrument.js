@@ -64,11 +64,53 @@
     ringShare: 0.5,   //    but no more than `ring` and no less than `ringMin` (s), so a quick
     ringMin: 0.08,    //    passage is not smeared and a slow one lets the bird carry on
     last: 1.2,        // ...and the last note of a tune this much longer: let it finish its call
-    front: 0.45,      // the loudest thing after the note sits this far under it (× its level)
+    front: 0.35,      // the loudest thing after the note sits this far under it (× its level; 0.45 until the 2nd polish)
     tailMin: 0.06,    // ...however loud the rest of the call is (a faint note before a shout)
     duck: 0.035,      // how quickly it drops back once the note is over (s)
-    release: 0.14     // the fade when a note is let go (s)
+    release: 0.2      // the fade when a note is let go (s; 0.14 until the 2nd polish)
   };
+
+  // A light polish on every note (Scott, 2026-11-26: some sounds were "harsh";
+  // he asked for them to be "more pleasing to listen to while maintaining their
+  // distinctive sounds"). Nothing is added and nothing is re-pitched; three
+  // things are taken down a little:
+  //   1. the edge of a note: it fades in over `attack` instead of starting dead
+  //      on its loudest sample, which is what clicks and spits;
+  //   2. the top end: a gentle tilt (`shelf`, from `shelfAt` × the note up) takes
+  //      the rasp and hiss above the bird's first overtones down a few dB, and
+  //      a soft roll-off (`lpAt` × the note, between lpMin and lpMax) takes off
+  //      the mp3 fizz above everything the bird sang. A buzzy or noisy note
+  //      (low `tone`, high `bg`) gets up to `shelfRough` instead of `shelfClean`;
+  //   3. loudness: a quiet note is lifted at most `maxBoost`× to sit with the
+  //      others (it was 2.5×, which lifted its hiss with it).
+  // The fundamental and its next overtone are never touched, so each bird
+  // keeps its own voice. The voice pads stay exactly as recorded.
+  // Second pass, same day (Scott, after hearing the first: still "abrasive and
+  // harsh"): every step taken further, and one more, 4. high notes are played
+  // a little quieter. The ear is most sensitive at 2-5 kHz, which is exactly
+  // where most of the yard sings, so a whistle there sounds louder and sharper
+  // than a low note of the same level; `highTilt` evens that out (2 kHz and
+  // below untouched, 4 kHz ×0.75, 8 kHz and up ×0.55). The rest of a call after
+  // its note (where the chatter and buzz live) also sits further back
+  // (SING.front) and every note ends on a slower fade (SING.release).
+  var POLISH = {
+    attack: 0.025,                         // s
+    shelfAt: 2.0, shelfClean: -6, shelfRough: -12,  // × note Hz, dB
+    lpAt: 3.5, lpMin: 4500, lpMax: 10000,  // × note Hz, Hz
+    maxBoost: 1.5,
+    highFrom: 2000, highTilt: 0.25, highMin: 0.55   // Hz, per octave, floor
+  };
+  function highLevel(hz) {
+    return hz > POLISH.highFrom ? clamp(1 - POLISH.highTilt * Math.log(hz / POLISH.highFrom) / Math.LN2, POLISH.highMin, 1) : 1;
+  }
+  function polishOf(n) {
+    var rough = clamp(Math.max((0.9 - (n.tone == null ? 0.9 : n.tone)) / 0.3, ((n.bg == null ? -20 : n.bg) + 20) / 14), 0, 1);
+    return {
+      shelfHz: clamp(n.hz * POLISH.shelfAt, 1500, 10000),
+      shelfDb: POLISH.shelfClean + (POLISH.shelfRough - POLISH.shelfClean) * rough,
+      lpHz: clamp(n.hz * POLISH.lpAt, POLISH.lpMin, POLISH.lpMax)
+    };
+  }
 
   var state = { inited: false, visible: false, failed: false, depth: 0 };
 
@@ -85,7 +127,7 @@
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
     try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) { try { ctx = new AC(); } catch (e2) { return null; } }
     master = ctx.createGain();
-    master.gain.value = 0.9;
+    master.gain.value = 0.8;
     // A gentle safety limiter for chords and fast runs: it only turns peaks down.
     var comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -12; comp.knee.value = 10; comp.ratio.value = 6;
@@ -111,7 +153,8 @@
   // shape (the "sing" cut): { body, tail, held }. The first `body` seconds are
   // the note and play at full level; after that the rest of the call drops to
   // level × tail, so the note stays in front of what follows it.
-  function startVoice(buf, when, offset, srcDur, rate, level, hpHz, maxOut, shape) {
+  // soft (notes only): { shelfHz, shelfDb, lpHz } from polishOf().
+  function startVoice(buf, when, offset, srcDur, rate, level, hpHz, maxOut, shape, soft) {
     var c = ctx, t = Math.max(c.currentTime + 0.004, when || 0);
     var outDur = srcDur / rate;
     if (maxOut != null && maxOut < outDur) outDur = Math.max(0.05, maxOut);
@@ -126,7 +169,7 @@
     hp.frequency.value = hp2.frequency.value = hpHz;
     hp.Q.value = 0.541; hp2.Q.value = 1.307;
     var g = c.createGain(), gate = c.createGain();
-    var att = offset > 0.002 ? 0.005 : 0.002, rel = Math.min(shape ? SING.release : 0.045, outDur * 0.4);
+    var att = soft ? POLISH.attack : (offset > 0.002 ? 0.005 : 0.002), rel = Math.min(shape ? SING.release : 0.045, outDur * 0.4);
     var sus = level;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(level, t + att);
@@ -145,7 +188,15 @@
       g.gain.setValueAtTime(sus, t + Math.max(att, outDur - rel));
       g.gain.linearRampToValueAtTime(0, t + outDur);
     }
-    src.connect(hp); hp.connect(hp2); hp2.connect(g); g.connect(gate); gate.connect(master);
+    src.connect(hp); hp.connect(hp2);
+    var last = hp2;
+    if (soft) {
+      var sh = c.createBiquadFilter(), lp = c.createBiquadFilter();
+      sh.type = 'highshelf'; sh.frequency.value = soft.shelfHz; sh.gain.value = soft.shelfDb;
+      lp.type = 'lowpass'; lp.frequency.value = Math.min(soft.lpHz, c.sampleRate * 0.45); lp.Q.value = 0.5;
+      hp2.connect(sh); sh.connect(lp); last = lp;
+    }
+    last.connect(g); g.connect(gate); gate.connect(master);
     src.start(t, offset, srcDur + 0.05);
     src.stop(t + outDur + 0.03);
     var v = { src: src, g: g, gate: gate, at: t, dur: outDur, held: !!(shape && shape.held) };
@@ -194,7 +245,7 @@
     // "Fine-tune", always on: a note is played at most ±50 cents fast or slow
     // (under 3 % speed) so it lands on its key. Nothing more.
     var rate = Math.pow(2, -clamp(n.cents, -50, 50) / 1200);
-    var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, 2.5);
+    var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, POLISH.maxBoost) * highLevel(n.hz);
     // "Sings on". The note lands on pitch and at full level; then the bird
     // carries on with its call, a step behind, until the note is over.
     // In a tune the note stays in front only for as long as it is written: a
@@ -203,7 +254,7 @@
     if (maxOut != null) body = Math.min(body, Math.max(0.06, maxOut - 0.07));
     var tail = n.tail > 0 ? clamp(SING.front * n.rms / n.tail, SING.tailMin, 1) : 1;
     var out = held ? null : (maxOut != null ? maxOut + clamp(SING.ringShare * maxOut, SING.ringMin, SING.ring) : SING.minOut);
-    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), out, { body: body, tail: tail, held: !!held });
+    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), out, { body: body, tail: tail, held: !!held }, polishOf(n));
   }
   function playPhrase(ph) {
     if (!ph || !audio()) return null;
@@ -513,16 +564,49 @@
 
   // ------------------------------------------------------------- keyboard ----
   var kbEl = $('playKb'), kbScroll = $('playKbScroll');
-  var keyEls = {}, kbRange = null, kbBase = null, kbCentered = false;
+  var keyEls = {}, kbRange = null, kbFrom = null, kbCentered = false;
   var BLACK = { 1: 1, 3: 1, 6: 1, 8: 1, 10: 1 };
   function isBlack(m) { return !!BLACK[((m % 12) + 12) % 12]; }
-  // Two rows of the computer keyboard, laid out like piano keys.
-  var CODES = ['KeyZ', 'KeyS', 'KeyX', 'KeyD', 'KeyC', 'KeyV', 'KeyG', 'KeyB', 'KeyH', 'KeyN', 'KeyJ', 'KeyM',
-               'KeyQ', 'Digit2', 'KeyW', 'Digit3', 'KeyE', 'KeyR', 'Digit5', 'KeyT', 'Digit6', 'KeyY', 'Digit7', 'KeyU',
-               'KeyI', 'Digit9', 'KeyO', 'Digit0', 'KeyP'];
+  // Playing from the computer keyboard (Scott, 2026-11-26: "make it easier").
+  // Three rows of letters, and every letter plays a bird: the notes the birds
+  // really have are laid along them in order, low to high: the bottom row
+  // (Z to /) the lowest, the middle row (A to ;) the next, the top row (Q to P)
+  // the highest. No dead keys, nothing to learn about sharps. ← → move the
+  // letters one row's worth (ten notes) down or up the keyboard.
+  var CODES = ['KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB', 'KeyN', 'KeyM', 'Comma', 'Period', 'Slash',
+               'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ', 'KeyK', 'KeyL', 'Semicolon',
+               'KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP'];
+  var ROW = 10;
   var CODE_AT = {};
   CODES.forEach(function (c, i) { CODE_AT[c] = i; });
-  function codeLabel(c) { return c.replace('Key', '').replace('Digit', '').toLowerCase(); }
+  var CODE_TXT = { Comma: ',', Period: '.', Slash: '/', Semicolon: ';' };
+  function codeLabel(c) { return CODE_TXT[c] || c.replace('Key', '').toLowerCase(); }
+  // kbFrom is the key (a midi number) the Z sits on; kept as a key, not a list
+  // position, so the letters stay put while more notes arrive.
+  function fromIdx() {
+    var L = cur.list;
+    if (!L.length || kbFrom == null) return 0;
+    var i = 0;
+    while (i < L.length - 1 && L[i] < kbFrom) i++;
+    return i;
+  }
+  function mappedKey(i) {                  // letter i → the key it plays (or null)
+    var j = fromIdx() + i;
+    return kbFrom != null && j >= 0 && j < cur.list.length ? cur.list[j] : null;
+  }
+  function defaultFrom() {                 // the middle row on where most birds sing
+    var L = cur.list, r = richestKey(), i = 0;
+    while (i < L.length - 1 && L[i] < r) i++;
+    return L[clamp(i - ROW - 4, 0, Math.max(0, L.length - 1))];
+  }
+  function shiftLetters(dir) {
+    var L = cur.list;
+    if (!L.length || kbFrom == null) return;
+    kbFrom = L[clamp(fromIdx() + dir * ROW, 0, Math.max(0, L.length - ROW))];
+    labelKeys();
+    var mid = mappedKey(ROW + 4);
+    if (mid != null) centerOn(mid);
+  }
 
   function renderKeyboard() {
     var lo = cur.lo, hi = cur.hi;
@@ -550,7 +634,7 @@
       if (anchor) restoreAnchor(anchor);
     }
     for (var m = kbRange[0]; m <= kbRange[1]; m++) updateKey(m);
-    if (kbBase == null && cur.list.length) kbBase = defaultBase();
+    if (kbFrom == null && cur.list.length) kbFrom = defaultFrom();
     labelKeys();
     if (!kbCentered && cur.list.length) { kbCentered = true; centerOn(richestKey()); }
     syncNudges();
@@ -627,11 +711,11 @@
     cur.list.forEach(function (k) { var c = cur.keys[k].length; w += c; s += c * k; });
     return w ? Math.round(s / w) : (cur.lo || 84);
   }
-  function defaultBase() { return 12 * Math.floor((richestKey() - 6) / 12); }
   function labelKeys() {
+    var want = {};
+    for (var i = 0; i < CODES.length; i++) { var k = mappedKey(i); if (k != null) want[k] = codeLabel(CODES[i]); }
     Object.keys(keyEls).forEach(function (k) {
-      var i = +k - kbBase, lab = keyEls[k].lastChild;
-      var t = (kbBase != null && i >= 0 && i < CODES.length) ? codeLabel(CODES[i]) : '';
+      var lab = keyEls[k].lastChild, t = want[k] || '';
       if (lab.textContent !== t) lab.textContent = t;
     });
   }
@@ -723,7 +807,11 @@
 
   var held = {};
   function typingTarget(t) {
-    return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable));
+    // Text boxes keep their letters. A slider, a button or a song list that was
+    // just used does not: the keys should play straight after.
+    if (!t) return false;
+    if (t.tagName === 'INPUT') return !/^(range|checkbox|radio|button|submit|file)$/i.test(t.type || '');
+    return t.tagName === 'TEXTAREA' || t.isContentEditable;
   }
   function modalOpen() { return !!document.querySelector('#detail-modal[aria-hidden="false"], #about-modal[aria-hidden="false"], #menu-dd.open'); }
   document.addEventListener('keydown', function (e) {
@@ -735,18 +823,18 @@
       return;
     }
     if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
-      if (kbBase == null || !kbRange) return;
+      if (kbFrom == null || !kbRange) return;
       e.preventDefault();
-      kbBase = clamp(kbBase + (e.code === 'ArrowRight' ? 12 : -12), 12 * Math.floor(kbRange[0] / 12) - 12, 12 * Math.floor(kbRange[1] / 12));
-      labelKeys();
-      centerOn(clamp(kbBase + 12, kbRange[0], kbRange[1]));
+      shiftLetters(e.code === 'ArrowRight' ? 1 : -1);
       return;
     }
     var i = CODE_AT[e.code];
-    if (i == null || kbBase == null) return;
+    if (i == null || e.shiftKey) return;
+    var k = mappedKey(i);
+    if (k == null) return;
     e.preventDefault();
     if (e.repeat || held[e.code]) return;
-    held[e.code] = { k: kbBase + i, v: press(kbBase + i, true) };
+    held[e.code] = { k: k, v: press(k, true) };
   });
   function keyUp(code) {
     var h = held[code];
@@ -820,6 +908,8 @@
   var rollEl = $('playRoll'), castEl = $('playCast');
   var ownBox = $('playOwn'), ownText = $('playOwnText'), ownErr = $('playOwnErr');
   var midiBox = $('playMidi'), midiFile = $('playMidiFile'), midiPart = $('playMidiPart'), midiName = $('playMidiName');
+  var dayBox = $('playDay'), dayPick = $('playDayPick'), daySum = $('playDaySum');
+  var dayState = { data: null, days: null, loading: false, failed: false, date: null, song: null };
   var parsed = {};                         // songbook id → parsed tune
   var midi = null;                         // { name, data, part, top }
   var song = { id: ls('song', 'roll'), notes: [], beats: 0, fit: null, who: [] };
@@ -833,6 +923,13 @@
     if (id === 'own') {
       var o = S.parseMelody(ownText.value);
       return { notes: o.notes, beats: o.beats, bpm: null, title: 'Your tune', errors: o.errors };
+    }
+    if (id === 'day') {
+      // A day in the yard (sampler-core's daySong): written fresh from the
+      // notes the page has, so it gets richer as more recordings are heard.
+      var ds = dayState.data ? S.daySong(dayState.data, cur, { beats: DAY_BEATS }) : null;
+      dayState.song = ds;
+      return { notes: ds ? ds.notes : [], beats: ds ? ds.beats : 0, bpm: DAY_BPM, title: 'A day in the yard', day: ds };
     }
     if (id === 'midi') {
       if (!midi) return { notes: [], beats: 0, bpm: null, title: 'MIDI file' };
@@ -856,7 +953,7 @@
   function buildSongList() {
     var html = '<optgroup label="start here"><option value="roll">Roll call: every note, low to high</option></optgroup><optgroup label="songbook">';
     BOOK.forEach(function (t) { html += '<option value="' + esc(t.id) + '">' + esc(t.title) + '</option>'; });
-    html += '</optgroup><optgroup label="your own"><option value="own">Type a tune…</option><option value="midi">Open a MIDI file…</option></optgroup>';
+    html += '</optgroup><optgroup label="from the recordings"><option value="day">A day in the yard…</option></optgroup><optgroup label="your own"><option value="own">Type a tune…</option><option value="midi">Open a MIDI file…</option></optgroup>';
     songSel.innerHTML = html;
     var ok = [].some.call(songSel.options, function (o) { return o.value === song.id; });
     if (!ok || song.id === 'midi') song.id = 'roll';
@@ -866,14 +963,17 @@
   function refitSong() {
     var t = tuneNotes(song.id);
     song.notes = t.notes; song.beats = t.beats; song.title = t.title;
-    song.fit = fitOf(t.notes, song.id === 'roll' ? 0 : null);
+    song.fit = fitOf(t.notes, song.id === 'roll' || song.id === 'day' ? 0 : null);
     // Who sings each note: a note that comes round again passes to the next
     // bird that sings it well (sampler-core's singTurns). The roll call, one of
     // each note, simply plays every key's own bird.
-    song.who = S.singTurns(song.fit.notes, cur).map(function (i, j) {
-      var k = song.fit.notes[j].key;
-      return i == null ? null : cur.keys[k][i];
-    });
+    song.who = song.id === 'day'
+      ? t.notes.map(function (n) { return cur.keys[n.key] ? cur.keys[n.key][n.idx] || null : null; })   // the bird that called then
+      : S.singTurns(song.fit.notes, cur).map(function (i, j) {
+        var k = song.fit.notes[j].key;
+        return i == null ? null : cur.keys[k][i];
+      });
+    if (song.id === 'day') renderDaySum();
     if (song.id === 'own') {
       ownErr.textContent = (t.errors && t.errors.length) ? 'Couldn’t read: ' + t.errors.slice(0, 6).join(' ') : '';
     }
@@ -885,6 +985,8 @@
     song.id = id; lsSet('song', id);
     ownBox.hidden = id !== 'own';
     midiBox.hidden = id !== 'midi';
+    dayBox.hidden = id !== 'day';
+    if (id === 'day' && !dayState.data && !dayState.loading) loadDay(dayState.date);
     var t = tuneNotes(id);
     if (!keepTempo && t.bpm) setTempo(t.bpm);
     refitSong();
@@ -904,7 +1006,7 @@
   function renderRoll() {
     var fit = song.fit;
     if (!fit || !fit.notes.length) {
-      rollEl.innerHTML = '<p class="roll-empty">' + (song.id === 'own' ? 'Type a tune above and it appears here.' : song.id === 'midi' ? 'Choose a MIDI file and the birds will sing it.' : cur.lo == null ? 'The tune appears once the birds have some notes.' : 'Nothing to play yet.') + '</p>';
+      rollEl.innerHTML = '<p class="roll-empty">' + (song.id === 'own' ? 'Type a tune above and it appears here.' : song.id === 'midi' ? 'Choose a MIDI file and the birds will sing it.' : song.id === 'day' ? (dayState.loading ? 'Reading that day’s calls…' : dayState.failed ? 'Couldn’t read that day. Try again in a moment.' : !dayState.data ? 'Pick a day above.' : !dayState.data.total ? 'Nothing was heard that day.' : cur.lo == null ? 'The tune appears once the birds have some notes.' : 'None of the birds heard that day have notes yet.') : cur.lo == null ? 'The tune appears once the birds have some notes.' : 'Nothing to play yet.') + '</p>';
       return;
     }
     var lo = Infinity, hi = -Infinity;
@@ -920,6 +1022,9 @@
     fit.notes.forEach(function (n, i) {
       var y = n.key != null ? n.key : n.m + fit.shift;
       html += '<i class="rn ' + n.how + '" data-i="' + i + '" style="left:' + (100 * n.t / beats).toFixed(3) + '%;width:' + Math.max(0.25, 100 * n.d / beats - 0.12).toFixed(3) + '%;top:' + (100 * (hi - y) / span).toFixed(2) + '%;height:' + (100 / span).toFixed(2) + '%;--c:var(--ch-' + singerHue(i) + ')"></i>';
+    });
+    if (song.id === 'day' && dayState.song) dayState.song.sections.forEach(function (sec) {
+      if (dayState.song.sections.length > 1) html += '<span class="roll-sec" style="left:' + (100 * sec.t / beats).toFixed(3) + '%">' + esc(sec.name) + '</span>';
     });
     rollEl.innerHTML = '<div class="roll-in" style="width:' + w + 'px">' + html + '<b class="roll-head"></b></div>';
     rollEl.scrollLeft = 0;
@@ -1036,8 +1141,8 @@
   }
 
   goBtn.addEventListener('click', toggleSong);
-  songSel.addEventListener('change', function () { selectSong(songSel.value); });
-  tempoEl.addEventListener('input', function () { setTempo(+tempoEl.value); });
+  songSel.addEventListener('change', function () { selectSong(songSel.value); if (songSel.value !== 'own') songSel.blur(); });
+  tempoEl.addEventListener('input', function () { setTempo(+tempoEl.value); if (song.id === 'day') renderDaySum(); });
   var ownT = 0;
   ownText.addEventListener('input', function () {
     lsSet('mytune', ownText.value);
@@ -1121,6 +1226,76 @@
     if (b && b.getAttribute('data-act') === 'retry') loadIndex();
   });
 
+  // ---------------------------------------------------------- a day ----
+  // The day picker: the days with calls in the last two months (from the same
+  // /api/day answer), yesterday first when it had any, since today is still
+  // being written.
+  var DAY_BPM = 96, DAY_BEATS = 72, TZ = 'America/New_York';
+  function isoOf(d) {                      // a Date → YYYY-MM-DD in the yard's time zone
+    try { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
+    catch (e) { return d.toISOString().slice(0, 10); }
+  }
+  function dayLabel(iso, n) {
+    var today = isoOf(new Date()), yest = isoOf(new Date(Date.now() - 86400000));
+    var d = new Date(iso + 'T12:00:00Z');
+    var name = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+    return (iso === today ? 'today so far, ' : iso === yest ? 'yesterday, ' : '') + name + (n != null ? ' · ' + n.toLocaleString('en-US') + (n === 1 ? ' call' : ' calls') : '');
+  }
+  function clockOf(slot) {
+    var dd = dayState.data;
+    var ts = (dd.start + slot * dd.interval * 60) * 1000;
+    try { return new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: TZ }).toLowerCase(); }
+    catch (e) { return ''; }
+  }
+  function buildDayPick() {
+    var days = dayState.days || [], html = '';
+    days.forEach(function (d) { html += '<option value="' + esc(d.date) + '">' + esc(dayLabel(d.date, d.n)) + '</option>'; });
+    if (!days.length) html = '<option value="">no days with calls yet</option>';
+    dayPick.innerHTML = html;
+    if (dayState.date) dayPick.value = dayState.date;
+  }
+  function loadDay(date) {
+    var want = date || isoOf(new Date(Date.now() - 86400000));
+    dayState.loading = true; dayState.failed = false; dayState.date = want;
+    if (song.id === 'day') { renderRoll(); renderDaySum(); }
+    fetch(API + '/api/day?date=' + encodeURIComponent(want) + '&interval=5')
+      .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+      .then(function (d) {
+        dayState.days = d.days || [];
+        // First visit and yesterday was silent: go to the newest day with calls.
+        if (!date && !d.total && dayState.days.length && dayState.days[0].date !== want) {
+          dayState.loading = false;
+          return loadDay(dayState.days[0].date);
+        }
+        if (dayState.date !== want) return;  // a newer pick is on its way
+        if (!dayState.days.some(function (x) { return x.date === want; })) dayState.days.unshift({ date: want, n: d.total });
+        dayState.data = d; dayState.loading = false;
+        buildDayPick();
+        if (song.id === 'day') { stopSong(); refitSong(); }
+      })
+      .catch(function () {
+        if (dayState.date !== want) return;
+        dayState.loading = false; dayState.failed = true;
+        if (song.id === 'day') { renderRoll(); renderDaySum(); }
+      });
+  }
+  // One line on the day: when it woke and went quiet, how much was heard,
+  // who is singing it and how long it lasts.
+  function renderDaySum() {
+    var dd = dayState.data, ds = dayState.song;
+    if (dayState.loading || !dd) { daySum.textContent = dayState.loading ? 'Reading that day’s calls…' : ''; return; }
+    if (!dd.total) { daySum.textContent = 'Nothing was heard that day.'; return; }
+    var txt = 'Heard ' + dd.total.toLocaleString('en-US') + (dd.total === 1 ? ' call' : ' calls') + ' from ' + plural(dd.species.length, 'bird');
+    if (ds && ds.from != null) txt = 'From ' + clockOf(ds.from) + ' to ' + clockOf(ds.to) + ': ' + txt.charAt(0).toLowerCase() + txt.slice(1);
+    if (ds && ds.notes.length) {
+      var secs = Math.round(ds.beats * 60 / bpm);
+      txt += '. ' + (ds.singers.length === dd.species.length ? (ds.singers.length === 1 ? 'It sings' : 'All of them sing') : ds.singers.length === 1 ? 'One of them sings' : ds.singers.length + ' of them sing') + ' it, squeezed into about ' + secs + ' seconds';
+      if (ds.sections.length > 1) txt += ': dawn, the midday lull, then evening';
+    }
+    daySum.textContent = txt + '.';
+  }
+  dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); } dayPick.blur(); });
+
   // ------------------------------------------------------------ lifecycle ----
   function init() {
     state.inited = true;
@@ -1129,6 +1304,8 @@
     buildSongList();
     ownBox.hidden = song.id !== 'own';
     midiBox.hidden = song.id !== 'midi';
+    dayBox.hidden = song.id !== 'day';
+    if (song.id === 'day') loadDay(null);
     var t = tuneNotes(song.id);
     setTempo(t.bpm || 120);
     renderKeyboard(); renderPads(); refitSong();

@@ -766,3 +766,31 @@ describe('/api/frame-sig', () => {
     expect(j).toMatchObject({ kind: 'collage', screen: null });
   });
 });
+
+describe('GET /api/day (song of a day)', () => {
+  it('bins one local day by species, and lists the days with calls', async () => {
+    const db = new FakeDB()
+      .on('GROUP BY slot, sci', [
+        { slot: 70, sci: 'Cardinalis cardinalis', com: 'Northern Cardinal', n: 3 },
+        { slot: 71, sci: 'Poecile atricapillus', com: 'Black-capped Chickadee', n: 5 },
+        { slot: 90, sci: 'Cardinalis cardinalis', com: 'Northern Cardinal', n: 4 },
+      ])
+      .on('GROUP BY date', [{ date: '2026-11-24', n: 12 }, { date: '2026-11-23', n: 40 }]);
+    const res = await get('/api/day?date=2026-11-24&interval=5', env(db, { TZ_NAME: 'America/New_York' }));
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.bins).toBe(288);
+    expect(j.total).toBe(12);
+    expect(j.first_slot).toBe(70); expect(j.last_slot).toBe(90);
+    expect(j.species[0]).toMatchObject({ sci: 'Cardinalis cardinalis', n: 7, slots: [[70, 3], [90, 4]] });
+    expect(j.days.map((d) => d.date)).toEqual(['2026-11-24', '2026-11-23']);
+    const q = db.find('GROUP BY slot, sci');
+    expect(q.sql).toContain('INDEXED BY idx_detections_ts');
+    expect(q.args[0]).toBe(Date.UTC(2026, 10, 24, 5) / 1000);
+    expect(res.headers.get('Cache-Control')).toContain('max-age=3600');
+  });
+  it('a bad date is a 400', async () => {
+    const res = await get('/api/day?date=nope', env(new FakeDB()));
+    expect(res.status).toBe(400);
+  });
+});

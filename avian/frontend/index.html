@@ -227,6 +227,7 @@
             </div>
             <button type="button" class="play-nudge" id="playHigher" aria-label="higher notes">&#8250;</button>
           </div>
+          <p class="play-kbd-hint">Play with your keyboard: every letter is a bird. <kbd>Z</kbd>&#8239;to&#8239;<kbd>/</kbd> low, <kbd>A</kbd>&#8239;to&#8239;<kbd>;</kbd> middle, <kbd>Q</kbd>&#8239;to&#8239;<kbd>P</kbd> high. <kbd>&#8592;</kbd>&#8239;<kbd>&#8594;</kbd> for lower or higher birds, <kbd>space</kbd> plays the song.</p>
         </div>
 
         <section class="play-panel play-songs" id="playSongs" aria-label="Songs">
@@ -244,6 +245,10 @@
             <input type="file" id="playMidiFile" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
             <select id="playMidiPart" class="play-select" aria-label="which part" hidden></select>
             <span class="play-midi-name" id="playMidiName">or drop one anywhere on this panel</span>
+          </div>
+          <div class="play-day" id="playDay" hidden>
+            <select id="playDayPick" class="play-select" aria-label="which day"></select>
+            <p class="play-help" id="playDaySum"></p>
           </div>
           <div class="play-roll" id="playRoll"></div>
           <div class="play-cast" id="playCast"></div>

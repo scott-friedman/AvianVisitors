@@ -1198,6 +1198,185 @@
     return keyList.map(function (k, i) { return { m: k, t: i * 0.5, d: 0.5 }; });
   }
 
+  // "A day in the yard": a tune written from one day's calls (GET /api/day).
+  // Scott's choice of the ideas offered (2026-11-26): "squeezed, but in tune".
+  // The day from its first steady calling to its last is squeezed into
+  // opts.beats beats (72: about 45 s at the page's usual 96 bpm), so the birds
+  // sing when, and as often as, they called: a busy hour is quick notes, a
+  // quiet one long notes, an empty one rests. On top of that it is made to
+  // sound like music:
+  //   - one key: the major pentatonic (no two notes clash) whose notes the
+  //     day's birds have most of; a bird sings only its own in-key notes, and a
+  //     bird with none in that key sits this one out;
+  //   - a steady beat: everything lands on an eighth-note grid, in two-beat
+  //     blocks (a block is 1/36 of the day: about 17 minutes of a 10-hour day);
+  //   - three sections: dawn, the midday lull (the quietest quarter of the
+  //     middle of the day) and evening, each ending on the home note when its
+  //     bird has one, with a breath between them;
+  //   - a shape: busier times climb, quieter ones settle, and each note stays
+  //     near the one before so it reads as a line, not a scatter.
+  // Who sings: in each block the birds that called most in it, taking turns,
+  // so the busy birds of each hour are the voices of that hour. Every note is
+  // a real key: { m, t, d, key, how: 'exact', sci, idx } with idx the bird's
+  // entry in board.keys[key]. Deterministic: the same day gives the same tune.
+  var PENTA = [0, 2, 4, 7, 9];
+  var DAY_SECTIONS = ['dawn', 'midday lull', 'evening'];
+  var RHYTHM = { 1: [[0], [0], [0, 3]], 2: [[0, 2], [0, 2], [0, 3], [0, 1]], 4: [[0, 1, 2, 3], [0, 2, 3], [0, 1, 2], [0, 1, 2, 3]] };
+  function daySong(day, board, opts) {
+    var o = opts || {}, B = o.beats || 72, nBlocks = Math.round(B / 2);
+    var out = { notes: [], beats: 0, sections: [], tonic: null, singers: [], heard: 0, calls: 0, from: null, to: null };
+    if (!day || !day.species || !day.species.length || !board || !board.keys) return out;
+    // Each bird's keys (its best non-odd note on each), from the board.
+    var keysOf = {};
+    Object.keys(board.keys).forEach(function (kk) {
+      var k = +kk, arr = board.keys[k];
+      for (var i = 0; i < arr.length; i++) {
+        if (arr[i].odd) continue;
+        (keysOf[arr[i].sci] = keysOf[arr[i].sci] || []).push({ k: k, idx: i, r: arr[i].rank == null ? 1 : arr[i].rank });
+      }
+    });
+    // The span: trim the stray call at 3 am (an owl, a goose going over) so
+    // "dawn" is when the yard woke, not the first sound of the night.
+    var perSlot = {}, total = 0;
+    day.species.forEach(function (s) {
+      s.slots.forEach(function (sl) { perSlot[sl[0]] = (perSlot[sl[0]] || 0) + sl[1]; total += sl[1]; });
+    });
+    out.calls = total; out.heard = day.species.length;
+    if (!total) return out;
+    var slots = Object.keys(perSlot).map(Number).sort(function (a, b) { return a - b; });
+    var cut = Math.max(1, Math.floor(total * 0.01)), acc = 0, first = slots[0], last = slots[slots.length - 1], i, j;
+    for (i = 0; i < slots.length; i++) { acc += perSlot[slots[i]]; if (acc >= cut) { first = slots[i]; break; } }
+    acc = 0;
+    for (i = slots.length - 1; i >= 0; i--) { acc += perSlot[slots[i]]; if (acc >= cut) { last = slots[i]; break; } }
+    var span = last - first + 1;
+    out.from = first; out.to = last + 1;
+    // Calls per block, per bird.
+    var blocks = [];
+    for (i = 0; i < nBlocks; i++) blocks.push({ n: 0, by: {} });
+    function blockOf(slot) { return Math.min(nBlocks - 1, Math.floor((slot - first) * nBlocks / span)); }
+    day.species.forEach(function (s) {
+      s.slots.forEach(function (sl) {
+        if (sl[0] < first || sl[0] > last) return;
+        var b = blocks[blockOf(sl[0])];
+        b.n += sl[1]; b.by[s.sci] = (b.by[s.sci] || 0) + sl[1];
+      });
+    });
+    // The key, and where the tune sits: the major pentatonic and the 15-key
+    // window (two octaves of the scale) that give the most of the day's birds,
+    // weighed by how much each called, notes in the octaves a tune can be heard.
+    var wOf = {};
+    day.species.forEach(function (s) { if (keysOf[s.sci]) wOf[s.sci] = Math.log(1 + s.n); });
+    var birds = Object.keys(wOf);
+    if (!birds.length) return out;
+    function inKey(k, t) { return PENTA.indexOf((((k - t) % 12) + 12) % 12) >= 0; }
+    var bestT = 0, bestLo = 72, bestV = -1;
+    for (var t = 0; t < 12; t++) {
+      for (var lo = 52; lo <= 100; lo++) {
+        var v = 0;
+        birds.forEach(function (sci) {
+          var c = 0, q = 0;
+          keysOf[sci].forEach(function (e) {
+            if (e.k < lo || e.k > lo + 14 || !inKey(e.k, t)) return;
+            c++; q += melodic(e.k) * Math.min(1, e.r);
+          });
+          if (c) v += wOf[sci] * (1 + 0.15 * Math.min(4, c) + 0.1 * q / c);
+        });
+        if (v > bestV + 1e-9) { bestV = v; bestT = t; bestLo = lo; }
+      }
+    }
+    var regLo = bestLo, regHi = bestLo + 14;
+    out.tonic = bestT;
+    var opts2 = {};
+    birds.forEach(function (sci) {
+      var ks = keysOf[sci].filter(function (e) { return inKey(e.k, bestT); });
+      var near = ks.filter(function (e) { return e.k >= regLo - 5 && e.k <= regHi + 5; });
+      if (ks.length) opts2[sci] = near.length ? near : ks;
+    });
+    // Sections: the lull is the quietest stretch of a quarter of the day that
+    // starts after the first fifth and ends before the last fifth. A short day
+    // (under 4 hours of calling) is one section.
+    var cuts = [0, nBlocks];
+    if (span * (day.interval || 5) >= 240 && nBlocks >= 12) {
+      var w = Math.max(2, Math.round(nBlocks / 4)), a0 = Math.ceil(nBlocks * 0.2), a1 = Math.floor(nBlocks * 0.8) - w;
+      var best = null, bestS = Infinity;
+      for (i = a0; i <= a1; i++) {
+        var sum = 0;
+        for (j = i; j < i + w; j++) sum += blocks[j].n;
+        if (sum < bestS) { bestS = sum; best = i; }
+      }
+      if (best != null) cuts = [0, best, best + w, nBlocks];
+    }
+    for (i = 0; i + 1 < cuts.length; i++) {
+      out.sections.push({ name: cuts.length === 2 ? 'the day' : DAY_SECTIONS[i], t: cuts[i] * 2, end: cuts[i + 1] * 2,
+        from: first + Math.round(cuts[i] * span / nBlocks), to: first + Math.round(cuts[i + 1] * span / nBlocks) });
+    }
+    // The notes.
+    var maxN = 0;
+    blocks.forEach(function (b) { if (b.n > maxN) maxN = b.n; });
+    var used = {}, prev = null, prev2 = null, prevSci = null;
+    function choose(sci, target, endOfSection) {
+      var best = null, bestS = Infinity;
+      opts2[sci].forEach(function (e) {
+        var s = 0.5 * Math.abs(e.k - target) + (1 - melodic(e.k)) * 6 + (1 - Math.min(1, e.r)) * 2;
+        if (e.k < regLo || e.k > regHi) s += 2;
+        if (prev != null) {
+          var leap = Math.abs(e.k - prev);
+          s += 0.35 * leap + (leap > 7 ? 1.5 : 0);
+          if (e.k === prev) s += e.k === prev2 ? 4 : 1;          // a line moves; never three in a row
+        }
+        if (endOfSection && (((e.k - bestT) % 12) + 12) % 12 === 0) s -= 4;
+        if (s < bestS) { bestS = s; best = e; }
+      });
+      return best;
+    }
+    for (var si = 0; si + 1 < cuts.length; si++) {
+      for (var bi = cuts[si]; bi < cuts[si + 1]; bi++) {
+        var b = blocks[bi];
+        if (!b.n) continue;
+        var lvl = Math.log(1 + b.n) / Math.log(1 + maxN);
+        var dens = lvl >= 0.6 ? 4 : (lvl >= 0.3 ? 2 : 1);
+        // This block's voices: its birds that can sing in this key, busiest
+        // first, a bird that has sung a lot already giving way to an equal.
+        var voices = Object.keys(b.by).filter(function (sci) { return opts2[sci]; }).sort(function (x, y) {
+          return b.by[y] / (1 + 0.15 * (used[y] || 0)) - b.by[x] / (1 + 0.15 * (used[x] || 0)) || (x < y ? -1 : 1);
+        });
+        if (!voices.length) continue;
+        var nv = Math.min(voices.length, dens === 4 ? 3 : dens), turn = 0;
+        // A rhythm for the block (where its eighths fall), varied so a busy
+        // hour is not a typewriter, and always starting on the beat.
+        var pat = RHYTHM[dens][(bi * 7 + b.n) % RHYTHM[dens].length];
+        for (var pi = 0; pi < pat.length; pi++) {
+          var p = pat[pi], at = bi * 2 + p * 0.5;
+          // Where the line is heading: up with the day's activity, plus a
+          // rise and fall every four bars, wider when the yard is busy.
+          var target = regLo + 2 + 0.6 * lvl * (regHi - regLo - 4) + (1.5 + 3 * lvl) * Math.sin(2 * Math.PI * (at % 16) / 16);
+          var sci = voices[turn % nv];
+          if (nv > 1 && sci === prevSci) { turn++; sci = voices[turn % nv]; }
+          turn++;
+          var endSec = bi === cuts[si + 1] - 1 && pi === pat.length - 1;
+          var e = choose(sci, target, endSec);
+          out.notes.push({ m: e.k, t: at, d: 0, key: e.k, how: 'exact', sci: sci, idx: e.idx, sec: si });
+          used[sci] = (used[sci] || 0) + 1;
+          prev2 = prev; prev = e.k; prevSci = sci;
+        }
+      }
+    }
+    // Lengths: a note rings to the next one, at most two beats, and a breath
+    // (half a beat) before a new section.
+    for (i = 0; i < out.notes.length; i++) {
+      var n = out.notes[i], nx = out.notes[i + 1];
+      var end = nx ? nx.t : n.t + 2;
+      if (nx && nx.sec !== n.sec) end = Math.min(end, out.sections[n.sec].end - 0.5);
+      n.d = Math.max(0.5, Math.min(2, end - n.t));
+      delete n.sec;
+    }
+    var seen = {};
+    out.notes.forEach(function (n) { seen[n.sci] = (seen[n.sci] || 0) + 1; });
+    out.singers = Object.keys(seen).sort(function (x, y) { return seen[y] - seen[x]; });
+    out.beats = out.notes.length ? Math.max(B, out.notes[out.notes.length - 1].t + out.notes[out.notes.length - 1].d) : 0;
+    return out;
+  }
+
   // -------------------------------------------------------------- MIDI ----
   // A small Standard MIDI File reader: enough to pull the notes out of a .mid
   // someone drops on the page. Times come out in beats (quarter notes); the
@@ -1306,7 +1485,7 @@
     analyzeClip: analyzeClip, steadyWindows: steadyWindows, onsetTime: onsetTime,
     cutPcm: cutPcm, cutClip: cutClip, cleanSlice: cleanSlice,
     keyOf: keyOf, rankNotes: rankNotes, buildKeys: buildKeys, singTurns: singTurns, speciesRanges: speciesRanges,
-    parseMelody: parseMelody, fitMelody: fitMelody, melodic: melodic, rollCall: rollCall, rumbleCut: rumbleCut,
+    parseMelody: parseMelody, fitMelody: fitMelody, melodic: melodic, rollCall: rollCall, daySong: daySong, rumbleCut: rumbleCut,
     parseMidi: parseMidi, midiTunePart: midiTunePart, midiMelody: midiMelody
   };
 });

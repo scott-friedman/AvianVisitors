@@ -5,7 +5,7 @@
 // the cache and re-run whole-table GROUP BYs (the 2026-07-03 D1 overload).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
-  tzOffsetHours, localDayStart, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
+  tzOffsetHours, localDayStart, localDayBounds, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
   isTransientD1, pollKey, frameSignature, secretMatches,
 } from '../src/index.js';
 
@@ -192,5 +192,28 @@ describe('per-row local time (historic rows keep the offset they were recorded u
   it('builds a literal-only SQL expression', () => {
     expect(localSql(NY)('ts')).toMatch(/^\(ts \+ CASE( WHEN ts < \d+ THEN -?\d+)+ ELSE -?\d+ END\)$/);
     expect(localSql({ TZ_OFFSET_HOURS: '-7' })('MAX(ts)')).toBe('(MAX(ts) + -25200)');
+  });
+});
+
+describe('localDayBounds', () => {
+  const ny = { TZ_NAME: 'America/New_York', TZ_OFFSET_HOURS: '-5' };
+  it('a summer day runs midnight to midnight EDT, 24 h', () => {
+    const b = localDayBounds(ny, '2026-07-10');
+    expect(b.start).toBe(Date.UTC(2026, 6, 10, 4) / 1000);
+    expect(b.end - b.start).toBe(86400);
+  });
+  it('a winter day is in EST', () => {
+    expect(localDayBounds(ny, '2026-11-25').start).toBe(Date.UTC(2026, 10, 25, 5) / 1000);
+  });
+  it('the fall-back day is 25 h long, the spring-forward day 23 h', () => {
+    const fall = localDayBounds(ny, '2026-11-01'), spring = localDayBounds(ny, '2026-03-08');
+    expect(fall.start).toBe(Date.UTC(2026, 10, 1, 4) / 1000);
+    expect(fall.end - fall.start).toBe(25 * 3600);
+    expect(spring.start).toBe(Date.UTC(2026, 2, 8, 5) / 1000);
+    expect(spring.end - spring.start).toBe(23 * 3600);
+  });
+  it('rejects anything that is not a date', () => {
+    expect(localDayBounds(ny, 'yesterday')).toBeNull();
+    expect(localDayBounds(ny, '')).toBeNull();
   });
 });
