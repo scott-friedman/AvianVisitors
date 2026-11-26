@@ -131,12 +131,15 @@
     junkUp: 2,                  // ...or noise takes over: sound no ridge accounts for, this many ×
     junkOwn: 0.5,               //    the steady hiss, at least this × the note, and louder than
     junkMs: 50,                 //    the ridges — for this long (a rustle, rain, a door, a gust)
-    cleanDb: 18,                // steady background around a call is turned down this far (0 = off)
+    cleanDb: 15,                // steady background around a call is turned down this far (0 = off)
     loudK: 12,                  // ...but a bin this many × above its own floor is left alone,
     softOver: 3,                // ...and between the two it is a sliding scale: what stands this
                                 //    many × above the background starts to come through (softGain)
     cleanRel: 0.7,              // how fast the clean-up closes again after a sound, per step
     voiceDb: 10,                // the same for a bird's voice pad, more gently (0 = as recorded)
+    lineUp: 2.5, lineDb: 14,    // a steady line (mains hum, an insect's drone) standing this many ×
+                                //    above the hiss beside it is brought down to that hiss, by up to lineDb
+    subHz: 150, subDb: 12,      // below every call in the yard (wind, traffic, handling): this much further
     bgOk: -3, bgBad: 9,         // noise around a note, in dB next to the note: fine below bgOk,
     bgMax: 12,                  //    marked down towards bgBad, not used at all above bgMax
     singBonus: 0.2,             // a note the bird sings on from is preferred by up to this much
@@ -249,6 +252,22 @@
       fl2[b] = median3(floor[Math.max(0, b - 1)], floor[b], floor[Math.min(nb - 1, b + 1)]) + eps;
     }
     floor = fl2;
+    // Steady LINES in the background: mains hum and its overtones (the real
+    // clips carry 180, 300 and 420 Hz up to 27 dB above the hiss beside them),
+    // a compressor, an insect's drone. A bin's floor is compared with the hiss
+    // around it (a low percentile of the floors within ±10 bins: hum lines sit
+    // only a few bins apart, so a median would be taken in by them). Where it
+    // stands lineUp × clear, `white` says how far to turn that bin down, on
+    // top of everything else, to bring the line level with its surroundings.
+    // Only ever applied to background: a call on the same bin is left alone.
+    var white = new Float32Array(nb), nbh = new Float32Array(21), wmin = Math.pow(10, -cfg.lineDb / 10);
+    for (b = 0; b < nb; b++) {
+      var wn = 0;
+      for (k = Math.max(0, b - 10); k <= Math.min(nb - 1, b + 10); k++) nbh[wn++] = floor[k];
+      var nv = nbh.subarray(0, wn); nv.sort();
+      var around = nv[wn >> 2], wr = around / floor[b];
+      white[b] = floor[b] > around * cfg.lineUp ? Math.sqrt(wr > wmin ? wr : wmin) : 1;
+    }
     var gain = new Float32Array(T), scratch = new Float32Array(((hi - lo) >> 1) + 2);
     var D = new Float32Array(T);                    // denoised in-band energy per frame
     for (t = 0; t < T; t++) {
@@ -742,7 +761,7 @@
             pw = P[row + b];
             if (ridge[row + b]) toneE += pw;
             else if (pass[row + b]) restN += pw;
-            else { var sg = softGain(pw, floor[b] * gain[t]); restN += pw * (sg > gmin2 ? sg : gmin2); }
+            else { var sg = softGain(pw, floor[b] * gain[t]), sf = gmin2 * white[b] * white[b]; restN += pw * (sg > sf ? sg : sf); }
           }
         }
         nt.bg = 10 * Math.log((restN + eps) / (toneE + eps)) / Math.LN10;
@@ -751,7 +770,7 @@
       out.notes = quiet;
     }
     // Scratch for cutClip (which removes it): what is call and what is background.
-    out.nr = { N: N, H: H, T: T, b0: b0, nb: nb, pass: pass, floor: floor, gain: gain };
+    out.nr = { N: N, H: H, T: T, b0: b0, nb: nb, pass: pass, floor: floor, gain: gain, white: white };
     return out;
   }
 
@@ -825,7 +844,7 @@
   function cleanSlice(pcm, sr, nr, a, z, db) {
     var N = nr.N, H = nr.H, nb = nr.nb, b0 = nr.b0, half = N >> 1, hb = half + 1;
     var n = z - a, out = new Float32Array(n), wsum = new Float32Array(n);
-    var gmin = Math.pow(10, -(db > 0 ? db : CFG.cleanDb) / 20), gmin2 = gmin * gmin, i, k, b, f;
+    var gmin = Math.pow(10, -(db > 0 ? db : CFG.cleanDb) / 20), i, k, b, f;
     var win = new Float32Array(N);
     for (i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
     var re = new Float32Array(N), im = new Float32Array(N), G = new Float32Array(hb), Gs = new Float32Array(hb);
@@ -833,6 +852,10 @@
     var F = f1 - f0 + 1;
     if (F <= 0) { for (i = 0; i < n; i++) out[i] = pcm[a + i] * gmin; return out; }
     var soft = !!(nr.floor && nr.gain);
+    // Below every call in the yard there is only wind, traffic and handling
+    // (on the real clips, six tenths of a recording's energy sits under 120 Hz).
+    var subK = Math.min(b0, Math.floor(CFG.subHz * N / sr)), gsub = gmin * Math.pow(10, -CFG.subDb / 20);
+    var white = nr.white;
     // Pass 1: every frame's spectrum, and (frequency-smoothed) power in the analysed bins.
     var RE = new Float32Array(F * hb), IM = new Float32Array(F * hb), PW = soft ? new Float32Array(F * nb) : null;
     var tmp = new Float32Array(nb);
@@ -853,7 +876,7 @@
     for (f = 0; f < F; f++) {
       var row = (f0 + f) * nb;
       off = (f0 + f) * H; sp = f * hb;
-      for (k = 0; k < hb; k++) G[k] = gmin;
+      for (k = 0; k < hb; k++) G[k] = k < subK ? gsub : gmin;
       var fa = Math.max(0, f - 2), fz = Math.min(F - 1, f + 2), cnt = fz - fa + 1;
       var up = soft ? nr.gain[f0 + f] : 1;
       for (b = 0; b < nb; b++) {
@@ -861,12 +884,12 @@
         if (nr.pass[row + b]) g = 1;
         else if (!soft) g = gmin;
         else {
-          var ps = 0;
+          var ps = 0, gf = white ? gmin * white[b] : gmin;
           for (var q = fa; q <= fz; q++) ps += PW[q * nb + b];
-          var g2 = softGain(ps / cnt, nr.floor[b] * up);
-          g = g2 > gmin2 ? Math.sqrt(g2) : gmin;
+          g = Math.sqrt(softGain(ps / cnt, nr.floor[b] * up));
+          if (g < gf) g = gf;
           var hold = prev[b] * rel;
-          if (hold > g) g = hold;
+          if (hold > g && hold > gf) g = hold;
         }
         prev[b] = g;
         G[b + b0] = g;
