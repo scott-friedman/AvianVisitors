@@ -2151,6 +2151,20 @@ async function day(env, url, tz, now) {
   }
   const species = [...bySci.values()].sort((a, c) => c.n - a.n);
 
+  // How often each of the day's birds was heard in the 30 days before it
+  // (days with a call, not calls), so the tune can give a rare visitor a
+  // flourish. One windowed query on the ts index.
+  if (species.length) {
+    const prev = ((await env.DB.prepare(
+      `SELECT sci, COUNT(DISTINCT CAST((ts - ?) / 86400 AS INT)) AS d
+         FROM detections INDEXED BY idx_detections_ts
+        WHERE ts >= ? AND ts < ?
+        GROUP BY sci`
+    ).bind(b.start, b.start - 30 * 86400, b.start).all()).results || []);
+    const dOf = new Map(prev.map((r) => [r.sci, r.d]));
+    for (const s of species) s.prev30 = dOf.get(s.sci) || 0;
+  }
+
   // The picker: the days in the last two months that had any calls, newest first.
   const days = ((await env.DB.prepare(
     `SELECT date(${tz('ts')}, 'unixepoch') AS date, COUNT(*) AS n

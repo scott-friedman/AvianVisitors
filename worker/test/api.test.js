@@ -775,7 +775,8 @@ describe('GET /api/day (song of a day)', () => {
         { slot: 71, sci: 'Poecile atricapillus', com: 'Black-capped Chickadee', n: 5 },
         { slot: 90, sci: 'Cardinalis cardinalis', com: 'Northern Cardinal', n: 4 },
       ])
-      .on('GROUP BY date', [{ date: '2026-11-24', n: 12 }, { date: '2026-11-23', n: 40 }]);
+      .on('GROUP BY date', [{ date: '2026-11-24', n: 12 }, { date: '2026-11-23', n: 40 }])
+      .on('COUNT(DISTINCT', [{ sci: 'Poecile atricapillus', d: 21 }]);
     const res = await get('/api/day?date=2026-11-24&interval=5', env(db, { TZ_NAME: 'America/New_York' }));
     expect(res.status).toBe(200);
     const j = await res.json();
@@ -784,6 +785,10 @@ describe('GET /api/day (song of a day)', () => {
     expect(j.first_slot).toBe(70); expect(j.last_slot).toBe(90);
     expect(j.species[0]).toMatchObject({ sci: 'Cardinalis cardinalis', n: 7, slots: [[70, 3], [90, 4]] });
     expect(j.days.map((d) => d.date)).toEqual(['2026-11-24', '2026-11-23']);
+    // Days heard in the 30 before (0 = rare here: the tune gives it a flourish).
+    expect(j.species.find((s) => s.sci === 'Poecile atricapillus').prev30).toBe(21);
+    expect(j.species.find((s) => s.sci === 'Cardinalis cardinalis').prev30).toBe(0);
+    expect(db.find('COUNT(DISTINCT').sql).toContain('INDEXED BY idx_detections_ts');
     const q = db.find('GROUP BY slot, sci');
     expect(q.sql).toContain('INDEXED BY idx_detections_ts');
     expect(q.args[0]).toBe(Date.UTC(2026, 10, 24, 5) / 1000);

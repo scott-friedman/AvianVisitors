@@ -927,9 +927,9 @@
     if (id === 'day') {
       // A day in the yard (sampler-core's daySong): written fresh from the
       // notes the page has, so it gets richer as more recordings are heard.
-      var ds = dayState.data ? S.daySong(dayState.data, cur, { beats: DAY_BEATS }) : null;
+      var ds = dayState.data ? S.daySong(dayState.data, cur) : null;
       dayState.song = ds;
-      return { notes: ds ? ds.notes : [], beats: ds ? ds.beats : 0, bpm: DAY_BPM, title: 'A day in the yard', day: ds };
+      return { notes: ds ? ds.notes : [], beats: ds ? ds.beats : 0, bpm: ds && ds.notes.length ? ds.bpm : null, title: 'A day in the yard', day: ds };
     }
     if (id === 'midi') {
       if (!midi) return { notes: [], beats: 0, bpm: null, title: 'MIDI file' };
@@ -1230,7 +1230,7 @@
   // The day picker: the days with calls in the last two months (from the same
   // /api/day answer), yesterday first when it had any, since today is still
   // being written.
-  var DAY_BPM = 96, DAY_BEATS = 72, TZ = 'America/New_York';
+  var TZ = 'America/New_York';
   function isoOf(d) {                      // a Date → YYYY-MM-DD in the yard's time zone
     try { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
     catch (e) { return d.toISOString().slice(0, 10); }
@@ -1271,7 +1271,7 @@
         if (!dayState.days.some(function (x) { return x.date === want; })) dayState.days.unshift({ date: want, n: d.total });
         dayState.data = d; dayState.loading = false;
         buildDayPick();
-        if (song.id === 'day') { stopSong(); refitSong(); }
+        if (song.id === 'day') { stopSong(); refitSong(); if (dayState.song && dayState.song.notes.length) { setTempo(dayState.song.bpm); renderDaySum(); } }
       })
       .catch(function () {
         if (dayState.date !== want) return;
@@ -1281,18 +1281,30 @@
   }
   // One line on the day: when it woke and went quiet, how much was heard,
   // who is singing it and how long it lasts.
+  // One or two lines on the day: how long its tune is, its mood and why, who
+  // sings it, and the rare visitor if there was one.
+  function nameOf(sci) {
+    var sp = species[sci], d = dayState.data, i;
+    if (sp && sp.com) return sp.com;
+    for (i = 0; d && i < d.species.length; i++) if (d.species[i].sci === sci) return d.species[i].com || sci;
+    return sci;
+  }
+  function andList(arr) {
+    return arr.length < 2 ? arr.join('') : arr.slice(0, -1).join(', ') + ' and ' + arr[arr.length - 1];
+  }
   function renderDaySum() {
     var dd = dayState.data, ds = dayState.song;
     if (dayState.loading || !dd) { daySum.textContent = dayState.loading ? 'Reading that day’s calls…' : ''; return; }
     if (!dd.total) { daySum.textContent = 'Nothing was heard that day.'; return; }
-    var txt = 'Heard ' + dd.total.toLocaleString('en-US') + (dd.total === 1 ? ' call' : ' calls') + ' from ' + plural(dd.species.length, 'bird');
-    if (ds && ds.from != null) txt = 'From ' + clockOf(ds.from) + ' to ' + clockOf(ds.to) + ': ' + txt.charAt(0).toLowerCase() + txt.slice(1);
-    if (ds && ds.notes.length) {
-      var secs = Math.round(ds.beats * 60 / bpm);
-      txt += '. ' + (ds.singers.length === dd.species.length ? (ds.singers.length === 1 ? 'It sings' : 'All of them sing') : ds.singers.length === 1 ? 'One of them sings' : ds.singers.length + ' of them sing') + ' it, squeezed into about ' + secs + ' seconds';
-      if (ds.sections.length > 1) txt += ': dawn, the midday lull, then evening';
-    }
-    daySum.textContent = txt + '.';
+    var heard = dd.total.toLocaleString('en-US') + (dd.total === 1 ? ' call' : ' calls') + ' from ' + plural(dd.species.length, 'kind') + ' of bird';
+    if (!ds || !ds.notes.length) { daySum.textContent = 'Heard ' + heard + ', but none of those birds has notes on the keyboard yet.'; return; }
+    var secs = Math.round(ds.beats * 60 / bpm);
+    var txt = 'The day in ' + secs + ' seconds. ' + (ds.mood === 'bright' ? 'A lively day' : 'A quiet day') +
+      ' (' + heard + (ds.from != null ? ', ' + clockOf(ds.from) + ' to ' + clockOf(ds.to) : '') + '), so ' +
+      (ds.mood === 'bright' ? 'a bright, quicker tune' : 'a gentle, slower tune') + ', sung by ' +
+      andList(ds.singers.filter(function (s) { return ds.notes.some(function (n) { return n.sci === s && !n.flourish; }); }).map(nameOf)) + '.';
+    if (ds.rare.length) { var rn = nameOf(ds.rare[0].sci); txt += ' Listen for the little flourish: ' + (/^[aeiou]/i.test(rn) ? 'an ' : 'a ') + rn + ', rare here.'; }
+    daySum.textContent = txt;
   }
   dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); } dayPick.blur(); });
 
