@@ -399,6 +399,77 @@ test('cutClip plays back the cleaned slice, and can be told not to', () => {
   near(n.rms / m.rms, 1, 0.08, 'the note itself is as loud as before');
 });
 
+// How loud one frequency is over a stretch (a Hann-windowed single-bin probe), in power.
+function probe(x, from, to, hz) {
+  const a = Math.round(from * SR), n = Math.round((to - from) * SR), w = 2 * Math.PI * hz / SR, c = 2 * Math.cos(w);
+  let s1 = 0, s2 = 0;
+  for (let i = 0; i < n; i++) { const v = x[a + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1))); const s0 = v + c * s1 - s2; s2 = s1; s1 = s0; }
+  return s1 * s1 + s2 * s2 - c * s1 * s2;
+}
+const dbOf = (after, before) => 10 * Math.log10(after / before);
+
+test('the faint parts of a call come through the clean-up; they do not go down with the hiss', () => {
+  // A whistle with a soft overtone: too faint for a ridge, but well clear of
+  // the hiss. The first clean-up knew only "call" or "background", and took it
+  // down by the full amount.
+  const a = tone(tone(clip(3, 0.05), 1.0, 0.4, 3000, 0.3), 1.0, 0.4, 6000, 0.3 * 0.016);
+  const r = S.analyzeClip(a, SR), c = S.cleanSlice(a, SR, r.nr, 0, a.length);
+  const over = dbOf(probe(c, 1.05, 1.35, 6000), probe(a, 1.05, 1.35, 6000));
+  assert.ok(over > -S.CFG.cleanDb + 6, `the soft overtone keeps most of its level (${over.toFixed(1)} dB, the hiss ${-S.CFG.cleanDb})`);
+  near(dbOf(probe(c, 1.05, 1.35, 3000), probe(a, 1.05, 1.35, 3000)), 0, 0.1, 'the whistle itself is untouched');
+  near(rmsIn(c, 0.2, 0.8) / rmsIn(a, 0.2, 0.8), Math.pow(10, -S.CFG.cleanDb / 20), 0.04, 'and the hiss on its own is down by the full amount');
+});
+
+test('the clean-up does not make the hiss flicker', () => {
+  // Hiss that is turned down bin by bin, each on its own flicker, is left
+  // "twinkling". Its level from one hundredth of a second to the next must be
+  // as even after the clean-up as before.
+  const wobble = (x) => {
+    const w = Math.round(0.01 * SR), v = [];
+    for (let i = Math.round(0.2 * SR); i + w < 2.8 * SR; i += w) { let e = 0; for (let j = 0; j < w; j++) e += x[i + j] * x[i + j]; v.push(e); }
+    const m = v.reduce((p, q) => p + q) / v.length;
+    return Math.sqrt(v.reduce((p, q) => p + (q - m) * (q - m), 0) / v.length) / m;
+  };
+  const a = clip(3, 0.03), c = S.cleanSlice(a, SR, S.analyzeClip(a, SR).nr, 0, a.length);
+  assert.ok(wobble(c) < wobble(a) * 1.4, `as even as it was (${wobble(c).toFixed(3)} against ${wobble(a).toFixed(3)})`);
+});
+
+test('mains hum is brought down to the hiss around it; a note on the same pitch is not', () => {
+  // 300 and 420 Hz all the way through, far above the hiss (as on the yard's
+  // real clips), and a low coo at 420 Hz, louder still, in the middle.
+  const mk = () => tone(tone(tone(clip(4, 0.004), 0, 4, 300, 0.03, 0.05), 0, 4, 420, 0.03, 0.05), 1.5, 0.5, 420, 0.3);
+  const a = mk(), r = S.analyzeClip(a, SR), c = S.cleanSlice(a, SR, r.nr, 0, a.length);
+  const hum = dbOf(probe(c, 0.3, 1.2, 300), probe(a, 0.3, 1.2, 300));
+  assert.ok(hum < -S.CFG.cleanDb - 8, `the hum goes down further than the hiss does (${hum.toFixed(1)} dB)`);
+  near(dbOf(probe(c, 1.6, 1.9, 420), probe(a, 1.6, 1.9, 420)), 0, 0.5, 'the coo on top of it keeps its level');
+  // With no hum there is nothing to bring down: plain hiss is treated evenly.
+  const b = clip(3, 0.02), w = S.analyzeClip(b, SR).nr.white;
+  assert.ok(w.every((v) => v === 1), 'no line is found in plain hiss');
+});
+
+test('what lies under every call (wind, traffic) is turned down further still', () => {
+  const a = tone(tone(clip(3, 0.004), 0, 3, 60, 0.2, 0.05), 1.0, 0.4, 3000, 0.2);
+  const c = S.cleanSlice(a, SR, S.analyzeClip(a, SR).nr, 0, a.length);
+  near(dbOf(probe(c, 0.3, 2.7, 60), probe(a, 0.3, 2.7, 60)), -(S.CFG.cleanDb + S.CFG.subDb), 1, 'a 60 Hz rumble');
+});
+
+test('a voice pad is cleaned gently, and can be left exactly as recorded', () => {
+  const mk = () => tone(tone(clip(4, 0.02), 0, 4, 60, 0.1, 0.05), 1.5, 0.8, 3000, 0.2);
+  const a = mk(), r = S.analyzeClip(a, SR);
+  S.cutClip(a, SR, r, { phrase: true });
+  const b = mk(), raw = S.analyzeClip(b, SR);
+  S.cutClip(b, SR, raw, { phrase: true, voice: false });
+  assert.equal(r.phrase.pcm.length, raw.phrase.pcm.length);
+  // As recorded: the very samples of the clip, scaled to full scale.
+  const at = Math.floor(raw.phrase.t0 * SR), g = 0.92 / b.subarray(at, at + raw.phrase.pcm.length).reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  for (let i = 0; i < raw.phrase.pcm.length; i += 211) near(raw.phrase.pcm[i], Math.round(b[at + i] * g * 32767), 1, `raw sample ${i}`);
+  // Cleaned: the whistle is as it was next to full scale, the rumble is not.
+  const f = (x) => Float32Array.from(x.phrase.pcm, (v) => v / 32768);
+  const span = [0.2, 0.6], whistle = (x) => probe(f(x), span[0], span[1], 3000), rumble = (x) => probe(f(x), span[0], span[1], 60);
+  assert.ok(dbOf(rumble(r) / whistle(r), rumble(raw) / whistle(raw)) < -(S.CFG.voiceDb + S.CFG.subDb) + 2, 'the rumble under the call is turned down');
+  assert.ok(r.phrase.rms > 0 && raw.phrase.rms > 0);
+});
+
 test('a call is not followed into a rustle or a slam', () => {
   // The note, then 250 ms later a loud burst of plain noise where a second
   // syllable might have been.
