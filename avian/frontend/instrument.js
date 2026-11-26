@@ -70,6 +70,36 @@
     release: 0.14     // the fade when a note is let go (s)
   };
 
+  // A light polish on every note (Scott, 2026-11-26: some sounds were "harsh";
+  // he asked for them to be "more pleasing to listen to while maintaining their
+  // distinctive sounds"). Nothing is added and nothing is re-pitched; three
+  // things are taken down a little:
+  //   1. the edge of a note: it fades in over `attack` instead of starting dead
+  //      on its loudest sample, which is what clicks and spits;
+  //   2. the top end: a gentle tilt (`shelf`, from `shelfAt` × the note up) takes
+  //      the rasp and hiss above the bird's first overtones down a few dB, and
+  //      a soft roll-off (`lpAt` × the note, between lpMin and lpMax) takes off
+  //      the mp3 fizz above everything the bird sang. A buzzy or noisy note
+  //      (low `tone`, high `bg`) gets up to `shelfRough` instead of `shelfClean`;
+  //   3. loudness: a quiet note is lifted at most `maxBoost`× to sit with the
+  //      others (it was 2.5×, which lifted its hiss with it).
+  // The fundamental and its next overtone are never touched, so each bird
+  // keeps its own voice. The voice pads stay exactly as recorded.
+  var POLISH = {
+    attack: 0.012,                         // s
+    shelfAt: 2.4, shelfClean: -3, shelfRough: -7,   // × note Hz, dB
+    lpAt: 5, lpMin: 6000, lpMax: 14000,    // × note Hz, Hz
+    maxBoost: 1.8
+  };
+  function polishOf(n) {
+    var rough = clamp(Math.max((0.9 - (n.tone == null ? 0.9 : n.tone)) / 0.3, ((n.bg == null ? -20 : n.bg) + 20) / 14), 0, 1);
+    return {
+      shelfHz: clamp(n.hz * POLISH.shelfAt, 1500, 10000),
+      shelfDb: POLISH.shelfClean + (POLISH.shelfRough - POLISH.shelfClean) * rough,
+      lpHz: clamp(n.hz * POLISH.lpAt, POLISH.lpMin, POLISH.lpMax)
+    };
+  }
+
   var state = { inited: false, visible: false, failed: false, depth: 0 };
 
   // ---------------------------------------------------------------- audio ----
@@ -111,7 +141,8 @@
   // shape (the "sing" cut): { body, tail, held }. The first `body` seconds are
   // the note and play at full level; after that the rest of the call drops to
   // level × tail, so the note stays in front of what follows it.
-  function startVoice(buf, when, offset, srcDur, rate, level, hpHz, maxOut, shape) {
+  // soft (notes only): { shelfHz, shelfDb, lpHz } from polishOf().
+  function startVoice(buf, when, offset, srcDur, rate, level, hpHz, maxOut, shape, soft) {
     var c = ctx, t = Math.max(c.currentTime + 0.004, when || 0);
     var outDur = srcDur / rate;
     if (maxOut != null && maxOut < outDur) outDur = Math.max(0.05, maxOut);
@@ -126,7 +157,7 @@
     hp.frequency.value = hp2.frequency.value = hpHz;
     hp.Q.value = 0.541; hp2.Q.value = 1.307;
     var g = c.createGain(), gate = c.createGain();
-    var att = offset > 0.002 ? 0.005 : 0.002, rel = Math.min(shape ? SING.release : 0.045, outDur * 0.4);
+    var att = soft ? POLISH.attack : (offset > 0.002 ? 0.005 : 0.002), rel = Math.min(shape ? SING.release : 0.045, outDur * 0.4);
     var sus = level;
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(level, t + att);
@@ -145,7 +176,15 @@
       g.gain.setValueAtTime(sus, t + Math.max(att, outDur - rel));
       g.gain.linearRampToValueAtTime(0, t + outDur);
     }
-    src.connect(hp); hp.connect(hp2); hp2.connect(g); g.connect(gate); gate.connect(master);
+    src.connect(hp); hp.connect(hp2);
+    var last = hp2;
+    if (soft) {
+      var sh = c.createBiquadFilter(), lp = c.createBiquadFilter();
+      sh.type = 'highshelf'; sh.frequency.value = soft.shelfHz; sh.gain.value = soft.shelfDb;
+      lp.type = 'lowpass'; lp.frequency.value = Math.min(soft.lpHz, c.sampleRate * 0.45); lp.Q.value = 0.5;
+      hp2.connect(sh); sh.connect(lp); last = lp;
+    }
+    last.connect(g); g.connect(gate); gate.connect(master);
     src.start(t, offset, srcDur + 0.05);
     src.stop(t + outDur + 0.03);
     var v = { src: src, g: g, gate: gate, at: t, dur: outDur, held: !!(shape && shape.held) };
@@ -194,7 +233,7 @@
     // "Fine-tune", always on: a note is played at most ±50 cents fast or slow
     // (under 3 % speed) so it lands on its key. Nothing more.
     var rate = Math.pow(2, -clamp(n.cents, -50, 50) / 1200);
-    var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, 2.5);
+    var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, POLISH.maxBoost);
     // "Sings on". The note lands on pitch and at full level; then the bird
     // carries on with its call, a step behind, until the note is over.
     // In a tune the note stays in front only for as long as it is written: a
@@ -203,7 +242,7 @@
     if (maxOut != null) body = Math.min(body, Math.max(0.06, maxOut - 0.07));
     var tail = n.tail > 0 ? clamp(SING.front * n.rms / n.tail, SING.tailMin, 1) : 1;
     var out = held ? null : (maxOut != null ? maxOut + clamp(SING.ringShare * maxOut, SING.ringMin, SING.ring) : SING.minOut);
-    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), out, { body: body, tail: tail, held: !!held });
+    return startVoice(buf, when, a, z - a, rate, level, S.rumbleCut(n.hz), out, { body: body, tail: tail, held: !!held }, polishOf(n));
   }
   function playPhrase(ph) {
     if (!ph || !audio()) return null;
