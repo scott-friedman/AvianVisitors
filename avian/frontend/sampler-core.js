@@ -18,8 +18,10 @@
 //
 // TRUE SOUNDS ONLY. Nothing here synthesises, stretches or re-pitches audio. The
 // analysis MEASURES, and the one thing it changes is the background: when a note
-// is cut out, whatever is not the call (steady hiss, hum, rumble) is turned down
-// by CFG.cleanDb — turned down, never removed, and nothing is added. Playback
+// or a voice pad is cut out, whatever is not the call (steady hiss, mains hum,
+// rumble) is turned down — by CFG.cleanDb around a note, CFG.voiceDb around a
+// voice, on a sliding scale so the faint parts of a call stay (see cleanSlice).
+// Turned down, never removed; a bin is only ever scaled, and nothing is added. Playback
 // (instrument.js) plays those samples with at most a ±50 cent nudge so a note
 // lands on its key.
 //
@@ -51,7 +53,7 @@
 
   // Bump when the analysis changes in a way that alters its output: instrument.js
   // keys its IndexedDB cache of per-clip results on this.
-  var VERSION = 2;
+  var VERSION = 3;
 
   // ---------------------------------------------------------------- FFT ----
   // In-place radix-2 FFT with cached bit-reversal + twiddle tables (a few
@@ -133,7 +135,7 @@
     junkMs: 50,                 //    the ridges — for this long (a rustle, rain, a door, a gust)
     cleanDb: 15,                // steady background around a call is turned down this far (0 = off)
     loudK: 12,                  // ...but a bin this many × above its own floor is left alone,
-    softOver: 3,                // ...and between the two it is a sliding scale: what stands this
+    softOver: 4,                // ...and between the two it is a sliding scale: what stands this
                                 //    many × above the background starts to come through (softGain)
     cleanRel: 0.7,              // how fast the clean-up closes again after a sound, per step
     voiceDb: 10,                // the same for a bird's voice pad, more gently (0 = as recorded)
@@ -856,7 +858,7 @@
     // (on the real clips, six tenths of a recording's energy sits under 120 Hz).
     var subK = Math.min(b0, Math.floor(CFG.subHz * N / sr)), gsub = gmin * Math.pow(10, -CFG.subDb / 20);
     var white = nr.white;
-    // Pass 1: every frame's spectrum, and (frequency-smoothed) power in the analysed bins.
+    // Pass 1: every frame's spectrum, and how far each analysed bin stands above its floor.
     var RE = new Float32Array(F * hb), IM = new Float32Array(F * hb), PW = soft ? new Float32Array(F * nb) : null;
     var tmp = new Float32Array(nb);
     for (f = 0; f < F; f++) {
@@ -865,7 +867,9 @@
       fft(re, im);
       for (k = 0; k < hb; k++) { RE[sp + k] = re[k]; IM[sp + k] = im[k]; }
       if (soft) {
-        for (b = 0; b < nb; b++) { k = b + b0; tmp[b] = re[k] * re[k] + im[k] * im[k]; }
+        // (each bin as a multiple of its OWN floor before neighbours are averaged:
+        //  a hum line must not lend its power to the quiet bin beside it)
+        for (b = 0; b < nb; b++) { k = b + b0; tmp[b] = (re[k] * re[k] + im[k] * im[k]) / nr.floor[b]; }
         var pr = f * nb;
         PW[pr] = tmp[0]; PW[pr + nb - 1] = tmp[nb - 1];
         for (b = 1; b < nb - 1; b++) PW[pr + b] = (tmp[b - 1] + tmp[b] + tmp[b + 1]) / 3;
@@ -886,7 +890,7 @@
         else {
           var ps = 0, gf = white ? gmin * white[b] : gmin;
           for (var q = fa; q <= fz; q++) ps += PW[q * nb + b];
-          g = Math.sqrt(softGain(ps / cnt, nr.floor[b] * up));
+          g = Math.sqrt(softGain(ps / cnt, up));
           if (g < gf) g = gf;
           var hold = prev[b] * rel;
           if (hold > g && hold > gf) g = hold;
