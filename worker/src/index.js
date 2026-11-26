@@ -313,9 +313,14 @@ async function dispatch(request, env, url, path) {
 // 1-h window: mojoVisit() gates his appearances on real recent bird activity and
 // caps them to a few a day (see that function), so he surfaces on the collage /
 // e-ink frame intermittently — around when other birds are actually singing, and
-// never on a dead hour. The rows are real D1 detections, so every view (stats,
-// dial, rhythm, chorus, modal) stays self-consistent, and every row's play
+// never on a dead hour. The rows are real D1 detections, and every row's play
 // button serves his actual bark.
+// He is SHOWN but never COUNTED (Scott, 2026-11-26): he stays wherever a bird
+// appears (collage, frame, atlas/life list, his modal, "first detections"), but
+// every count leaves him out: /api/stats, facts, hourly (Day Dial), rhythm,
+// chorus, timeseries, coverage, status' last_detection, and the night screens'
+// tallies. Those queries carry NOT_MOJO (below). /api/recent keeps him because
+// the collage draws from it; apt.js drops him from the "top species" ranking.
 // Full removal:
 //   1. delete this block, the scheduled() handler above, and [triggers] in
 //      wrangler.toml → `wrangler deploy`
@@ -345,6 +350,11 @@ const MOJO = {
     'treat for him. Commonly found attacking his favorite toy, Boney, he ' +
     'spends many hours of the day asleep, waiting for his next meal.',
 };
+
+// SQL filter for every query that COUNTS birds (see the block above). A literal,
+// not a bind, so no bind lists change. SQLite never uses an index for `<>`, so
+// adding it leaves each query's plan (and the INDEXED BY pins) as it was.
+const NOT_MOJO = `sci <> '${MOJO.sci}'`;
 
 async function mojoVisit(env) {
   // Mojo now shows up a FEW times a day, and ONLY when the yard is actually
@@ -869,7 +879,7 @@ async function status(env) {
 
   // Informational only (does NOT affect `alive`): when did we last hear any bird?
   // A long gap with alive=true points at the mic/analyzer, not the box or network.
-  const det = await env.DB.prepare('SELECT MAX(ts) AS ts FROM detections').first();
+  const det = await env.DB.prepare(`SELECT MAX(ts) AS ts FROM detections WHERE ${NOT_MOJO}`).first();
   const lastDet = det && det.ts != null ? det.ts : null;
 
   // no-store: an uptime monitor must see the true current state, never an edge copy.
@@ -1560,14 +1570,14 @@ async function stats(env, tz, now) {
   const hourStart = now - 3600;
   const first = (sql, ...b) => env.DB.prepare(sql).bind(...b).first();
 
-  const total = (await first('SELECT COUNT(*) AS n FROM detections')).n;
-  const speciesN = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections')).n;
-  const today = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', todayStart)).n;
-  const todaySpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', todayStart)).n;
-  const lastHour = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', hourStart)).n;
-  const week = (await first('SELECT COUNT(*) AS n FROM detections WHERE ts >= ?', weekStart)).n;
-  const weekSpec = (await first('SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', weekStart)).n;
-  const started = await first(`SELECT date(${tz('MIN(ts)')}, 'unixepoch') AS d FROM detections`);
+  const total = (await first(`SELECT COUNT(*) AS n FROM detections WHERE ${NOT_MOJO}`)).n;
+  const speciesN = (await first(`SELECT COUNT(DISTINCT sci) AS n FROM detections WHERE ${NOT_MOJO}`)).n;
+  const today = (await first(`SELECT COUNT(*) AS n FROM detections WHERE ts >= ? AND ${NOT_MOJO}`, todayStart)).n;
+  const todaySpec = (await first(`SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ${NOT_MOJO}`, todayStart)).n;
+  const lastHour = (await first(`SELECT COUNT(*) AS n FROM detections WHERE ts >= ? AND ${NOT_MOJO}`, hourStart)).n;
+  const week = (await first(`SELECT COUNT(*) AS n FROM detections WHERE ts >= ? AND ${NOT_MOJO}`, weekStart)).n;
+  const weekSpec = (await first(`SELECT COUNT(DISTINCT sci) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ${NOT_MOJO}`, weekStart)).n;
+  const started = await first(`SELECT date(${tz('MIN(ts)')}, 'unixepoch') AS d FROM detections WHERE ${NOT_MOJO}`);
 
   return json({
     totals: { detections: total, species: speciesN },
@@ -1605,11 +1615,11 @@ async function facts(env, tz, now) {
   const calls = (n) => `${fmt(n)} call${n === 1 ? '' : 's'}`;
 
   // ---- today totals (drives most conditions) ----
-  const td = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', todayStart);
+  const td = await first(`SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ${NOT_MOJO}`, todayStart);
   const todayN = td ? td.n : 0, todaySpec = td ? td.s : 0;
 
   if (!todayN) {                                 // empty-day path — never blank
-    const last = await first('SELECT com, sci FROM detections ORDER BY ts DESC LIMIT 1');
+    const last = await first(`SELECT com, sci FROM detections WHERE ${NOT_MOJO} ORDER BY ts DESC LIMIT 1`);
     if (last && last.com) push('quiet', 'QUIET', `No calls yet today. Last heard: ${last.com}.`, last.sci);
     else push('quiet', 'QUIET', 'No birds detected yet — the mic is listening.');
     return json({ facts: out, today: { detections: 0, species: 0 }, as_of: new Date().toISOString() });
@@ -1617,7 +1627,7 @@ async function facts(env, tz, now) {
 
   // 1) NEW — species whose first-ever detection is today (lifers today)
   const newToday = await all(
-    'SELECT sci, com, MIN(ts) AS f, MAX(conf) AS c FROM detections GROUP BY sci HAVING f >= ? ORDER BY f ASC', todayStart);
+    `SELECT sci, com, MIN(ts) AS f, MAX(conf) AS c FROM detections WHERE ${NOT_MOJO} GROUP BY sci HAVING f >= ? ORDER BY f ASC`, todayStart);
   const newSet = new Set(newToday.map((r) => r.sci));
   // A first-ever species heard only today is confirmed only by a strong hit
   // (see CONFIRM_CONF); otherwise say "possible", not "new".
@@ -1642,7 +1652,7 @@ async function facts(env, tz, now) {
     `SELECT com, sci,
             CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS h,
             CAST(strftime('%M', ${tz('ts')}, 'unixepoch') AS INT) AS m
-       FROM detections WHERE ts >= ? ORDER BY ts ASC LIMIT 1`;
+       FROM detections WHERE ts >= ? AND ${NOT_MOJO} ORDER BY ts ASC LIMIT 1`;
   const hasSun = !!(sun && sun.sunrise != null);
   let fc = hasSun
     ? await first(firstCallSql, todayStart + Math.round(Math.max(0, sun.sunrise - 1.5) * 3600))
@@ -1662,7 +1672,7 @@ async function facts(env, tz, now) {
   // by-hour today (drives PEAK + QUIET)
   const byHour = await all(
     `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS h, COUNT(*) AS n
-       FROM detections WHERE ts >= ? GROUP BY h`, todayStart);
+       FROM detections WHERE ts >= ? AND ${NOT_MOJO} GROUP BY h`, todayStart);
 
   // 3) PEAK — busiest local hour today
   if (byHour.length) {
@@ -1673,7 +1683,7 @@ async function facts(env, tz, now) {
 
   // 4) TOP — most-heard species today (+ share)
   const top = await first(
-    'SELECT com, sci, COUNT(*) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? GROUP BY sci ORDER BY n DESC LIMIT 1', todayStart);
+    `SELECT com, sci, COUNT(*) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ${NOT_MOJO} GROUP BY sci ORDER BY n DESC LIMIT 1`, todayStart);
   if (top) {
     const pct = Math.round((top.n / todayN) * 100);
     push('top', 'TOP', `Most heard today: ${top.com} — ${calls(top.n)} (${pct}% of today).`, top.sci);
@@ -1682,7 +1692,7 @@ async function facts(env, tz, now) {
   // 5) RARE — rarest (lowest all-time) species heard today, if scarce & not already NEW
   const rare = await first(
     `SELECT sci, com, COUNT(*) AS total, MAX(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS today
-       FROM detections GROUP BY sci HAVING today = 1 ORDER BY total ASC LIMIT 1`, todayStart);
+       FROM detections WHERE ${NOT_MOJO} GROUP BY sci HAVING today = 1 ORDER BY total ASC LIMIT 1`, todayStart);
   if (rare && rare.total <= 5 && !newSet.has(rare.sci)) {
     push('rare', 'RARE', `Seldom heard: ${rare.com} — only its ${ordinal(rare.total)} time ever.`, rare.sci);
   }
@@ -1697,7 +1707,7 @@ async function facts(env, tz, now) {
     `SELECT d.sci, d.com, MIN(d.ts) AS firstToday, p.prev AS prev
        FROM detections d
        JOIN (SELECT sci, MAX(ts) AS prev FROM detections WHERE ts < ? GROUP BY sci) p ON p.sci = d.sci
-      WHERE d.ts >= ?
+      WHERE d.ts >= ? AND d.${NOT_MOJO}
       GROUP BY d.sci
       ORDER BY (MIN(d.ts) - p.prev) DESC LIMIT 1`, todayStart, todayStart);
   if (back && back.prev != null) {
@@ -1706,7 +1716,7 @@ async function facts(env, tz, now) {
   }
 
   // 7) NOW — last hour
-  const lh = await first('SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ?', now - 3600);
+  const lh = await first(`SELECT COUNT(*) AS n, COUNT(DISTINCT sci) AS s FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ${NOT_MOJO}`, now - 3600);
   if (lh && lh.n > 0) push('now', 'NOW', `Last hour: ${calls(lh.n)} from ${lh.s} species.`);
 
   // 8) QUIET — longest silent run of COMPLETED clock-hours today. Only hours
@@ -1731,8 +1741,8 @@ async function facts(env, tz, now) {
   push('tally', 'TALLY', `${todaySpec} species today across ${calls(todayN)}.`);
 
   // 10) MILE — days listening (always-true fallback)
-  const span = await first('SELECT MIN(ts) AS first FROM detections');
-  const allN = (await first('SELECT COUNT(*) AS n FROM detections')).n;
+  const span = await first(`SELECT MIN(ts) AS first FROM detections WHERE ${NOT_MOJO}`);
+  const allN = (await first(`SELECT COUNT(*) AS n FROM detections WHERE ${NOT_MOJO}`)).n;
   if (span && span.first != null) {
     const dayNo = Math.floor((now - span.first) / 86400) + 1;
     push('mile', 'MILE', `Day ${dayNo} of listening — ${calls(allN)} logged in all.`);
@@ -1895,7 +1905,7 @@ async function coverage(env) {
   // "most-heard missing bird" at the top.
   const { results } = await env.DB.prepare(
     `SELECT sci, com, COUNT(*) AS n, ${confirmedSql(localSql(env))} AS confirmed
-       FROM detections
+       FROM detections WHERE ${NOT_MOJO}
       GROUP BY sci
       ORDER BY COUNT(*) DESC`
   ).all();
@@ -1941,13 +1951,13 @@ async function timeseries(env, url, tz, now) {
   const daily = (await env.DB.prepare(
     `SELECT date(${tz('ts')}, 'unixepoch') AS date, COUNT(*) AS detections,
             COUNT(DISTINCT sci) AS species
-       FROM detections WHERE ts >= ? GROUP BY date ORDER BY date`
+       FROM detections WHERE ts >= ? AND ${NOT_MOJO} GROUP BY date ORDER BY date`
   ).bind(dailySince).all()).results || [];
 
   const hourSince = now - 30 * 86400;
   const by_hour = (await env.DB.prepare(
     `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS hour, COUNT(*) AS detections
-       FROM detections WHERE ts >= ? GROUP BY hour ORDER BY hour`
+       FROM detections WHERE ts >= ? AND ${NOT_MOJO} GROUP BY hour ORDER BY hour`
   ).bind(hourSince).all()).results || [];
 
   return json({ days, daily, by_hour, as_of: new Date().toISOString() });
@@ -1969,7 +1979,7 @@ async function hourly(env, url, tz, now) {
     `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS hour,
             sci, com, COUNT(*) AS n
        FROM detections
-      WHERE ts >= ?
+      WHERE ts >= ? AND ${NOT_MOJO}
       GROUP BY hour, sci
       ORDER BY hour, n DESC`
   ).bind(since).all();
@@ -2022,7 +2032,7 @@ async function rhythm(env, url, tz, now) {
     `SELECT CAST(strftime('%H', ${tz('ts')}, 'unixepoch') AS INT) AS hour,
             sci, com, COUNT(*) AS n
        FROM detections
-      WHERE ts >= ?
+      WHERE ts >= ? AND ${NOT_MOJO}
       GROUP BY hour, sci`
   ).bind(since).all();
 
@@ -2046,7 +2056,7 @@ async function rhythm(env, url, tz, now) {
   const kept = list.filter((s) => s.total >= 3).slice(0, top);
   kept.sort((a, b) => (a.peak_hour - b.peak_hour) || (a.mean_hour - b.mean_hour) || (b.total - a.total));
 
-  const span = await env.DB.prepare('SELECT MIN(ts) AS first FROM detections WHERE ts >= ?').bind(since).first();
+  const span = await env.DB.prepare(`SELECT MIN(ts) AS first FROM detections WHERE ts >= ? AND ${NOT_MOJO}`).bind(since).first();
   const days_covered = span && span.first != null ? Math.min(days, Math.floor((now - span.first) / 86400) + 1) : 0;
 
   // tz-correct now + sun (identical to hourly()).
@@ -2159,7 +2169,7 @@ async function chorus(env, url, tz, now) {
   const { results } = await env.DB.prepare(
     `SELECT CAST(${tz('ts')} / ? AS INT) AS slot, sci, com, COUNT(*) AS n
        FROM detections
-      WHERE ts >= ?
+      WHERE ts >= ? AND ${NOT_MOJO}
       GROUP BY slot, sci
       ORDER BY slot, n DESC`
   ).bind(iv, since).all();
