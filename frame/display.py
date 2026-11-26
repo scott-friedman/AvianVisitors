@@ -70,6 +70,7 @@ DEFAULTS = {
     "fill_pad": 16,         # px of breathing room kept around the content when fill is on
     "saturation": 0.7,     # Inky colour saturation on hardware (0..1)
     "panel": "",            # force a driver module (e.g. "inky_ac073tc1") if auto() fails
+    "mirror": True,         # report each redraw to the site's "on the frame now" view (panel_mirror.py)
     "quiet_start": 0, "quiet_end": 0,    # 0/0 = no quiet hours
     "heal_hours": 24,
     "min_refresh_minutes": 15,  # shortest gap between two panel redraws (each one flashes ~40 s); 0 = no limit
@@ -168,6 +169,7 @@ def get_image(src, timeout, auth=None, meta=None):
                 meta["stale"] = (r.headers.get("X-Frame-Cache") or "").lower() == "stale"
                 # 'night' = a night screen, already laid out for the visible window.
                 meta["kind"] = (r.headers.get("X-Frame-Kind") or "").lower()
+                meta["screen"] = (r.headers.get("X-Frame-Screen") or "").lower()
             return Image.open(io.BytesIO(r.read(20_000_000))).convert("RGB")
     return Image.open(os.path.expanduser(src)).convert("RGB")
 
@@ -269,7 +271,16 @@ def push_panel(img, rotate, saturation, panel=""):
         buf = buf.resize((dev.width, dev.height), Image.LANCZOS)
     kw = {"saturation": saturation} if "saturation" in inspect.signature(dev.set_image).parameters else {}
     dev.set_image(buf, **kw)
+    # Copy the quantised pixels for the panel mirror before show() (which
+    # leaves the buffer alone, but this keeps the copy independent of it).
+    snapshot = None
+    try:
+        from panel_mirror import snapshot_device
+        snapshot = snapshot_device(dev, rotate)
+    except Exception:
+        pass
     dev.show()
+    return snapshot
 
 
 # --- state ------------------------------------------------------------------
@@ -310,8 +321,25 @@ def obtain_image(cfg, meta=None):
     return get_image(src, cfg["timeout"], _auth(cfg), meta)
 
 
+def _mirror(cfg, png=None, meta=None):
+    """Panel mirror (panel_mirror.py): keep what the panel just showed, and send
+    anything not yet sent. Never lets a failure reach the panel's own work."""
+    if cfg.get("mirror") is False:
+        return
+    try:
+        import panel_mirror
+        if png is not None:
+            meta = meta or {}
+            panel_mirror.record_shown(png, cfg, time.time(), meta.get("kind", ""), meta.get("screen", ""))
+        panel_mirror.publish_pending(cfg)
+    except Exception:
+        pass
+
+
 def run(cfg, preview=None, force=False, use_signature=True):
     now = time.time()
+    if not preview:
+        _mirror(cfg)  # retry an upload that failed last time
     state = load_state(cfg["state"])
     sig = None
     if use_signature:
@@ -390,11 +418,12 @@ def run(cfg, preview=None, force=False, use_signature=True):
         print(f"wrote preview {preview}")
         return
     try:
-        push_panel(img, cfg["rotate"], cfg["saturation"], cfg.get("panel", ""))
+        shown = push_panel(img, cfg["rotate"], cfg["saturation"], cfg.get("panel", ""))
     except Exception as e:
         print(f"panel push failed: {e}", file=sys.stderr)
         return
     save_state(cfg["state"], sig if sig is not None else state.get("signature"), now)
+    _mirror(cfg, shown, meta)
     print("panel updated")
 
 

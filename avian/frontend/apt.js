@@ -2250,12 +2250,17 @@
     dd.classList.add('open'); dd.setAttribute('aria-hidden','false');
     syncPill(framePick);   // position the frame-window pill now the drawer is laid out
     loadFrameWindow();     // refresh the shared window (another device may have changed it)
+    startFrameLive();      // show what the panel is showing, and keep it current while open
   }
-  function closeDd() { dd.classList.remove('open'); dd.setAttribute('aria-hidden','true'); }
+  function closeDd() { dd.classList.remove('open'); dd.setAttribute('aria-hidden','true'); stopFrameLive(); }
   function toggleDd(){ dd.classList.contains('open') ? closeDd() : openDd(); }
   menuBtn.addEventListener('click', function (e) { e.stopPropagation(); toggleDd(); });
   document.addEventListener('click', function (e) { if (!dd.contains(e.target) && e.target !== menuBtn) closeDd(); });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDd(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    if (frameZoom && !frameZoom.hidden) { closeFrameZoom(); return; }
+    closeDd();
+  });
 
   // ---- Picture-frame window control (the first genuinely-working menu item) ----
   // A SHARED, server-backed setting (D1 via the worker) for what time window the
@@ -2305,6 +2310,98 @@
     });
   });
 
+
+  // ---- Picture-frame live view (the panel mirror) ----
+  // The picture the e-ink panel itself last confirmed showing: after each
+  // redraw the Pi uploads the exact dithered pixels it sent to the glass
+  // (frame/panel_mirror.py → worker/src/panel-mirror.js). Not a fresh render,
+  // so quiet hours, a refused stale render or an offline box all show up
+  // honestly as "since <time>". Polled only while the drawer is open.
+  var frameLive = document.getElementById('frameLive');
+  var frameLiveImg = document.getElementById('frameLiveImg');
+  var frameLiveEmpty = document.getElementById('frameLiveEmpty');
+  var frameLiveCap = document.getElementById('frameLiveCap');
+  var frameZoom = document.getElementById('frameZoom');
+  var frameZoomImg = document.getElementById('frameZoomImg');
+  var frameZoomCap = document.getElementById('frameZoomCap');
+  var frameLiveTimer = null, frameLiveSha = null, frameLiveInfo = null;
+  var FRAME_SCREENS = {
+    recap: 'night screen · “Today in the yard”',
+    star: 'night screen · “Bird of the day”',
+    sky: 'night screen · “The yard is asleep”',
+    owl: 'night screen · “Heard tonight”',
+  };
+  function frameWhat(info) {
+    if (info.kind === 'night') return FRAME_SCREENS[info.screen] || 'a night screen';
+    if (info.kind === 'collage') return 'the birds collage';
+    return 'on the frame now';
+  }
+  function frameWhen(sec) {
+    var d = new Date(sec * 1000), now = new Date();
+    var t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    var mins = Math.max(0, Math.round((now - d) / 60000));
+    var ago = mins < 1 ? 'just now' : mins < 60 ? mins + ' min ago'
+      : mins < 48 * 60 ? Math.round(mins / 60) + ' h ago' : Math.round(mins / 1440) + ' days ago';
+    var sameDay = d.toDateString() === now.toDateString();
+    var day = sameDay ? '' : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ';
+    return 'on the frame since ' + day + t + ' (' + ago + ')';
+  }
+  function renderFrameCap() {
+    var info = frameLiveInfo;
+    if (!frameLiveCap || !info) return;
+    frameLiveCap.innerHTML = '';
+    var what = document.createElement('span'); what.textContent = frameWhat(info);
+    var when = document.createElement('span'); when.className = 'when'; when.textContent = frameWhen(info.displayed_at);
+    frameLiveCap.appendChild(what); frameLiveCap.appendChild(when);
+    if (frameZoomCap) frameZoomCap.textContent = frameWhat(info) + ' · ' + frameWhen(info.displayed_at);
+  }
+  function showFrameEmpty(msg) {
+    if (frameLiveImg) frameLiveImg.hidden = true;
+    if (frameLiveEmpty) { frameLiveEmpty.hidden = false; frameLiveEmpty.textContent = msg; }
+    if (frameLiveCap) frameLiveCap.textContent = '';
+  }
+  function loadFrameLive() {
+    if (!frameLive) return;
+    fetch(AV_API + '/api/frame-mirror', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (info) {
+        if (!info || !info.ok) {
+          frameLiveSha = null; frameLiveInfo = null;
+          showFrameEmpty('the frame hasn’t reported a picture yet — it will after its next redraw.');
+          return;
+        }
+        frameLiveInfo = info;
+        renderFrameCap();
+        if (info.sha256 === frameLiveSha) return;      // same picture: just refresh the "ago"
+        var src = AV_API + '/api/frame-mirror.png?v=' + encodeURIComponent(info.sha256);
+        var probe = new Image();
+        probe.onload = function () {
+          frameLiveSha = info.sha256;
+          frameLive.classList.toggle('portrait', probe.naturalHeight > probe.naturalWidth);
+          frameLiveImg.src = src; frameLiveImg.hidden = false;
+          frameLiveImg.alt = 'the picture frame now: ' + frameWhat(info);
+          if (frameLiveEmpty) frameLiveEmpty.hidden = true;
+          if (frameZoomImg) frameZoomImg.src = src;
+        };
+        probe.onerror = function () { if (!frameLiveSha) showFrameEmpty('couldn’t load the frame’s picture.'); };
+        probe.src = src;
+      })
+      .catch(function () { if (!frameLiveSha) showFrameEmpty('couldn’t reach the frame’s report — try again in a bit.'); });
+  }
+  function startFrameLive() {
+    loadFrameLive();
+    if (!frameLiveTimer) frameLiveTimer = setInterval(loadFrameLive, 60000);
+  }
+  function stopFrameLive() {
+    if (frameLiveTimer) { clearInterval(frameLiveTimer); frameLiveTimer = null; }
+  }
+  function closeFrameZoom() { if (frameZoom) frameZoom.hidden = true; }
+  if (frameLive) frameLive.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!frameLiveSha || !frameZoom) return;
+    frameZoom.hidden = false;
+  });
+  if (frameZoom) frameZoom.addEventListener('click', function (e) { e.stopPropagation(); closeFrameZoom(); });
 
   // ---- Hash routing + atlas detail modal ----
   // When a collage tile or stats row is clicked it sets

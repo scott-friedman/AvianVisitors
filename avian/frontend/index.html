@@ -23,7 +23,7 @@
   /* Strip interactive chrome; the frame is just the collage. */
   html.frame .top, html.frame .slider, html.frame #menu-dd,
   html.frame .static-head,
-  html.frame #detail-modal, html.frame #about-modal { display: none !important; }
+  html.frame #detail-modal, html.frame #about-modal, html.frame #frameZoom { display: none !important; }
   /* Pin to the collage view and let it fill the panel (no slider gutter). */
   html.frame .views { transform: none !important; }
   html.frame .view#v0 { padding: 16px 24px !important; }
@@ -50,7 +50,15 @@
        Cloudflare deployment never serves - removed. See FRAME-WINDOW-TOGGLE-PLAN.md. -->
   <div id="frameCtl">
     <h3 class="frame-ctl-title">picture frame</h3>
-    <p class="frame-ctl-sub">window shown on the panel · shared by everyone</p>
+    <!-- Live view: the picture the panel itself last confirmed showing (the
+         panel mirror: frame/panel_mirror.py → worker/src/panel-mirror.js).
+         Never a fresh render — if the frame has not reported, it says so. -->
+    <button type="button" class="frame-live" id="frameLive" aria-label="what the picture frame shows now — tap to enlarge">
+      <img id="frameLiveImg" alt="" hidden>
+      <span class="frame-live-empty" id="frameLiveEmpty">checking the frame…</span>
+    </button>
+    <p class="frame-live-cap" id="frameLiveCap" aria-live="polite"></p>
+    <p class="frame-ctl-sub">time window on the panel · shared by everyone</p>
     <div class="window-pick frame-pick" id="framePick" role="tablist" aria-label="picture frame time window">
       <i class="seg-pill" aria-hidden="true"></i>
       <button data-h="1"   type="button">1H</button>
@@ -64,6 +72,14 @@
   <p class="owl-link"><a href="./owls.html">owl watch →</a> <span>owls heard, for sure and maybe</span></p>
   <p class="built-by">built by <a href="https://scottfriedman.ooo" target="_blank" rel="noopener">scott</a> · <a href="https://github.com/scott-friedman" target="_blank" rel="noopener">github</a></p>
 </aside>
+
+<!-- Enlarged live view of the picture frame (opened from the menu). -->
+<div id="frameZoom" class="frame-zoom" hidden>
+  <figure>
+    <img id="frameZoomImg" alt="what the picture frame shows now">
+    <figcaption id="frameZoomCap"></figcaption>
+  </figure>
+</div>
 
 <main class="stage">
   <header class="static-head">

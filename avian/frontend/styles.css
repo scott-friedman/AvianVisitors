@@ -237,6 +237,49 @@
     font: 10px ui-monospace, Menlo, monospace;
     color: var(--ink-soft); letter-spacing: 0.04em;
   }
+  /* Live view of the picture frame: the panel's own last confirmed picture,
+     in a white mat so it reads as the object on the wall. */
+  .frame-live {
+    display: block; width: 100%; margin: 4px 0 6px; padding: 9px;
+    background: #fff; border: 0; border-radius: 6px; cursor: zoom-in;
+    box-shadow: 0 0 0 1px rgba(26,22,18,0.10), 0 2px 8px rgba(26,22,18,0.08);
+    position: relative;
+  }
+  .frame-live img, .frame-live-empty {
+    display: block; width: 100%; aspect-ratio: 800 / 480;
+    box-shadow: inset 0 0 0 1px rgba(26,22,18,0.08);
+  }
+  .frame-live img[hidden] { display: none; }
+  .frame-live.portrait img, .frame-live.portrait .frame-live-empty { aspect-ratio: 480 / 800; width: 60%; margin: 0 auto; }
+  .frame-live-empty {
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 0 18px; background: #f4f2ee; color: #908576;
+    font: 10px/1.5 ui-monospace, Menlo, monospace; letter-spacing: 0.04em;
+  }
+  .frame-live-empty[hidden] { display: none; }
+  .frame-live:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .frame-live-cap {
+    margin: 0 4px 12px; color: var(--ink);
+    font: 10px/1.5 ui-monospace, Menlo, monospace; letter-spacing: 0.03em;
+  }
+  .frame-live-cap .when { color: var(--ink-soft); display: block; }
+  .frame-zoom {
+    position: fixed; inset: 0; z-index: 60; cursor: zoom-out;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(20,18,15,0.78); padding: 24px;
+  }
+  .frame-zoom[hidden] { display: none; }
+  .frame-zoom figure { margin: 0; max-width: min(100%, 1600px); }
+  .frame-zoom img {
+    display: block; max-width: 100%; max-height: calc(100vh - 110px); max-height: calc(100dvh - 110px);
+    background: #fff; padding: clamp(10px, 2.5vw, 28px); border-radius: 4px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+  }
+  .frame-zoom figcaption {
+    margin-top: 10px; text-align: center; color: #f4f2ee;
+    font: 11px/1.5 ui-monospace, Menlo, monospace; letter-spacing: 0.04em;
+  }
+
   .owl-link {
     margin: 14px 4px 0; padding-top: 10px; border-top: 1px solid var(--line, #e2ded4);
     font: 11px ui-monospace, Menlo, monospace; letter-spacing: 0.04em; color: var(--ink-soft);

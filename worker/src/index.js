@@ -33,8 +33,12 @@
  *   GET  /frame.png      — 800x480 PNG of the collage for the e-ink panel,
  *                          rendered off-Pi via Cloudflare Browser Rendering
  *                          (k=FRAME_KEY gated, signature-cached in D1).
+ *   POST /api/frame-confirmed, GET /api/frame-mirror(.png)
+ *                        — the panel mirror: the picture the physical frame
+ *                          last confirmed showing (src/panel-mirror.js).
  */
 
+import { frameMirrorInfo, frameMirrorPng, frameConfirmed } from './panel-mirror.js';
 import puppeteer from '@cloudflare/puppeteer';
 import { nightPlan, nightKey, moonPhase, starReason, rankCallers, NIGHT_DEFAULTS, STAR } from './night.js';
 
@@ -279,6 +283,16 @@ async function dispatch(request, env, url, path) {
   }
   if (path === '/api/frame-sig' && request.method === 'GET') {
     return await frameSig(env);
+  }
+  // The panel mirror: what the physical frame confirmed it is showing.
+  if (path === '/api/frame-confirmed' && request.method === 'POST') {
+    return await frameConfirmed(request, env);
+  }
+  if (path === '/api/frame-mirror' && request.method === 'GET') {
+    return await frameMirrorInfo(env);
+  }
+  if (path === '/api/frame-mirror.png' && (request.method === 'GET' || request.method === 'HEAD')) {
+    return await frameMirrorPng(request, env);
   }
   if (path === '/api/night' && request.method === 'GET') {
     return await nightApi(env);
@@ -950,7 +964,7 @@ async function frameSignature(rows, windowHours) {
   return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function pngResponse(body, sig, note, kind) {
+function pngResponse(body, sig, note, kind, screen) {
   // D1 returns a BLOB column as a JS number[] (not an ArrayBuffer), and
   // new Response(number[]) would stringify it ("137,80,78,..."). Coerce to
   // bytes so both the fresh Uint8Array (miss) and the cached array (hit/stale)
@@ -968,6 +982,8 @@ function pngResponse(body, sig, note, kind) {
       // window, so it must not auto-crop it (display.py). Absent on a stale
       // fallback, whose kind is unknown: the Pi then treats it as a collage.
       ...(kind ? { 'X-Frame-Kind': kind } : {}),
+      // Which night screen, so the Pi can tell the panel mirror what it shows.
+      ...(screen ? { 'X-Frame-Screen': screen } : {}),
       ...CORS,
     },
   });
@@ -995,7 +1011,7 @@ async function frame(request, env, url) {
   // window flip serves the other window's frame instead of forcing a render.
   // A night screen shares its window's slot (it is what that window shows now).
   const hit = await env.DB.prepare('SELECT png FROM frame_cache WHERE id = ? AND sig = ?').bind(windowHours, sig).first();
-  if (hit && hit.png) return pngResponse(hit.png, sig, 'hit', kind);
+  if (hit && hit.png) return pngResponse(hit.png, sig, 'hit', kind, st.screen);
 
   // Miss: render off-Pi. On failure, fall back to the last good frame so the
   // panel keeps showing something (display.py likewise keeps its last image).
@@ -1022,7 +1038,7 @@ async function frame(request, env, url) {
   await env.DB.prepare(
     'INSERT OR REPLACE INTO frame_cache (id, sig, png, ts) VALUES (?, ?, ?, ?)'
   ).bind(windowHours, sig, png.buffer, now).run();
-  return pngResponse(png, sig, 'miss', kind);
+  return pngResponse(png, sig, 'miss', kind, st.screen);
 }
 
 // What the frame shows right now, and its change signature — shared by

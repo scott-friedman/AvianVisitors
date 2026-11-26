@@ -42,3 +42,7 @@ timeout = 45
 # the collage and detection API public, so usually leave these out.
 # basic_user = "monalisa"
 # basic_pass = "..."
+
+# Report each redraw to the site's "on the frame now" view (menu → picture frame).
+# Uses the same frame key as image_url. Set false to stop it.
+# mirror = true
