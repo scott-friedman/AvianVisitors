@@ -113,6 +113,19 @@ for unit in avian-forwarder.service avian-heartbeat.timer avian-mic-watchdog.tim
 done
 [ "$RESTART_FAILED" -eq 0 ] || { echo "ERROR: one or more units failed to restart." >&2; exit 1; }
 
+# BirdNET's own analyzer only reloads its code on a restart. Restart it only when
+# the pull touched it (scripts/ — e.g. the owl watch, scripts/utils/owlwatch.py):
+# a restart reloads the ~150 MB model, so don't do it for nothing on 512 MB.
+if [ -n "${AVIAN_UPDATE_PREV:-}" ] && [ -f /etc/systemd/system/birdnet_analysis.service ] && \
+   ! git -C "$REPO" diff --quiet "$AVIAN_UPDATE_PREV" HEAD -- scripts/birdnet_analysis.py scripts/utils/ 2>/dev/null; then
+  if sudo systemctl restart birdnet_analysis.service; then
+    echo "   birdnet_analysis restarted (its code changed in this pull)"
+  else
+    echo "   !! birdnet_analysis FAILED to restart — detection is down; see journalctl -u birdnet_analysis" >&2
+    exit 1
+  fi
+fi
+
 # The frame unit owns its own venv + path (frame/install.sh), so update.sh doesn't
 # re-render it — it just re-arms the timer to pick up a pulled display.py. That only
 # works if the frame actually runs from this clone; warn if it doesn't.

@@ -61,6 +61,14 @@ PAGES_BASE = "https://birds-origin.indianridgeroad.com"
 # Point an external uptime monitor (UptimeRobot, etc.) at /api/status to get alerted.
 HEARTBEAT_MAX_AGE_SECONDS = "2700"
 
+# Night screens (worker/src/night.js + avian/frontend/night.js). When the frame's
+# window is empty the panel shows a night screen instead of "no birds heard".
+# Defaults live in night.js; uncomment to override.
+# NIGHT_SCREENS = "0"          # "0" turns night screens off (back to the empty collage)
+# NIGHT_ROTATE_MIN = "60"      # evening: change screens this often (15–240 min)
+# NIGHT_HOLD_HOUR = "23"       # from this local hour, hold one screen until the first bird
+# FRAME_NIGHT_SIZE = "748x403" # the panel area the mat leaves visible (FRAME-MATTING-PLAN.md)
+
 # Mojo the dog-bird (easter egg): daytime-only "detections" of the family dog,
 # every 30 min with random skips — 10:00–23:30 UTC = 6:00–19:30 EDT /
 # 5:00–18:30 EST. Quiet at

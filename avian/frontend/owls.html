@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>owl watch · barry's birds</title>
+<meta name="description" content="Owls the bird box heard, for sure and maybe.">
+<link rel="icon" type="image/png" href="./favicon.png">
+<script>try{if(localStorage.getItem('bird:theme')==='dark')document.documentElement.setAttribute('data-theme','dark');}catch(e){}</script>
+<style>
+  /* Same paper and ink as the main site (styles.css :root). */
+  :root { --paper:#fcfcfb; --paper-2:#f3f2ee; --ink:#1a1612; --ink-2:#4a3f31; --ink-soft:#908576; --line:#e2ded4; --owl:#1f3a8a; --maybe:#b4661c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --paper:#17181c; --paper-2:#212329; --ink:#ece8e1; --ink-2:#b7afa2; --ink-soft:#837c70; --line:#2c2f36; --owl:#9db4ff; --maybe:#f0a35d; color-scheme:dark; } }
+  :root[data-theme="dark"] { --paper:#17181c; --paper-2:#212329; --ink:#ece8e1; --ink-2:#b7afa2; --ink-soft:#837c70; --line:#2c2f36; --owl:#9db4ff; --maybe:#f0a35d; color-scheme:dark; }
+  html, body { margin:0; background:var(--paper); color:var(--ink); }
+  body { font: 16px/1.5 ui-serif, "Iowan Old Style", "Apple Garamond", Georgia, serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 28px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; font-size: 11px; color: var(--ink-soft); }
+  a { color: inherit; }
+  .back { text-decoration: none; }
+  h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.05; margin: 10px 0 10px; text-wrap: balance; }
+  h2 { font-size: 22px; margin: 36px 0 4px; }
+  .lede { color: var(--ink-2); max-width: 60ch; margin: 0; }
+  .sub { color: var(--ink-soft); font-size: 14px; margin: 0 0 10px; max-width: 62ch; }
+  .day { margin-top: 18px; }
+  .day > .mono { padding-bottom: 6px; border-bottom: 1px solid var(--line); display: block; }
+  .row { display: grid; grid-template-columns: 70px minmax(0, 1fr) 92px 44px; gap: 4px 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .t { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 15px; }
+  .who { min-width: 0; }
+  .who b { font-weight: 600; }
+  .who .note { display: block; font-size: 13px; color: var(--ink-soft); }
+  .score { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; background: var(--paper-2); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--maybe); }
+  .sure .bar i { background: var(--owl); }
+  .play { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--paper-2); color: var(--ink); cursor: pointer; font-size: 14px; }
+  .play:focus-visible { outline: 2px solid var(--owl); outline-offset: 2px; }
+  .play[disabled] { opacity: .35; cursor: default; }
+  .play[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+  .empty { color: var(--ink-soft); font-style: italic; padding: 12px 0; }
+  .err { color: var(--maybe); }
+  @media (max-width: 520px) { .row { grid-template-columns: 56px minmax(0, 1fr) 44px; } .score { grid-column: 2; grid-row: 2; } .play { grid-row: 1 / span 2; grid-column: 3; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back mono" href="./">← barry's birds</a>
+  <h1>Owl watch</h1>
+  <p class="lede">Owls the box heard in the last 30 days. Owls call from far off and mostly at night, so the box often isn't sure. Everything it half-heard is kept here, with the sound, so you can listen and decide.</p>
+
+  <h2>Heard for sure</h2>
+  <p class="sub">The box was confident, so these count as visits and show on the collage.</p>
+  <div id="sure"><p class="empty">Loading…</p></div>
+
+  <h2>Maybe an owl</h2>
+  <p class="sub">The box thought it might be an owl but didn't count it. Sometimes it was too faint to be sure. Sometimes BirdNET put a European owl's name on it, though only our own owls live here. The bar shows how sure it was.</p>
+  <div id="maybe"><p class="empty">Loading…</p></div>
+</div>
+
+<script src="./config.js"></script>
+<script>
+(function () {
+  'use strict';
+  var API = (window.AVIAN_API_BASE || '').replace(/\/+$/, '');
+  var LOCAL_NAMES = { // what an Old World name most likely was, here
+    'Bubo bubo': 'Great Horned Owl', 'Strix aluco': 'Barred Owl', 'Strix uralensis': 'Barred Owl',
+    'Otus scops': 'Eastern Screech-Owl', 'Aegolius funereus': 'Northern Saw-whet Owl'
+  };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function clock(t) { // "21:47:39" → "9:47 pm"
+    var h = +t.slice(0, 2), m = t.slice(3, 5);
+    return (h % 12 || 12) + ':' + m + ' ' + (h < 12 ? 'am' : 'pm');
+  }
+  // Group by NIGHT: anything before noon belongs to the night that began the day before.
+  function nightOf(r) {
+    var d = new Date(r.date + 'T12:00:00Z');
+    if (+r.time.slice(0, 2) < 12) d.setUTCDate(d.getUTCDate() - 1);
+    return d;
+  }
+  var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function nightLabel(d) { return DAYS[d.getUTCDay()] + ' night · ' + MONTHS[d.getUTCMonth()] + ' ' + d.getUTCDate(); }
+
+  var current = null; // one sound at a time
+  function stop() { if (current) { current.audio.pause(); current.btn.setAttribute('aria-pressed', 'false'); current.btn.textContent = '▶'; current = null; } }
+  function playBtn(file) {
+    var b = document.createElement('button');
+    b.className = 'play'; b.type = 'button'; b.textContent = '▶';
+    b.setAttribute('aria-label', 'Play the recording'); b.setAttribute('aria-pressed', 'false');
+    if (!file) { b.disabled = true; b.title = 'No recording kept'; return b; }
+    b.addEventListener('click', function () {
+      if (current && current.btn === b) { stop(); return; }
+      stop();
+      var a = new Audio(API + '/api/recording?file=' + encodeURIComponent(file));
+      current = { audio: a, btn: b };
+      b.setAttribute('aria-pressed', 'true'); b.textContent = '■';
+      a.addEventListener('ended', stop);
+      a.play().catch(function () { stop(); b.disabled = true; b.title = 'Recording no longer available'; });
+    });
+    return b;
+  }
+  function render(host, rows, kind) {
+    host.innerHTML = '';
+    if (!rows.length) {
+      host.innerHTML = '<p class="empty">' + (kind === 'sure' ? 'None yet in the last 30 days.' : 'Nothing yet. The watch keeps anything owl-like from now on.') + '</p>';
+      return;
+    }
+    var groups = [], byKey = {};
+    rows.forEach(function (r) {
+      var n = nightOf(r), k = n.toISOString().slice(0, 10);
+      if (!byKey[k]) { byKey[k] = { label: nightLabel(n), rows: [] }; groups.push(byKey[k]); }
+      byKey[k].rows.push(r);
+    });
+    groups.forEach(function (g) {
+      var day = document.createElement('section'); day.className = 'day';
+      day.innerHTML = '<span class="mono">' + esc(g.label) + '</span>';
+      g.rows.forEach(function (r) {
+        var row = document.createElement('div'); row.className = 'row ' + kind;
+        var note = '';
+        if (!r.local) {
+          var guess = LOCAL_NAMES[r.sci];
+          note = '<span class="note">BirdNET\'s name for it. This owl doesn\'t live here' + (guess ? ', so most likely a ' + esc(guess) : '') + '.</span>';
+        } else if (kind === 'maybe') {
+          note = '<span class="note">' + (r.conf >= 0.7 ? 'Sure enough, but filtered out as "not expected here".' : 'Too faint for the box to be sure.') + '</span>';
+        }
+        row.innerHTML = '<span class="t">' + esc(clock(r.time)) + '</span>' +
+          '<span class="who"><b>' + esc(r.com) + '</b>' + note + '</span>' +
+          '<span class="score"><span>' + Math.round(r.conf * 100) + '% sure</span><span class="bar"><i style="width:' + Math.round(r.conf * 100) + '%"></i></span></span>';
+        row.appendChild(playBtn(r.file));
+        day.appendChild(row);
+      });
+      host.appendChild(day);
+    });
+  }
+  fetch(API + '/api/owlwatch?days=30').then(function (r) {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(function (d) {
+    render(document.getElementById('sure'), d.sure || [], 'sure');
+    render(document.getElementById('maybe'), d.maybe || [], 'maybe');
+  }).catch(function () {
+    ['sure', 'maybe'].forEach(function (id) {
+      document.getElementById(id).innerHTML = '<p class="empty err">Couldn\'t reach the bird box\'s data. Try again in a minute.</p>';
+    });
+  });
+})();
+</script>
+</body>
+</html>

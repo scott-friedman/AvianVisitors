@@ -36,6 +36,7 @@
  */
 
 import puppeteer from '@cloudflare/puppeteer';
+import { nightPlan, nightKey, moonPhase, starReason, rankCallers, NIGHT_DEFAULTS, STAR } from './night.js';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*', // public read-only data
@@ -275,6 +276,18 @@ async function dispatch(request, env, url, path) {
   }
   if (path === '/frame.png' && request.method === 'GET') {
     return await frame(request, env, url);
+  }
+  if (path === '/api/frame-sig' && request.method === 'GET') {
+    return await frameSig(env);
+  }
+  if (path === '/api/night' && request.method === 'GET') {
+    return await nightApi(env);
+  }
+  if (path === '/api/owlwatch' && request.method === 'POST') {
+    return await owlWatchIngest(request, env);
+  }
+  if (path === '/api/owlwatch' && request.method === 'GET') {
+    return await owlWatchList(env, url);
   }
   if (path === '/api/wiki' && request.method === 'GET') {
     return await wiki(url);
@@ -571,7 +584,12 @@ async function clip(request, env, url) {
                 (head[0] === 0xff && (head[1] & 0xe0) === 0xe0);
   if (!isMp3) return json({ error: 'not an mp3' }, 415);
 
-  await env.CLIPS.put('clips/' + key, bytes, {
+  // kind=owlwatch: a "maybe an owl" clip (scripts/utils/owlwatch.py). Its own
+  // prefix: no lifecycle rule, never mixed into a species' clips or the
+  // instrument's notes. Give owlwatch/ a 60-day lifecycle rule in the R2
+  // dashboard (like clips/' 7-day one); the page only lists OWL_WATCH_KEEP_DAYS.
+  const prefix = url.searchParams.get('kind') === 'owlwatch' ? 'owlwatch/' : 'clips/';
+  await env.CLIPS.put(prefix + key, bytes, {
     httpMetadata: { contentType: 'audio/mpeg' },
   });
   return new Response(null, { status: 204, headers: CORS });
@@ -613,7 +631,8 @@ async function recording(request, env, url) {
   // ahead of the 416 logic below.
   const locate = async (k) =>
     (await env.CLIPS.head('clips/' + k)) ? 'clips/' + k :
-    (await env.CLIPS.head('rare/' + k)) ? 'rare/' + k : null;
+    (await env.CLIPS.head('rare/' + k)) ? 'rare/' + k :
+    (k.includes('-owlwatch-') && (await env.CLIPS.head('owlwatch/' + k))) ? 'owlwatch/' + k : null;
   let objKey = await locate(key);
   if (!objKey && sci) {
     // Expired from the hot set: play the clearest clip in the forever archive.
@@ -931,7 +950,7 @@ async function frameSignature(rows, windowHours) {
   return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function pngResponse(body, sig, note) {
+function pngResponse(body, sig, note, kind) {
   // D1 returns a BLOB column as a JS number[] (not an ArrayBuffer), and
   // new Response(number[]) would stringify it ("137,80,78,..."). Coerce to
   // bytes so both the fresh Uint8Array (miss) and the cached array (hit/stale)
@@ -945,6 +964,10 @@ function pngResponse(body, sig, note) {
       'Cache-Control': 'public, max-age=60',
       ETag: `"${sig}"`,
       'X-Frame-Cache': note,
+      // 'night' tells the Pi this image is already laid out for the visible
+      // window, so it must not auto-crop it (display.py). Absent on a stale
+      // fallback, whose kind is unknown: the Pi then treats it as a collage.
+      ...(kind ? { 'X-Frame-Kind': kind } : {}),
       ...CORS,
     },
   });
@@ -964,30 +987,26 @@ async function frame(request, env, url) {
   }
 
   const now = Math.floor(Date.now() / 1000);
-  const windowHours = await getFrameWindow(env); // shared, set via /api/frame-config
-  const since = now - windowHours * 3600;
-  const rows = (await env.DB.prepare(
-    'SELECT sci, COUNT(*) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? GROUP BY sci'
-  ).bind(since).all()).results || [];
-  const sig = await frameSignature(rows, windowHours);
+  const st = await frameState(env, now);
+  const { windowHours, rows, sig, kind } = st;
 
   // Cache hit: this exact frame was already rendered → serve it, no browser.
   // One cached PNG per window (id = window hours, migration 0006), so a
   // window flip serves the other window's frame instead of forcing a render.
+  // A night screen shares its window's slot (it is what that window shows now).
   const hit = await env.DB.prepare('SELECT png FROM frame_cache WHERE id = ? AND sig = ?').bind(windowHours, sig).first();
-  if (hit && hit.png) return pngResponse(hit.png, sig, 'hit');
+  if (hit && hit.png) return pngResponse(hit.png, sig, 'hit', kind);
 
   // Miss: render off-Pi. On failure, fall back to the last good frame so the
   // panel keeps showing something (display.py likewise keeps its last image).
   let png;
   try {
-    png = await renderFrame(env, windowHours, rows.length > 0);
+    png = await renderFrame(env, windowHours, rows.length > 0, kind === 'night' ? st.screen : null);
     // Sanity-gate before caching: a catastrophically broken screenshot (empty,
     // truncated, not a PNG) must not be cached under this signature — it would
     // stick on the panel until the data next changes. The floor is deliberately
-    // tiny: a LEGITIMATE frame can be near-blank (a 1H window overnight), so
-    // this catches garbage, not sparseness. Bad render → same stale fallback
-    // as a thrown render error.
+    // tiny: this catches garbage, not sparseness. Bad render → same stale
+    // fallback as a thrown render error.
     if (!png || png.length < 1000 ||
         !(png[0] === 0x89 && png[1] === 0x50 && png[2] === 0x4e && png[3] === 0x47)) {
       throw new Error(`render produced invalid png (${png ? png.length : 0} bytes)`);
@@ -1003,19 +1022,68 @@ async function frame(request, env, url) {
   await env.DB.prepare(
     'INSERT OR REPLACE INTO frame_cache (id, sig, png, ts) VALUES (?, ?, ?, ?)'
   ).bind(windowHours, sig, png.buffer, now).run();
-  return pngResponse(png, sig, 'miss');
+  return pngResponse(png, sig, 'miss', kind);
 }
 
-async function renderFrame(env, windowHours, expectTiles) {
+// What the frame shows right now, and its change signature — shared by
+// /frame.png (render + cache) and /api/frame-sig (the Pi's cheap "did it
+// change?" check), so the two can never disagree. kind 'collage' = the live
+// birds of the window; kind 'night' = one of the night screens (night.js).
+async function frameState(env, now) {
+  const windowHours = await getFrameWindow(env); // shared, set via /api/frame-config
+  const since = now - windowHours * 3600;
+  const rows = (await env.DB.prepare(
+    'SELECT sci, COUNT(*) AS n FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? GROUP BY sci'
+  ).bind(since).all()).results || [];
+  if (rows.length || env.NIGHT_SCREENS === '0') {
+    return { windowHours, rows, kind: 'collage', screen: null, sig: await frameSignature(rows, windowHours) };
+  }
+  const nd = await nightData(env, now, windowHours);
+  const key = `w${windowHours}|` + nightKey(nd.plan.screen, nd);
+  return { windowHours, rows, kind: 'night', screen: nd.plan.screen, sig: await shortHash(key) };
+}
+
+async function shortHash(str) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// GET /api/frame-sig — public, cheap (no render): the signature /frame.png
+// would carry right now. The Pi polls this every 5 min and fetches the PNG only
+// when it moves; without it the Pi could not see a night screen rotate (its old
+// check hashed the window's species, which stay empty all night).
+async function frameSig(env) {
+  const now = Math.floor(Date.now() / 1000);
+  const st = await frameState(env, now);
+  return json({ sig: st.sig, kind: st.kind, screen: st.screen, window_hours: st.windowHours },
+    200, { 'Cache-Control': 'no-store' });
+}
+
+async function renderFrame(env, windowHours, expectTiles, nightScreen = null) {
   const browser = await puppeteer.launch(env.BROWSER);
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 800, height: 480, deviceScaleFactor: 1 });
+    // A night screen is laid out at the size of the part of the panel the
+    // frame's mat leaves visible (FRAME_NIGHT_SIZE, measured on the real frame
+    // — FRAME-MATTING-PLAN.md), and the Pi places it 1:1 there instead of
+    // auto-cropping it like the collage. The collage keeps the full 800×480.
+    const [nw, nh] = String(env.FRAME_NIGHT_SIZE || '748x403').split('x').map(Number);
+    const vp = nightScreen ? { width: nw || 748, height: nh || 403 } : { width: 800, height: 480 };
+    await page.setViewport({ ...vp, deviceScaleFactor: 1 });
     // FRAME_URL already carries ?frame=1; add the chosen window so the page's JS
     // (apt.js urlWindow()) draws that window instead of its localStorage default.
     const target = new URL(env.FRAME_URL);
     target.searchParams.set('window', String(windowHours));
+    if (nightScreen) target.searchParams.set('night', nightScreen);
     await page.goto(target.toString(), { waitUntil: 'load', timeout: 30000 });
+    if (nightScreen) {
+      // night.js sets data-ready once its data, art and fonts are in. Not
+      // ready in time = a broken load → throw (→ stale fallback), never cache
+      // a half-drawn screen under this signature.
+      await page.waitForSelector('#night[data-ready="1"]', { timeout: 20000 });
+      await new Promise((r) => setTimeout(r, 300));
+      return new Uint8Array(await page.screenshot({ type: 'png' }));
+    }
     // The collage polls /api/recent on a timer, so networkidle never settles;
     // wait for tiles to mount, then for their images to decode. When the
     // window HAS detections, tiles failing to appear means a broken page load
@@ -1038,6 +1106,264 @@ async function renderFrame(env, windowHours, expectTiles) {
   } finally {
     await browser.close();
   }
+}
+
+// ---- night screens: the data (/api/night) -----------------------------------
+// Everything the four night screens draw, gathered in one place so the
+// Worker's choice of screen (nightPlan, in night.js) and the page that draws it
+// work from the same numbers. Read cost is bounded on purpose — the Pi asks for
+// the frame signature every 5 min all night (see the D1 full-scan note in
+// CLAUDE.md): the recap day's rows, the night's rows, and per-species index
+// seeks; nothing scans history.
+const MOJO_SCI = 'Canis volaticus'; // the family dog: on the collage, never in a count
+let _nightMemo = null; // { key, data } — one isolate, one 5-min bucket
+let _artMemo = null;   // { at, set }
+
+async function artSlugs(env) {
+  if (_artMemo && Date.now() - _artMemo.at < 6 * 3600 * 1000) return _artMemo.set;
+  const base = (env.PAGES_BASE || 'https://birds-origin.indianridgeroad.com').replace(/\/+$/, '');
+  const m = await fetchJsonAsset(`${base}/assets/art-manifest.json`);
+  const set = m && Array.isArray(m.slugs) ? new Set(m.slugs) : null;
+  _artMemo = { at: Date.now(), set };
+  return set;
+}
+
+// Sunrise/sunset (UTC seconds) for the local day that starts at dayStart.
+function sunTimes(env, dayStart) {
+  const off = tzOffsetSecAt(env, dayStart + 43200);
+  const localNoon = new Date((dayStart + off + 43200) * 1000);
+  const arc = sunArc(env, localNoon, off / 3600);
+  if (!arc) return { sunrise: dayStart + 7 * 3600, sunset: dayStart + 17 * 3600 }; // no coords: a plain guess
+  return { sunrise: dayStart + Math.round(arc.sunrise * 3600), sunset: dayStart + Math.round(arc.sunset * 3600) };
+}
+
+// "6:52 am" in the site's local time.
+function clock(env, ts) {
+  const d = new Date((ts + tzOffsetSecAt(env, ts)) * 1000);
+  let h = d.getUTCHours();
+  const m = d.getUTCMinutes();
+  const ap = h < 12 ? 'am' : 'pm';
+  h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, '0')} ${ap}`;
+}
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function localDate(env, ts) {
+  const d = new Date((ts + tzOffsetSecAt(env, ts)) * 1000);
+  return {
+    date: d.toISOString().slice(0, 10),
+    weekday: WEEKDAYS[d.getUTCDay()],
+    label: `${WEEKDAYS[d.getUTCDay()]}, ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`,
+  };
+}
+
+async function nightData(env, now, windowHours) {
+  const mx = await env.DB.prepare('SELECT MAX(ts) AS ts FROM detections').first();
+  const lastTs = (mx && mx.ts) || 0;
+  const memoKey = `${lastTs}|${windowHours}|${Math.floor(now / 300)}`;
+  if (_nightMemo && _nightMemo.key === memoKey) return _nightMemo.data;
+
+  const opts = {
+    rotateMin: clampInt(env.NIGHT_ROTATE_MIN, NIGHT_DEFAULTS.rotateMin, 15, 240),
+    holdHour: clampInt(env.NIGHT_HOLD_HOUR, NIGHT_DEFAULTS.holdHour, 18, 28),
+    duskMin: NIGHT_DEFAULTS.duskMin,
+  };
+  const first = (sql, ...b) => env.DB.prepare(sql).bind(...b).first();
+  const all = async (sql, ...b) => (await env.DB.prepare(sql).bind(...b).all()).results || [];
+
+  const todayStart = localDayStart(env, now);
+  const today = sunTimes(env, todayStart);
+  const nightStart = now >= today.sunset ? today.sunset : sunTimes(env, todayStart - 86400).sunset;
+  const nightDay = now >= today.sunset ? todayStart : todayStart - 86400; // local day the night began on
+  const holdAt = nightDay + opts.holdHour * 3600;
+  const nextSunrise = now < today.sunrise ? today.sunrise : sunTimes(env, todayStart + 86400).sunrise;
+
+  // Any real bird yet today? (MIN over the ts index stops at the first non-dog row.)
+  const firstToday = await first(
+    `SELECT MIN(ts) AS ts FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND sci <> ?`, todayStart, MOJO_SCI);
+  const birdsToday = !!(firstToday && firstToday.ts);
+
+  // The recap day: today once a bird has sung, else yesterday (after midnight).
+  const dayStart = birdsToday ? todayStart : todayStart - 86400;
+  const dayEnd = birdsToday ? now + 1 : todayStart;
+  const rows = await all(
+    `SELECT sci, com, COUNT(*) AS n, MIN(ts) AS first, MAX(ts) AS last, MAX(conf) AS best
+       FROM detections INDEXED BY idx_detections_ts
+      WHERE ts >= ? AND ts < ? GROUP BY sci ORDER BY n DESC`, dayStart, dayEnd);
+  const real = rows.filter((r) => r.sci !== MOJO_SCI);
+  let firstSong = null;
+  for (const r of real) {
+    if (!firstSong || r.first < firstSong.ts) firstSong = { ts: r.first, com: r.com };
+  }
+  // The day's last call is the last one before dark: an owl at 9 pm belongs
+  // on the "Heard tonight" screen, not in the day's recap. (Bare column with
+  // MAX() = the row that holds the max, SQLite's documented behaviour.)
+  const duskCut = Math.min(dayEnd, sunTimes(env, dayStart).sunset + opts.duskMin * 60);
+  const lc = await first(
+    `SELECT com, MAX(ts) AS ts FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ts < ? AND sci <> ?`,
+    dayStart, duskCut, MOJO_SCI);
+  const lastCall = lc && lc.ts ? { ts: lc.ts, com: lc.com } : null;
+  const day = {
+    ...localDate(env, dayStart + 43200),
+    is_today: birdsToday,
+    species: rows.map((r) => ({ sci: r.sci, com: r.com, n: r.n })),
+    kinds: real.length,
+    calls: real.reduce((a, r) => a + r.n, 0),
+    first_song: firstSong && { time: clock(env, firstSong.ts), com: firstSong.com },
+    last_call: lastCall && { time: clock(env, lastCall.ts), com: lastCall.com },
+  };
+
+  // Bird of the day: index seeks on (sci, ts) per species, and a month count
+  // capped at STAR.monthMax rows, so a common bird costs ~20 reads, not 5,000.
+  const art = await artSlugs(env);
+  const monthStart = dayStart - 30 * 86400;
+  const cands = await Promise.all(real.map(async (r) => {
+    if (art && !art.has(slugifySci(r.sci))) return null; // the screen is a painting
+    const p = await first('SELECT MAX(ts) AS ts FROM detections WHERE sci = ? AND ts < ?', r.sci, dayStart);
+    const prev = p && p.ts ? p.ts : null;
+    let month = null;
+    if (prev && prev >= dayStart - STAR.gapDays * 86400) {
+      const m = await first(
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM detections WHERE sci = ? AND ts >= ? AND ts < ? LIMIT ${STAR.monthMax})`,
+        r.sci, monthStart, dayStart);
+      month = m ? m.n : null;
+    }
+    const why = starReason({ sci: r.sci, n: r.n, best: r.best, prev, month }, dayStart);
+    if (!why) return null;
+    const when = r.n === 1 ? clock(env, r.first) : `${clock(env, r.first)} – ${clock(env, r.last)}`;
+    return { sci: r.sci, com: r.com, n: r.n, when, reason: why.text, kind: why.kind, rank: why.rank };
+  }));
+  const star = cands.filter(Boolean).sort((a, b) => a.rank - b.rank || a.n - b.n).slice(0, 3);
+
+  // Heard after dark tonight (a little after sunset, so dusk stragglers don't count).
+  const nightRows = await all(
+    `SELECT sci, com, ts FROM detections INDEXED BY idx_detections_ts
+      WHERE ts >= ? AND ts < ? AND sci <> ? ORDER BY ts LIMIT 500`,
+    nightStart + opts.duskMin * 60, sunTimes(env, nightDay + 86400).sunrise, MOJO_SCI);
+  const bySci = new Map();
+  for (const r of nightRows) {
+    const c = bySci.get(r.sci) || { sci: r.sci, com: r.com, n: 0, first: r.ts, times: [] };
+    c.n += 1;
+    // Calls a few seconds apart are one bout: list bouts, not every 3-s window.
+    const lastT = c._last;
+    if (!lastT || r.ts - lastT > 20 * 60) c.times.push(clock(env, r.ts));
+    c._last = r.ts;
+    bySci.set(r.sci, c);
+  }
+  const callers = rankCallers([...bySci.values()]).map(({ _last, ...c }) => ({ ...c, times: c.times.slice(0, 4) }));
+
+  // When the first songs usually start: over the last 14 mornings, how long
+  // before (or after) sunrise the first bird sang, applied to the next sunrise.
+  // One MIN seek per morning, starting at 4 am so a 2 am goose doesn't count.
+  const leads = [];
+  await Promise.all(Array.from({ length: 14 }, (_, i) => i + 1).map(async (i) => {
+    const ds = todayStart - i * 86400;
+    const f = await first(
+      `SELECT MIN(ts) AS ts FROM detections INDEXED BY idx_detections_ts WHERE ts >= ? AND ts < ? AND sci <> ?`,
+      ds + 4 * 3600, ds + 12 * 3600, MOJO_SCI);
+    if (f && f.ts) leads.push(f.ts - sunTimes(env, ds).sunrise);
+  }));
+  leads.sort((a, b) => a - b);
+  const lead = leads.length >= 3 ? leads[Math.floor(leads.length / 2)] : -20 * 60;
+  const expect = Math.round((nextSunrise + lead) / 300) * 300; // to 5 minutes
+
+  const plan = nightPlan({
+    now, sunset: today.sunset, nightStart, holdAt,
+    quietSince: lastTs ? lastTs + windowHours * 3600 : 0,
+    birdsToday, dayHasBirds: real.length > 0,
+    hasStar: star.length > 0, hasCallers: callers.length > 0,
+  }, opts);
+
+  const data = {
+    plan, phase: plan.phase, window_hours: windowHours,
+    now: clock(env, now),
+    tonight: localDate(env, nightDay + 43200).weekday,
+    // After 4 am it's "last night" to whoever reads the frame over breakfast.
+    heard_label: ((now - nightDay) / 3600) % 24 >= 4 && now - nightDay >= 86400 ? 'Heard last night' : 'Heard tonight',
+    sunrise: { time: clock(env, nextSunrise), weekday: localDate(env, nextSunrise).weekday },
+    first_songs: clock(env, expect),
+    last_bird: lastCall ? clock(env, lastCall.ts) : null,
+    moon: moonPhase(now),
+    day, star, callers,
+    as_of: new Date().toISOString(),
+  };
+  _nightMemo = { key: memoKey, data };
+  return data;
+}
+
+// GET /api/night — the night screens' data + which one is up now. Public.
+async function nightApi(env) {
+  const now = Math.floor(Date.now() / 1000);
+  const windowHours = await getFrameWindow(env);
+  return json(await nightData(env, now, windowHours), 200, { 'Cache-Control': 'public, max-age=60' });
+}
+
+// ---- owl watch (/api/owlwatch) ----------------------------------------------
+// "Maybe an owl" moments from the Pi (scripts/utils/owlwatch.py): owl-like
+// guesses BirdNET heard but did not keep. Stored apart from detections (never
+// counted as a bird); the site's owls page lists them to listen to and judge.
+const OWL_GENERA = ['Aegolius', 'Asio', 'Athene', 'Bubo', 'Glaucidium', 'Megascops', 'Otus', 'Strix', 'Surnia', 'Tyto'];
+// Owls that actually live in or pass through eastern Massachusetts. Anything
+// else BirdNET names (Tawny, Eurasian Eagle-Owl...) is a real owl sound it put
+// the wrong name on, and the page says so.
+const LOCAL_OWLS = new Set([
+  'Bubo virginianus', 'Strix varia', 'Megascops asio', 'Aegolius acadicus', 'Asio otus',
+  'Asio flammeus', 'Bubo scandiacus', 'Tyto alba', 'Surnia ulula', 'Strix nebulosa',
+]);
+const OWL_WATCH_KEEP_DAYS = 60;
+
+async function owlWatchIngest(request, env) {
+  const secret = request.headers.get('X-Avian-Secret') || '';
+  if (!(await secretMatches(secret, env.AVIAN_INGEST_SECRET))) return json({ error: 'unauthorized' }, 401);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: 'invalid json' }, 400); }
+  const sci = String(body.sci ?? '').trim();
+  const com = String(body.com ?? '').trim();
+  const conf = Number(body.conf);
+  const ts = Math.floor(Number(body.ts));
+  const file = body.file == null ? null : clipKey(String(body.file));
+  if (!sci || !com || sci.length > 120 || com.length > 120 || !Number.isFinite(conf) || !Number.isFinite(ts)) {
+    return json({ error: 'need {sci, com, conf, ts}' }, 400);
+  }
+  const skew = ts - Math.floor(Date.now() / 1000);
+  if (skew > INGEST_MAX_FUTURE_S || skew < -INGEST_MAX_PAST_S) return json({ error: 'ts out of range' }, 400);
+  const c = Math.max(0, Math.min(1, conf > 1 ? conf / 100 : conf));
+  await env.DB.prepare('INSERT OR IGNORE INTO owl_watch (sci, com, conf, ts, file) VALUES (?, ?, ?, ?, ?)')
+    .bind(sci, com, c, ts, file).run();
+  return new Response(null, { status: 204, headers: CORS });
+}
+
+// GET /api/owlwatch?days=N — the owls page: what the box kept for sure (real
+// owl detections) and the possible ones, newest first, in local time.
+async function owlWatchList(env, url) {
+  const days = clampInt(url.searchParams.get('days'), 30, 1, OWL_WATCH_KEEP_DAYS);
+  const now = Math.floor(Date.now() / 1000);
+  const since = now - days * 86400;
+  const tz = localSql(env);
+  const maybe = (await env.DB.prepare(
+    `SELECT sci, com, conf, ts, file, date(${tz('ts')}, 'unixepoch') AS d, time(${tz('ts')}, 'unixepoch') AS t
+       FROM owl_watch WHERE ts >= ? ORDER BY ts DESC LIMIT 400`
+  ).bind(since).all()).results || [];
+  // Sure owls: one index range per genus on (sci, ts) — no table scan.
+  const sure = [];
+  for (const g of OWL_GENERA) {
+    const rows = (await env.DB.prepare(
+      `SELECT sci, com, conf, ts, file, date(${tz('ts')}, 'unixepoch') AS d, time(${tz('ts')}, 'unixepoch') AS t
+         FROM detections WHERE sci >= ? AND sci < ? AND ts >= ? ORDER BY ts DESC LIMIT 200`
+    ).bind(g + ' ', g + '!', since).all()).results || [];
+    sure.push(...rows);
+  }
+  sure.sort((a, b) => b.ts - a.ts);
+  const shape = (r, kind) => ({
+    kind, sci: r.sci, com: r.com, conf: Math.round(r.conf * 100) / 100, ts: r.ts,
+    date: r.d, time: r.t, file: r.file || null, local: LOCAL_OWLS.has(r.sci),
+  });
+  return json({
+    days,
+    sure: sure.map((r) => shape(r, 'sure')),
+    maybe: maybe.map((r) => shape(r, 'maybe')),
+    as_of: new Date().toISOString(),
+  }, 200, { 'Cache-Control': 'public, max-age=60' });
 }
 
 // ---- Wikipedia summary proxy (/api/wiki) ------------------------------------
@@ -1912,7 +2238,7 @@ function clampInt(raw, dflt, lo, hi) {
 // Exposed for unit tests only (worker/test/*) — not part of any runtime contract.
 export {
   tzOffsetHours, tzMod, localDayStart, tzTransitions, tzOffsetSecAt, localSql, clampInt, clipKey, parseRange,
-  isTransientD1, pollKey, frameSignature, secretMatches,
+  isTransientD1, pollKey, frameSignature, secretMatches, nightData, frameState, sunTimes,
   POLL_CACHE, FRAME_WINDOWS, RARE_MAX, CONFIRM_CONF, parseClipName,
   CLIPS_CACHE, CLIPS_RECENT_MAX, comSafe,
 };

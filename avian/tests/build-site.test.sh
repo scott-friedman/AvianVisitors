@@ -29,12 +29,15 @@ cat > "$FIX/avian/frontend/index.html" <<'HTML'
 <script src="./sampler-core.js"></script>
 <script src="./songbook.js"></script>
 <script src="./instrument.js"></script>
+<script src="./night.js"></script>
 HTML
 echo 'fetch("assets/signatures.json");var x=1;' > "$FIX/avian/frontend/apt.js"
 echo 'var core=1;' > "$FIX/avian/frontend/spectral-core.js"
 echo 'var sampler=1;' > "$FIX/avian/frontend/sampler-core.js"
 echo 'var book=1;'    > "$FIX/avian/frontend/songbook.js"
 echo 'var play=1;'    > "$FIX/avian/frontend/instrument.js"
+echo 'var night=1;'   > "$FIX/avian/frontend/night.js"
+echo '<p>owls</p>'    > "$FIX/avian/frontend/owls.html"
 echo 'var cfg=1;'  > "$FIX/avian/frontend/config.js"
 echo 'body{}'      > "$FIX/avian/frontend/styles.css"
 printf 'PNG' > "$FIX/avian/frontend/favicon.png"
@@ -54,11 +57,11 @@ AVIAN_ROOT="$FIX" bash "$BUILD" "$OUT" > "$WORK/build.log" \
   || fail "build-site.sh exited nonzero on the happy path: $(cat "$WORK/build.log")"
 
 # 1. every shell asset reference in index.html is ?v=<8-hex> stamped
-for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js config.js styles.css favicon.png; do
+for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js night.js config.js styles.css favicon.png; do
   grep -Eq "\./$f\?v=[0-9a-f]{8}\"" "$OUT/index.html" \
     || fail "index.html reference to $f is not content-hash stamped"
 done
-ok "index.html stamps all eight shell assets"
+ok "index.html stamps all nine shell assets"
 grep -q '"\./apt\.js"' "$OUT/index.html" && fail "bare ./apt.js reference survived"
 ok "no bare shell-asset references survive"
 

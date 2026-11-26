@@ -34,3 +34,18 @@ for d in "$BASE"/????-??-??; do
   fi
 done
 echo "pruned $pruned day-dir(s) older than $cutoff from $BASE ($(df -h --output=pcent "$BASE" | tail -1 | tr -d ' ') disk used)"
+
+# Owl watch clips (scripts/utils/owlwatch.py) live in their own day dirs; the
+# worker keeps its own copy in R2 (owlwatch/), so the same 30 days applies.
+OWL="${AVIAN_OWLWATCH_DIR:-$HOME/BirdSongs/OwlWatch}"
+if [ -d "$OWL" ]; then
+  owl_pruned=0
+  for d in "$OWL"/????-??-??; do
+    [ -d "$d" ] || continue
+    if [[ "$(basename "$d")" < "$cutoff" ]]; then
+      rm -rf "$d"
+      owl_pruned=$((owl_pruned + 1))
+    fi
+  done
+  echo "pruned $owl_pruned owl-watch day-dir(s) older than $cutoff from $OWL"
+fi
