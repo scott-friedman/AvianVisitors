@@ -1009,6 +1009,42 @@
     return { keys: outKeys, pick: pick, list: list, lo: list.length ? list[0] : null, hi: list.length ? list[list.length - 1] : null };
   }
 
+  // Who sings each note of a tune. A note that comes round again is passed to
+  // the next bird that has it, so a song shows off the yard instead of one
+  // bird per key: Ode to Joy's E's might go cardinal, titmouse, white-throat,
+  // robin, cardinal. But only birds whose note is nearly as good as the key's
+  // best (CFG.pickBand, the same band buildKeys chooses within) take a turn,
+  // a doubted (`odd`) note never does, and a note only one bird sings well
+  // stays with that bird. The first time a key sounds it is the bird shown on
+  // that key; after that the rotation also skips a bird that sang the note
+  // just before, when another can. Returns, per tune note, an index into
+  // board.keys[key] (null for a rest).
+  function singTurns(notes, board) {
+    var next = {}, cands = {}, out = [], prevSci = null;
+    function poolOf(k) {
+      if (cands[k]) return cands[k];
+      var arr = board.keys[k] || [], first = board.pick && board.pick[k] != null ? board.pick[k] : 0;
+      if (first >= arr.length) first = 0;
+      var floor = arr.length ? arr[0].rank * CFG.pickBand : 0, pool = [first];
+      for (var i = 0; i < arr.length; i++) {
+        if (i === first || arr[i].odd || !(arr[i].rank >= floor)) continue;
+        pool.push(i);
+      }
+      return (cands[k] = pool);
+    }
+    for (var j = 0; j < notes.length; j++) {
+      var k = notes[j].key;
+      if (k == null || !board.keys[k] || !board.keys[k].length) { out.push(null); continue; }
+      var pool = poolOf(k), arr = board.keys[k], c = next[k] || 0;
+      var at = pool[c % pool.length];
+      if (pool.length > 1 && arr[at].sci === prevSci) { c++; at = pool[c % pool.length]; }
+      next[k] = c + 1;
+      out.push(at);
+      prevSci = arr[at].sci;
+    }
+    return out;
+  }
+
   // What each species can sing: its distinct keys and their span. Drives the
   // solo picker ("Northern Cardinal — 14 notes across 2 octaves"). Best solo
   // voices first: a bird is ranked by its keys weighed by how good the note on
@@ -1269,7 +1305,7 @@
     fft: fft, hzToMidi: hzToMidi, midiToHz: midiToHz, noteName: noteName,
     analyzeClip: analyzeClip, steadyWindows: steadyWindows, onsetTime: onsetTime,
     cutPcm: cutPcm, cutClip: cutClip, cleanSlice: cleanSlice,
-    keyOf: keyOf, rankNotes: rankNotes, buildKeys: buildKeys, speciesRanges: speciesRanges,
+    keyOf: keyOf, rankNotes: rankNotes, buildKeys: buildKeys, singTurns: singTurns, speciesRanges: speciesRanges,
     parseMelody: parseMelody, fitMelody: fitMelody, melodic: melodic, rollCall: rollCall, rumbleCut: rumbleCut,
     parseMidi: parseMidi, midiTunePart: midiTunePart, midiMelody: midiMelody
   };

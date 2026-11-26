@@ -2137,6 +2137,7 @@
   // Chorus is window-independent (always 12h) but interval-dependent (a client
   // control), so it has its own fetch keyed off chorusInterval. Resolves having
   // set DATA.chorus; the resolved value is unused by refreshAll's Promise.all.
+  function chorusOn() { var b = document.querySelector('#slider button[data-i="3"]'); return !!(b && !b.hidden); }
   function fetchChorus() {
     return fetchJson(AV_API + '/api/birdnet-api.php?action=chorus&hours=12&interval=' + chorusInterval)
       .then(function (j) { DATA.chorus = j; })
@@ -2173,7 +2174,9 @@
       fetchJson(AV_API + '/api/birdnet-api.php?action=hourly&hours=' + forHours).catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=facts').catch(function () { return null; }),
       fetchJson(AV_API + '/api/birdnet-api.php?action=rhythm&days=14').catch(function () { return null; }),
-      fetchChorus(),   // sets DATA.chorus itself; window-independent (fixed 12h)
+      // Chorus is hidden for now (Scott, 2026-11-25): don't poll its data. Un-hide
+      // its nav button in index.html and it comes back as it was.
+      (chorusOn() ? fetchChorus() : Promise.resolve(null)),   // sets DATA.chorus itself; window-independent (fixed 12h)
     ]).then(function (parts) {
       // A slow old tick must never overwrite a newer tick's data/render.
       if (seq !== _pollSeq) return;

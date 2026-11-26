@@ -512,6 +512,31 @@ test('buildKeys: variety never costs quality', () => {
   assert.ok(B.keys[80].some((n) => n.sci === 'Crow'), 'the crow is still on the key, for "take turns" and the picker');
 });
 
+test('singTurns: a repeated note goes round the birds that sing it well', () => {
+  const n = (sci, rank, odd) => ({ sci, rank, odd: !!odd });
+  const board = {
+    keys: {
+      76: [n('Cardinal', 1), n('Titmouse', 0.95), n('Robin', 0.9), n('Crow', 0.5), n('Dove', 0.98, true)],
+      77: [n('Kinglet', 0.9)],
+      79: [n('Sparrow', 0.9), n('Robin', 0.85)]
+    },
+    pick: { 76: 1, 77: 0, 79: 0 }
+  };
+  const tune = [76, 76, 77, 79, 79, 77, 76, null, 76, 76].map((key) => ({ key }));
+  const who = S.singTurns(tune, board).map((i, j) => (i == null ? null : board.keys[tune[j].key][i].sci));
+  assert.equal(who[0], 'Titmouse', 'the first time, the bird shown on the key');
+  assert.equal(who[7], null, 'a rest stays a rest');
+  const e = who.filter((s, j) => tune[j].key === 76);
+  assert.deepEqual([...new Set(e)].sort(), ['Cardinal', 'Robin', 'Titmouse'], 'every good singer gets a turn');
+  assert.ok(!who.includes('Crow'), 'a much weaker note never takes a turn');
+  assert.ok(!who.includes('Dove'), 'a doubted note never takes a turn');
+  assert.ok(who.filter((s, j) => tune[j].key === 77).every((s) => s === 'Kinglet'), 'a note one bird sings stays with it');
+  assert.deepEqual(who.slice(3, 5), ['Sparrow', 'Robin']);
+  for (let j = 1; j < who.length; j++) {
+    if (who[j] && tune[j].key === tune[j - 1].key) assert.notEqual(who[j], who[j - 1], 'a note sung twice in a row changes bird');
+  }
+});
+
 test('buildKeys solo: one bird, several takes per key', () => {
   const notes = [];
   for (let i = 0; i < 9; i++) notes.push(N('Wren', 'w' + i, 84 + (i % 2) * 0.1, 0.5 + i * 0.05));

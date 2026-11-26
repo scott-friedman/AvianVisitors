@@ -1475,8 +1475,7 @@
 
   /* ============================================================
      Play (view 5): the yard's own recordings as an instrument.
-     Built by instrument.js. Reuses the chorus controls (.chorus-seg,
-     .chorus-toggle) and the chorus species palette (--ch-1..12): a bird
+     Built by instrument.js. Reuses the chorus species palette (--ch-1..12): a bird
      keeps the same colour on its key, its piano-roll notes and its pad.
      The keys are the one place with their own colours (--key-w / --key-b),
      so the keyboard still reads as a piano in the dark theme.
@@ -1514,60 +1513,42 @@
   .play-status .st-bar { flex: 1 1 120px; max-width: 260px; height: 3px; border-radius: 3px; background: var(--paper-3); overflow: hidden; }
   .play-status .st-bar b { display: block; height: 100%; background: var(--ink-2); border-radius: 3px; transition: width 300ms ease; }
 
-  /* Solo: pick the bird. */
-  .ps-row { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scrollbar-width: thin; overscroll-behavior-x: contain; }
-  .ps-chip {
-    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; text-align: left;
-    border: 0; background: var(--paper-2); color: var(--ink-2); cursor: pointer; font: inherit;
-    border-radius: 999px; padding: 5px 16px 5px 7px; box-shadow: var(--recess);
-  }
-  .ps-chip img, .ps-chip .p-ini { width: 34px; height: 34px; object-fit: contain; flex: 0 0 34px; }
-  .ps-chip b { display: block; font: 700 12px/1.1 ui-serif, "Iowan Old Style", Georgia, serif; white-space: nowrap; }
-  .ps-chip small { display: block; margin-top: 3px; font: 8.5px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft); }
-  .ps-chip.on { background: var(--pill); color: var(--ink); box-shadow: var(--raised), 0 0 0 1.5px var(--c); }
-  .ps-wait, .ps-info { font: 13px/1.5 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-2); }
-  .ps-info { margin: 2px 2px 0; }
+  /* The top line: what this is, and how many notes and birds there are. */
+  .play-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 18px; flex-wrap: wrap; }
+  .play-lede { margin: 0; font: 16px/1.4 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-2); }
 
-  /* The stage: who is singing, the range strip, the keys. */
+  /* The stage: who is singing, then the keys. */
   .play-stage {
     background: var(--paper-2); border-radius: 14px; box-shadow: var(--recess);
-    padding: 14px 14px 16px; display: flex; flex-direction: column; gap: 10px;
+    padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px;
   }
   .is-empty .play-stage { opacity: 0.6; }
-  /* Fixed height on purpose: the card changes with every note, and the keys
+  /* Fixed height on purpose: the line changes with every note, and the keys
      underneath must never move while someone is playing them. */
-  .play-now { height: 86px; overflow: hidden; display: flex; align-items: center; gap: 14px; }
+  .play-now { height: 52px; overflow: hidden; display: flex; align-items: center; }
   .pn-idle { margin: 0 4px; font: italic 14px/1.45 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-2); }
-  .pn-art { flex: 0 0 74px; width: 74px; height: 74px; display: flex; align-items: center; justify-content: center; }
+  .pn-bird { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--ink); text-decoration: none; }
+  .pn-art { flex: 0 0 48px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; }
   .pn-art img { max-width: 100%; max-height: 100%; filter: drop-shadow(0 2px 6px rgba(26,22,18,0.14)); }
-  .pn-text { flex: 1 1 auto; min-width: 0; }
-  .pn-name { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font: 700 17px/1.15 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink); }
+  .pn-name { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; font: 17px/1.2 ui-serif, "Iowan Old Style", Georgia, serif; }
+  .pn-name small { font: italic 14px/1 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-soft); }
   .pn-name b { font-weight: 700; }
+  .pn-bird:hover b { text-decoration: underline; text-underline-offset: 3px; }
   .pn-note {
     font: 10px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.12em; color: var(--ink-2);
     padding: 4px 8px; border-radius: 999px; background: var(--paper); box-shadow: var(--raised);
   }
-  .pn-meta {
-    margin-top: 4px; font: 10px/1.45 ui-monospace, Menlo, monospace; letter-spacing: 0.04em; color: var(--ink-soft);
-    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
-  }
-  .pn-others { display: flex; align-items: center; gap: 3px; margin-top: 5px; overflow-x: auto; scrollbar-width: none; }
-  .pn-others::-webkit-scrollbar { display: none; }
-  .pn-others > * { flex: 0 0 auto; }
-  .pn-lbl { font: 9px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); margin: 0 5px 0 2px; }
-  .pn-other, .pn-take { border: 0; background: transparent; cursor: pointer; border-radius: 8px; padding: 2px; color: var(--ink-2); }
-  .pn-other { width: 32px; height: 32px; }
-  .pn-other img { width: 100%; height: 100%; object-fit: contain; }
-  .pn-take { width: 26px; height: 26px; font: 10px/1 ui-monospace, Menlo, monospace; }
-  .pn-other.on, .pn-take.on { background: var(--pill); box-shadow: var(--raised); color: var(--ink); }
-  .pn-actions { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 
-  /* The whole keyboard in miniature; drag it to move along the keys. */
-  .play-range { display: none; position: relative; height: 28px; border-radius: 7px; background: var(--paper); box-shadow: var(--recess); cursor: ew-resize; touch-action: none; overflow: hidden; }
-  .kb-scrolls .play-range { display: block; }
-  .pr-bars { position: absolute; top: 4px; bottom: 4px; left: 0; right: 0; display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 1px; align-items: end; }
-  .pr-bars i { display: block; min-height: 2px; border-radius: 1px; background: var(--paper-3); }
-  .pr-win { position: absolute; top: 0; bottom: 0; border-radius: 7px; background: rgba(120,110,95,0.10); box-shadow: inset 0 0 0 1.5px var(--ink-2); pointer-events: none; }
+  /* ‹ › beside the keys, only when the keyboard is wider than the screen. */
+  .play-kb-row { display: flex; align-items: center; gap: 8px; }
+  .play-kb-row .play-kb-scroll { flex: 1 1 auto; min-width: 0; }
+  .play-nudge {
+    display: none; flex: 0 0 40px; width: 40px; height: 40px; border: 0; border-radius: 50%; cursor: pointer;
+    background: var(--paper); color: var(--ink-2); box-shadow: var(--raised);
+    font: 22px/1 ui-serif, "Iowan Old Style", Georgia, serif; padding: 0 0 3px;
+  }
+  .kb-scrolls .play-nudge { display: inline-flex; align-items: center; justify-content: center; }
+  .play-nudge:disabled { opacity: 0.35; cursor: default; }
 
   .play-kb-scroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; border-radius: 0 0 8px 8px; }
   .play-kb {
@@ -1601,7 +1582,6 @@
   .pk.b .pk-art { height: calc(var(--bw) + 2px); width: calc(100% - 2px); }
   .pk-art img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; filter: drop-shadow(0 1px 2px rgba(26,22,18,0.16)); }
   .pk-art .p-ini { font-size: 8px; max-width: 26px; }
-  .pk-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c); margin-bottom: 4px; }
   .pk-n { font: 8px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.02em; pointer-events: none; white-space: nowrap; }
   .pk.b .pk-n { font-size: 6.5px; color: #b9b1a4; }
   .pk:not(.has) .pk-n { opacity: 0.5; }
@@ -1644,8 +1624,7 @@
     box-shadow: var(--recess);
   }
   .play-tempo { display: inline-flex; align-items: center; gap: 8px; font: 9.5px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-soft); }
-  .play-tempo input { width: 116px; accent-color: var(--ink-2); }
-  .play-tempo output { min-width: 3ch; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .play-tempo input { width: 140px; accent-color: var(--ink-2); }
   .play-own textarea {
     display: block; width: 100%; margin-top: 12px; resize: vertical; min-height: 64px;
     font: 13px/1.55 ui-monospace, Menlo, monospace; color: var(--ink);
@@ -1662,19 +1641,15 @@
   .play-roll { position: relative; height: 124px; margin-top: 14px; border-radius: 8px; background: var(--paper-2); box-shadow: var(--recess); overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
   .roll-in { position: relative; height: calc(100% - 16px); min-width: 100%; margin: 8px 0; }
   .roll-empty { margin: 0; height: 100%; display: flex; align-items: center; justify-content: center; padding: 0 16px; text-align: center; font: italic 13px/1.4 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-soft); }
-  .rn, .lg { background: var(--c); border-radius: 3px; }
+  .rn { background: var(--c); border-radius: 3px; }
   .rn { position: absolute; min-width: 3px; min-height: 3px; transition: transform 90ms ease; }
-  .rn.octave, .lg.octave { background: repeating-linear-gradient(135deg, var(--c) 0 3px, transparent 3px 5px); box-shadow: inset 0 0 0 1px var(--c); }
-  .rn.near, .lg.near { background: transparent; box-shadow: inset 0 0 0 1.5px var(--c); }
-  .rn.rest, .lg.rest { background: transparent; box-shadow: inset 0 0 0 1px var(--ink-soft); opacity: 0.4; }
+  .rn.octave { background: repeating-linear-gradient(135deg, var(--c) 0 3px, transparent 3px 5px); box-shadow: inset 0 0 0 1px var(--c); }
+  .rn.near { background: transparent; box-shadow: inset 0 0 0 1.5px var(--c); }
+  .rn.rest { background: transparent; box-shadow: inset 0 0 0 1px var(--ink-soft); opacity: 0.4; }
   .rn.on { transform: scaleY(1.7); box-shadow: 0 0 0 1.5px var(--ink); z-index: 1; }
   .roll-head { position: absolute; top: -4px; bottom: -4px; left: 0; width: 2px; border-radius: 2px; background: var(--ink); opacity: 0; pointer-events: none; will-change: transform; }
   .is-playing .roll-head { opacity: 0.65; }
-  .play-legend { margin: 8px 2px 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font: 9px/1.3 ui-monospace, Menlo, monospace; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); }
-  .lg { --c: var(--ch-5); display: inline-block; width: 16px; height: 7px; margin-left: 8px; }
-  .lg:first-child { margin-left: 0; }
-  .play-fit { margin: 10px 2px 0; font: 13.5px/1.5 ui-serif, "Iowan Old Style", Georgia, serif; color: var(--ink-2); }
-  .play-fit:empty, .play-cast:empty { display: none; }
+  .play-cast:empty { display: none; }
   .play-cast { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
   .cast-lbl { font: 9.5px/1 ui-monospace, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); margin-right: 2px; }
   .cast { position: relative; width: 42px; height: 42px; padding: 4px; border: 0; cursor: pointer; background: var(--paper-2); border-radius: 10px; box-shadow: var(--raised); }
@@ -1706,16 +1681,14 @@
   }
   @media (max-width: 700px) {
     .play-wrap { gap: 12px; }
-    .play-controls .chorus-seg button, .play-controls .chorus-toggle { padding: 8px 10px; letter-spacing: 0.12em; }
+    .play-lede { font-size: 15px; }
     .play-stage { padding: 10px 8px 12px; border-radius: 12px; }
-    .play-now { flex-wrap: wrap; align-content: flex-start; gap: 8px 10px; height: 152px; }
-    .pn-art { flex-basis: 58px; width: 58px; height: 58px; }
-    .pn-text { flex: 1 1 60%; }
-    .pn-idle { align-self: center; margin: auto 4px; }
-    .pn-name { font-size: 15px; }
-    .pn-actions { flex: 1 1 100%; flex-direction: row; }
+    .play-now { height: 60px; }
+    .pn-art { flex-basis: 42px; width: 42px; height: 42px; }
+    .pn-name { font-size: 15px; gap: 2px 8px; }
+    .play-kb-row { gap: 4px; }
+    .play-nudge { flex-basis: 32px; width: 32px; height: 40px; border-radius: 10px; }
     .play-kb { height: 158px; }
-    .play-range { height: 34px; }
     .play-panel { padding: 14px 12px 16px; border-radius: 12px; }
     .play-select { flex-basis: 60%; }
     .play-tempo { flex: 1 1 100%; }
@@ -1730,6 +1703,4 @@
   @media (hover: none), (pointer: coarse) {
     .pn-btn:hover, .pad:hover, .play-go:hover { transform: none; }
     .pn-btn { padding: 10px 12px; }
-    .pn-other { width: 38px; height: 38px; }
-    .pn-take { width: 34px; height: 34px; }
   }
