@@ -125,6 +125,24 @@ def fetch_frame_window(base, timeout, auth=None):
         return None
 
 
+def fetch_frame_sig(base, timeout, auth=None):
+    """GET /api/frame-sig: the signature the worker's /frame.png carries right
+    now, including the night screens (which rotate while the window's species
+    stay empty, so the species hash below could never see them change).
+    Returns the sig string, or None on any failure / an older worker without
+    the route — the caller then falls back to the species hash."""
+    url = f"{base.rstrip('/')}/api/frame-sig"
+    req = urllib.request.Request(url, headers={"User-Agent": "AvianVisitors-frame/1.0"})
+    if auth:
+        req.add_header("Authorization", auth)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            sig = json.loads(r.read(10_000)).get("sig")
+            return f"ws:{sig}" if sig else None
+    except Exception:
+        return None
+
+
 def signature(species):
     items = sorted((slugify(s["sci"]), _bucket(int(s.get("n") or 1))) for s in species)
     return hashlib.sha256(json.dumps(items).encode()).hexdigest()[:16]
@@ -148,6 +166,8 @@ def get_image(src, timeout, auth=None, meta=None):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if meta is not None:
                 meta["stale"] = (r.headers.get("X-Frame-Cache") or "").lower() == "stale"
+                # 'night' = a night screen, already laid out for the visible window.
+                meta["kind"] = (r.headers.get("X-Frame-Kind") or "").lower()
             return Image.open(io.BytesIO(r.read(20_000_000))).convert("RGB")
     return Image.open(os.path.expanduser(src)).convert("RGB")
 
@@ -300,8 +320,11 @@ def run(cfg, preview=None, force=False, use_signature=True):
             # configured hours if /api/frame-config is unreachable). The ":win" suffix
             # makes a window change always bust the signature even if the species set
             # is identical — mirrors the worker folding the window into its own sig.
-            win = fetch_frame_window(cfg["base_url"], cfg["timeout"], _auth(cfg)) or cfg["hours"]
-            sig = signature(fetch_recent(cfg["base_url"], win, cfg["timeout"], _auth(cfg))) + ":" + str(win)
+            # Preferred: the worker's own signature for what /frame.png shows now.
+            sig = fetch_frame_sig(cfg["base_url"], cfg["timeout"], _auth(cfg))
+            if sig is None:
+                win = fetch_frame_window(cfg["base_url"], cfg["timeout"], _auth(cfg)) or cfg["hours"]
+                sig = signature(fetch_recent(cfg["base_url"], win, cfg["timeout"], _auth(cfg))) + ":" + str(win)
         except Exception as e:
             print(f"signature fetch failed: {e}", file=sys.stderr)  # treat as no change
     heal_due = now - state.get("last_refresh", 0) >= cfg["heal_hours"] * 3600
@@ -343,7 +366,10 @@ def run(cfg, preview=None, force=False, use_signature=True):
             save_state(cfg["state"], state.get("signature"), state.get("last_refresh", 0),
                        now + STALE_RETRY_SECONDS)
             return
-        if cfg.get("fill"):
+        night = meta.get("kind") == "night"
+        if cfg.get("fill") and not night:
+            # A night screen is drawn edge to edge at the visible window's size;
+            # cropping it would shift and rescale it.
             raw = autocrop(raw, pad=int(cfg.get("fill_pad") or 16))
         inset = cfg.get("inset") or []
         if len(inset) == 4 and any(int(v) > 0 for v in inset):

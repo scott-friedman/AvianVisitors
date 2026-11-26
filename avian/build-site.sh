@@ -32,6 +32,8 @@ cp "$ROOT"/avian/frontend/index.html \
    "$ROOT"/avian/frontend/sampler-core.js \
    "$ROOT"/avian/frontend/songbook.js \
    "$ROOT"/avian/frontend/instrument.js \
+   "$ROOT"/avian/frontend/night.js \
+   "$ROOT"/avian/frontend/owls.html \
    "$ROOT"/avian/frontend/config.js \
    "$ROOT"/avian/frontend/styles.css \
    "$ROOT"/avian/frontend/favicon.png \
@@ -77,7 +79,7 @@ fi
 # content-hashed URLs instead: a changed file gets a new cache key instantly;
 # unchanged files keep their warm cache. (HTML itself is not edge-cached long:
 # must-revalidate at the origin, 5-min TTL on the proxy.)
-for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js config.js styles.css favicon.png; do
+for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js night.js config.js styles.css favicon.png; do
   h="$( (md5 -q "$TMP/$f" 2>/dev/null || md5sum "$TMP/$f" | awk '{print $1}') | cut -c1-8)"
   perl -pi -e "s#\./\Q$f\E\"#./$f?v=$h\"#g" "$TMP/index.html"
   grep -q "$f?v=$h" "$TMP/index.html" || {

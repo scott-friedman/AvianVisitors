@@ -8,6 +8,7 @@ import numpy as np
 from .classes import Detection, ParseFileName
 from .helpers import get_settings, get_language
 from .models import get_model
+from . import owlwatch
 
 log = logging.getLogger(__name__)
 
@@ -179,6 +180,14 @@ def run_analysis(file):
                         confidence,
                     )
                     confident_detections.append(d)
+    # Owl watch (AvianVisitors): owl-like guesses BirdNET did not keep, for a
+    # human to listen to. Saved by the reporting thread (owlwatch.save) before
+    # the WAV is deleted; never counted as a detection. See utils/owlwatch.py.
+    try:
+        file.owl_watch = owlwatch.candidates(raw_detections, confident_detections, names, owlwatch.min_conf(conf))
+    except Exception as e:  # noqa: BLE001 - the watch must never cost a real detection
+        log.warning('owl watch: %s', e)
+        file.owl_watch = []
     return confident_detections
 
 

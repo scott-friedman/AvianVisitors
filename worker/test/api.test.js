@@ -710,3 +710,59 @@ describe('clip listing for the instrument (GET /api/clips)', () => {
     expect((await get('/api/clips', env(new FakeDB()))).status).toBe(503);
   });
 });
+
+describe('owl watch', () => {
+  const now = () => Math.floor(Date.now() / 1000);
+  it('stores a possible owl behind the ingest secret', async () => {
+    const db = new FakeDB();
+    const body = { sci: 'Strix varia', com: 'Barred Owl', conf: 0.44, ts: now() - 60,
+      file: 'Barred_Owl-44-2026-11-23-owlwatch-05:32:03.mp3' };
+    expect((await post('/api/owlwatch', env(db), body)).status).toBe(401);
+    expect((await post('/api/owlwatch', env(db), body, { 'X-Avian-Secret': SECRET })).status).toBe(204);
+    const ins = db.find('INSERT OR IGNORE INTO owl_watch');
+    expect(ins.args).toEqual(['Strix varia', 'Barred Owl', 0.44, body.ts, 'Barred_Owl-44-2026-11-23-owlwatch-05:32:03.mp3']);
+  });
+  it('rejects a malformed or far-off report', async () => {
+    const db = new FakeDB();
+    const h = { 'X-Avian-Secret': SECRET };
+    expect((await post('/api/owlwatch', env(db), { sci: 'Strix varia' }, h)).status).toBe(400);
+    expect((await post('/api/owlwatch', env(db), { sci: 'Strix varia', com: 'Barred Owl', conf: 0.5, ts: now() + 86400 * 3 }, h)).status).toBe(400);
+    expect(db.count('INSERT')).toBe(0);
+  });
+  it('lists sure and maybe owls, flagging Old World names', async () => {
+    const db = new FakeDB()
+      .on('FROM owl_watch', [{ sci: 'Bubo bubo', com: 'Eurasian Eagle-Owl', conf: 0.851, ts: 10, file: 'x.mp3', d: '2026-11-24', t: '21:47:39' }])
+      .on('FROM detections WHERE sci >= ?', (args) => (args[0] === 'Bubo '
+        ? [{ sci: 'Bubo virginianus', com: 'Great Horned Owl', conf: 0.81, ts: 20, file: null, d: '2026-11-25', t: '19:12:00' }] : []));
+    const res = await get('/api/owlwatch?days=30', env(db));
+    const j = await res.json();
+    expect(j.sure).toEqual([expect.objectContaining({ sci: 'Bubo virginianus', local: true, time: '19:12:00' })]);
+    expect(j.maybe).toEqual([expect.objectContaining({ sci: 'Bubo bubo', local: false, conf: 0.85 })]);
+  });
+  it('files an owl-watch clip under its own prefix', async () => {
+    const db = new FakeDB();
+    const r2 = new FakeR2();
+    const e = env(db, { CLIPS: r2 });
+    const res = await worker.fetch(new Request('https://w.example/api/clip?kind=owlwatch&file=Barred_Owl-96-2026-11-23-owlwatch-05:32:03.mp3', {
+      method: 'POST', headers: { 'X-Avian-Secret': SECRET, 'Content-Type': 'audio/mpeg' }, body: 'ID3',
+    }), e);
+    expect(res.status).toBe(204);
+    expect(r2.puts).toEqual(['owlwatch/Barred_Owl-96-2026-11-23-owlwatch-05:32:03.mp3']);
+  });
+});
+
+describe('/api/frame-sig', () => {
+  it('is the collage signature while birds are in the window', async () => {
+    const db = new FakeDB()
+      .on('frame_config', null)
+      .on('GROUP BY sci', [{ sci: 'Cardinalis cardinalis', n: 4 }]);
+    const j = await (await get('/api/frame-sig', env(db))).json();
+    expect(j.kind).toBe('collage');
+    expect(j.sig).toMatch(/^[0-9a-f]+$/);
+  });
+  it('stays on the collage path when night screens are switched off', async () => {
+    const db = new FakeDB().on('GROUP BY sci', []);
+    const j = await (await get('/api/frame-sig', env(db, { NIGHT_SCREENS: '0' }))).json();
+    expect(j).toMatchObject({ kind: 'collage', screen: null });
+  });
+});

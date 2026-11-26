@@ -186,3 +186,37 @@ def test_half_written_line_is_reread_once_complete(tmp_path, monkeypatch):
     line, offset, _ = next(gen)
     assert line == full
     assert offset == db.stat().st_size
+
+
+# ---- owl watch sender (handle_owl_line) ----
+
+OWL_LINE = "2026-11-23;05:32:03;Strix varia;Barred Owl;0.96;{path}\n"
+
+
+def test_owl_line_uploads_clip_then_posts(tmp_path, monkeypatch):
+    clip = tmp_path / "Barred_Owl-96-2026-11-23-owlwatch-05:32:03.mp3"
+    clip.write_bytes(b"ID3")
+    clips, posts = [], []
+    monkeypatch.setattr(fwd, "post_clip", lambda secret, name, data, kind="": clips.append((name, kind)) or 204)
+    monkeypatch.setattr(fwd, "post_owl", lambda *a: posts.append(a) or 204)
+    assert fwd.handle_owl_line("s", OWL_LINE.format(path=clip)) is True
+    assert clips == [(clip.name, "owlwatch")]
+    assert posts[0][1:4] == ("Strix varia", "Barred Owl", 0.96)
+    assert posts[0][5] == clip.name
+
+
+def test_owl_line_retries_later_on_outage(tmp_path, monkeypatch):
+    def down(*a, **k):
+        raise urllib.error.URLError("no network")
+
+    monkeypatch.setattr(fwd, "post_owl", down)
+    assert fwd.handle_owl_line("s", OWL_LINE.format(path=tmp_path / "missing.mp3")) is False
+
+
+def test_owl_line_skips_rejected_payload(tmp_path, monkeypatch):
+    def rejected(*a, **k):
+        raise urllib.error.HTTPError("u", 400, "bad", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(fwd, "post_owl", rejected)
+    assert fwd.handle_owl_line("s", OWL_LINE.format(path="")) is True
+    assert fwd.handle_owl_line("s", "garbage\n") is True

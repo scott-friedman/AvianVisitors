@@ -183,6 +183,11 @@ overcommits and **OOM-thrashes the box unreachable**; and even *detection-only* 
 untuned. Two committed scripts make it stable. Full incident + measured numbers:
 [`../PI-RECOVERY.md`](../PI-RECOVERY.md).
 
+## Owl watch and the owl whitelist
+
+- **Whitelist** (not in git, create on the Pi): `~/BirdNET-Pi/whitelist_species_list.txt`, one `Sci name_Common Name` per line, lets those species past BirdNET's location filter. Ours lists Great Horned, Barred, Eastern Screech, Northern Saw-whet and Long-eared Owl. Reread for every 30-s recording (`run_analysis`), so no restart is needed.
+- **Owl watch**: `scripts/utils/owlwatch.py` saves "maybe an owl" clips to `~/BirdSongs/OwlWatch/` and lines to `~/BirdSongs/owl_watch.txt`; the forwarder sends them to the worker (state in `~/.avian/owlwatch-state.json`). `prune-extracted.sh` prunes the clip folders with the rest. `update.sh` restarts `birdnet_analysis` when the analysis code changed, so a pull is enough to turn it on.
+
 ## `lean-mode.sh` — strip to detection-only
 `sudo bash pi/lean-mode.sh`. Disables/masks every service this Cloudflare-hosted
 deployment never uses (Stats, chart/spectrogram viewers, Icecast, livestream, web

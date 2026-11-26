@@ -237,6 +237,12 @@
     font: 10px ui-monospace, Menlo, monospace;
     color: var(--ink-soft); letter-spacing: 0.04em;
   }
+  .owl-link {
+    margin: 14px 4px 0; padding-top: 10px; border-top: 1px solid var(--line, #e2ded4);
+    font: 11px ui-monospace, Menlo, monospace; letter-spacing: 0.04em; color: var(--ink-soft);
+  }
+  .owl-link a { color: var(--ink, inherit); text-transform: uppercase; letter-spacing: 0.08em; }
+  .owl-link span { display: block; margin-top: 2px; }
 
 
   /* ============ View 1 - Collage (Galliformes-style poster) ============

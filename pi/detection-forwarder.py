@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -62,6 +63,11 @@ EXTRACTED = os.environ.get("AVIAN_EXTRACTED", os.path.expanduser("~/BirdSongs/Ex
 AUDIOFMT = os.environ.get("AVIAN_AUDIOFMT", "mp3")
 ENDPOINT = WORKER.rstrip("/") + "/api/detection"
 CLIP_ENDPOINT = WORKER.rstrip("/") + "/api/clip"
+# Owl watch (scripts/utils/owlwatch.py): "maybe an owl" moments BirdNET did not
+# keep, one line each, sent to /api/owlwatch with a short clip.
+OWLWATCH_TXT = os.environ.get("AVIAN_OWLWATCH", os.path.expanduser("~/BirdSongs/owl_watch.txt"))
+OWLWATCH_STATE = os.environ.get("AVIAN_OWLWATCH_STATE", os.path.expanduser("~/.avian/owlwatch-state.json"))
+OWL_ENDPOINT = WORKER.rstrip("/") + "/api/owlwatch"
 
 
 def load_secret() -> str:
@@ -69,21 +75,21 @@ def load_secret() -> str:
         return f.read().strip()
 
 
-def load_state() -> tuple[int | None, int | None]:
+def load_state(state_file: str | None = None) -> tuple[int | None, int | None]:
     """Last persisted (byte offset, file inode), or (None, None) on first run."""
     try:
-        with open(os.path.expanduser(STATE_FILE)) as f:
+        with open(os.path.expanduser(state_file or STATE_FILE)) as f:
             d = json.load(f)
         return int(d["offset"]), int(d["inode"])
     except Exception:
         return None, None
 
 
-def save_state(offset: int, inode: int) -> None:
+def save_state(offset: int, inode: int, state_file: str | None = None) -> None:
     # Atomic via os.replace (mirrors display.py). No fsync: re-posting is harmless
     # (the worker dedupes), so durability-across-power-loss doesn't matter here, and
     # skipping it spares the SD card — atomicity alone prevents a corrupt half-write.
-    path = os.path.expanduser(STATE_FILE)
+    path = os.path.expanduser(state_file or STATE_FILE)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -134,9 +140,11 @@ def find_clip(date_s: str, time_s: str, com: str) -> tuple[str | None, str | Non
     return None, None
 
 
-def post_clip(secret: str, basename: str, data: bytes) -> int:
+def post_clip(secret: str, basename: str, data: bytes, kind: str = "") -> int:
     # Key in the query string (percent-encoded — the basename contains ':').
     url = CLIP_ENDPOINT + "?file=" + urllib.parse.quote(basename, safe="")
+    if kind:
+        url += "&kind=" + kind
     req = urllib.request.Request(
         url, data=data, method="POST",
         headers={
@@ -223,7 +231,7 @@ def handle_line(secret: str, line: str) -> None:
     sys.exit(1)
 
 
-def follow(path: str):
+def follow(path: str, state_file: str | None = None, first_run_at_end: bool = True):
     """Yield ``(line, offset, inode)`` for new lines, resuming from the persisted
     offset across restarts so anything appended while we were down isn't lost (the
     worker dedupes any overlap). Survives the file not existing yet, truncation, and
@@ -234,14 +242,15 @@ def follow(path: str):
     f = open(path, "r")
     inode = os.fstat(f.fileno()).st_ino
     size = os.fstat(f.fileno()).st_size
-    saved_offset, saved_inode = load_state()
+    saved_offset, saved_inode = load_state(state_file)
     if saved_offset is None:
-        f.seek(0, os.SEEK_END)               # first run: skip pre-existing history
+        if first_run_at_end:
+            f.seek(0, os.SEEK_END)           # first run: skip pre-existing history
     elif saved_inode == inode and saved_offset <= size:
         f.seek(saved_offset)                 # resume exactly where we left off
     else:
         f.seek(0)                            # rotation/truncation: read the new file from the start
-    save_state(f.tell(), inode)              # persist now so a quick restart resumes here, not at a newer EOF
+    save_state(f.tell(), inode, state_file)  # persist now so a quick restart resumes here, not at a newer EOF
     while True:
         pos = f.tell()
         line = f.readline()
@@ -270,9 +279,80 @@ def follow(path: str):
             inode = os.fstat(f.fileno()).st_ino
 
 
+def post_owl(secret: str, sci: str, com: str, conf: float, ts: int, file: str | None) -> int:
+    payload = {"sci": sci, "com": com, "conf": conf, "ts": ts}
+    if file:
+        payload["file"] = file
+    req = urllib.request.Request(
+        OWL_ENDPOINT, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", "X-Avian-Secret": secret,
+                 "User-Agent": "avian-forwarder/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.status
+
+
+def handle_owl_line(secret: str, line: str) -> bool:
+    """One owl-watch line: date;time;sci;com;conf;clip_path. Returns True when
+    it is done with (sent, or a line the worker can never accept), False to try
+    the same line again later. Unlike detections this never exits the process:
+    the owl watch must not hold up real birds."""
+    parts = line.rstrip("\n").split(";")
+    if len(parts) < 6:
+        return True
+    date_s, time_s, sci, com, conf_s, path = (p.strip() for p in parts[:6])
+    try:
+        conf = float(conf_s)
+        ts = parse_ts(date_s, time_s)
+    except ValueError:
+        return True
+    file_key = None
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "rb") as fh:
+                post_clip(secret, os.path.basename(path), fh.read(), kind="owlwatch")
+            file_key = os.path.basename(path)
+        except urllib.error.HTTPError as e:
+            if not (400 <= e.code < 500 and e.code not in (401, 403, 429)):
+                return False
+            print(f"owl watch clip rejected ({e.code}) for {path}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"owl watch clip upload failed for {path}: {e}", file=sys.stderr, flush=True)
+            return False
+    try:
+        status = post_owl(secret, sci, com, conf, ts, file_key)
+        print(f"owl watch: {com} ({sci}) {conf:.2f} ts={ts} file={file_key or '-'} -> {status}", flush=True)
+        return True
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500 and e.code not in (401, 403, 429):
+            print(f"owl watch POST rejected ({e.code}) for {sci}: skipping", file=sys.stderr, flush=True)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def owl_watch_loop(secret: str) -> None:
+    """Background thread: send owl-watch lines in order, waiting out any outage
+    (the file is the spool, as BirdDB.txt is for detections). A first run reads
+    the file from the start, so anything the watch kept before this forwarder
+    learned about it is still sent."""
+    try:
+        for line, offset, inode in follow(OWLWATCH_TXT, OWLWATCH_STATE, first_run_at_end=False):
+            wait = 10
+            while not handle_owl_line(secret, line):
+                time.sleep(wait)
+                wait = min(wait * 2, 600)
+            save_state(offset, inode, OWLWATCH_STATE)
+    except Exception as e:  # the thread dies, detections carry on; a restart retries
+        print(f"owl watch sender stopped: {e}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     secret = load_secret()
     print(f"avian-forwarder: watching {os.path.expanduser(DB_TXT)} -> {ENDPOINT}", flush=True)
+    if os.environ.get("AVIAN_OWLWATCH_OFF") != "1":
+        threading.Thread(target=owl_watch_loop, args=(secret,), daemon=True, name="owl-watch").start()
     for line, offset, inode in follow(DB_TXT):
         handle_line(secret, line)
         # Persist after each handled line so a restart resumes here. Re-posting is

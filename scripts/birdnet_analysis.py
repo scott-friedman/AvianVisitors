@@ -14,6 +14,7 @@ from inotify.constants import IN_CLOSE_WRITE
 from utils.analysis import load_global_model, run_analysis
 from utils.helpers import get_settings, get_wav_files, ANALYZING_NOW
 from utils.classes import ParseFileName
+from utils import owlwatch
 from utils.reporting import extract_detection, summary, write_to_file, write_to_db, apprise, bird_weather, heartbeat, \
     update_json_file
 
@@ -118,6 +119,7 @@ def handle_reporting_queue(queue):
             apprise(file, detections)
             bird_weather(file, detections)
             heartbeat()
+            owlwatch.save(file, get_settings())  # AvianVisitors: before the WAV goes
             os.remove(file.file_name)
         except BaseException as e:
             stderr = e.stderr.decode('utf-8') if isinstance(e, CalledProcessError) else ""
