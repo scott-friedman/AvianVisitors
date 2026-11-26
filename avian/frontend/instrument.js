@@ -64,10 +64,10 @@
     ringShare: 0.5,   //    but no more than `ring` and no less than `ringMin` (s), so a quick
     ringMin: 0.08,    //    passage is not smeared and a slow one lets the bird carry on
     last: 1.2,        // ...and the last note of a tune this much longer: let it finish its call
-    front: 0.45,      // the loudest thing after the note sits this far under it (× its level)
+    front: 0.35,      // the loudest thing after the note sits this far under it (× its level; 0.45 until the 2nd polish)
     tailMin: 0.06,    // ...however loud the rest of the call is (a faint note before a shout)
     duck: 0.035,      // how quickly it drops back once the note is over (s)
-    release: 0.14     // the fade when a note is let go (s)
+    release: 0.2      // the fade when a note is let go (s; 0.14 until the 2nd polish)
   };
 
   // A light polish on every note (Scott, 2026-11-26: some sounds were "harsh";
@@ -85,12 +85,24 @@
   //      others (it was 2.5×, which lifted its hiss with it).
   // The fundamental and its next overtone are never touched, so each bird
   // keeps its own voice. The voice pads stay exactly as recorded.
+  // Second pass, same day (Scott, after hearing the first: still "abrasive and
+  // harsh"): every step taken further, and one more, 4. high notes are played
+  // a little quieter. The ear is most sensitive at 2-5 kHz, which is exactly
+  // where most of the yard sings, so a whistle there sounds louder and sharper
+  // than a low note of the same level; `highTilt` evens that out (2 kHz and
+  // below untouched, 4 kHz ×0.75, 8 kHz and up ×0.55). The rest of a call after
+  // its note (where the chatter and buzz live) also sits further back
+  // (SING.front) and every note ends on a slower fade (SING.release).
   var POLISH = {
-    attack: 0.012,                         // s
-    shelfAt: 2.4, shelfClean: -3, shelfRough: -7,   // × note Hz, dB
-    lpAt: 5, lpMin: 6000, lpMax: 14000,    // × note Hz, Hz
-    maxBoost: 1.8
+    attack: 0.025,                         // s
+    shelfAt: 2.0, shelfClean: -6, shelfRough: -12,  // × note Hz, dB
+    lpAt: 3.5, lpMin: 4500, lpMax: 10000,  // × note Hz, Hz
+    maxBoost: 1.5,
+    highFrom: 2000, highTilt: 0.25, highMin: 0.55   // Hz, per octave, floor
   };
+  function highLevel(hz) {
+    return hz > POLISH.highFrom ? clamp(1 - POLISH.highTilt * Math.log(hz / POLISH.highFrom) / Math.LN2, POLISH.highMin, 1) : 1;
+  }
   function polishOf(n) {
     var rough = clamp(Math.max((0.9 - (n.tone == null ? 0.9 : n.tone)) / 0.3, ((n.bg == null ? -20 : n.bg) + 20) / 14), 0, 1);
     return {
@@ -115,7 +127,7 @@
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
     try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) { try { ctx = new AC(); } catch (e2) { return null; } }
     master = ctx.createGain();
-    master.gain.value = 0.9;
+    master.gain.value = 0.8;
     // A gentle safety limiter for chords and fast runs: it only turns peaks down.
     var comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -12; comp.knee.value = 10; comp.ratio.value = 6;
@@ -233,7 +245,7 @@
     // "Fine-tune", always on: a note is played at most ±50 cents fast or slow
     // (under 3 % speed) so it lands on its key. Nothing more.
     var rate = Math.pow(2, -clamp(n.cents, -50, 50) / 1200);
-    var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, POLISH.maxBoost);
+    var level = clamp(TARGET_RMS / (n.rms || TARGET_RMS), 0.2, POLISH.maxBoost) * highLevel(n.hz);
     // "Sings on". The note lands on pitch and at full level; then the bird
     // carries on with its call, a step behind, until the note is over.
     // In a tune the note stays in front only for as long as it is written: a
@@ -552,16 +564,49 @@
 
   // ------------------------------------------------------------- keyboard ----
   var kbEl = $('playKb'), kbScroll = $('playKbScroll');
-  var keyEls = {}, kbRange = null, kbBase = null, kbCentered = false;
+  var keyEls = {}, kbRange = null, kbFrom = null, kbCentered = false;
   var BLACK = { 1: 1, 3: 1, 6: 1, 8: 1, 10: 1 };
   function isBlack(m) { return !!BLACK[((m % 12) + 12) % 12]; }
-  // Two rows of the computer keyboard, laid out like piano keys.
-  var CODES = ['KeyZ', 'KeyS', 'KeyX', 'KeyD', 'KeyC', 'KeyV', 'KeyG', 'KeyB', 'KeyH', 'KeyN', 'KeyJ', 'KeyM',
-               'KeyQ', 'Digit2', 'KeyW', 'Digit3', 'KeyE', 'KeyR', 'Digit5', 'KeyT', 'Digit6', 'KeyY', 'Digit7', 'KeyU',
-               'KeyI', 'Digit9', 'KeyO', 'Digit0', 'KeyP'];
+  // Playing from the computer keyboard (Scott, 2026-11-26: "make it easier").
+  // Three rows of letters, and every letter plays a bird: the notes the birds
+  // really have are laid along them in order, low to high: the bottom row
+  // (Z to /) the lowest, the middle row (A to ;) the next, the top row (Q to P)
+  // the highest. No dead keys, nothing to learn about sharps. ← → move the
+  // letters one row's worth (ten notes) down or up the keyboard.
+  var CODES = ['KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB', 'KeyN', 'KeyM', 'Comma', 'Period', 'Slash',
+               'KeyA', 'KeyS', 'KeyD', 'KeyF', 'KeyG', 'KeyH', 'KeyJ', 'KeyK', 'KeyL', 'Semicolon',
+               'KeyQ', 'KeyW', 'KeyE', 'KeyR', 'KeyT', 'KeyY', 'KeyU', 'KeyI', 'KeyO', 'KeyP'];
+  var ROW = 10;
   var CODE_AT = {};
   CODES.forEach(function (c, i) { CODE_AT[c] = i; });
-  function codeLabel(c) { return c.replace('Key', '').replace('Digit', '').toLowerCase(); }
+  var CODE_TXT = { Comma: ',', Period: '.', Slash: '/', Semicolon: ';' };
+  function codeLabel(c) { return CODE_TXT[c] || c.replace('Key', '').toLowerCase(); }
+  // kbFrom is the key (a midi number) the Z sits on; kept as a key, not a list
+  // position, so the letters stay put while more notes arrive.
+  function fromIdx() {
+    var L = cur.list;
+    if (!L.length || kbFrom == null) return 0;
+    var i = 0;
+    while (i < L.length - 1 && L[i] < kbFrom) i++;
+    return i;
+  }
+  function mappedKey(i) {                  // letter i → the key it plays (or null)
+    var j = fromIdx() + i;
+    return kbFrom != null && j >= 0 && j < cur.list.length ? cur.list[j] : null;
+  }
+  function defaultFrom() {                 // the middle row on where most birds sing
+    var L = cur.list, r = richestKey(), i = 0;
+    while (i < L.length - 1 && L[i] < r) i++;
+    return L[clamp(i - ROW - 4, 0, Math.max(0, L.length - 1))];
+  }
+  function shiftLetters(dir) {
+    var L = cur.list;
+    if (!L.length || kbFrom == null) return;
+    kbFrom = L[clamp(fromIdx() + dir * ROW, 0, Math.max(0, L.length - ROW))];
+    labelKeys();
+    var mid = mappedKey(ROW + 4);
+    if (mid != null) centerOn(mid);
+  }
 
   function renderKeyboard() {
     var lo = cur.lo, hi = cur.hi;
@@ -589,7 +634,7 @@
       if (anchor) restoreAnchor(anchor);
     }
     for (var m = kbRange[0]; m <= kbRange[1]; m++) updateKey(m);
-    if (kbBase == null && cur.list.length) kbBase = defaultBase();
+    if (kbFrom == null && cur.list.length) kbFrom = defaultFrom();
     labelKeys();
     if (!kbCentered && cur.list.length) { kbCentered = true; centerOn(richestKey()); }
     syncNudges();
@@ -666,11 +711,11 @@
     cur.list.forEach(function (k) { var c = cur.keys[k].length; w += c; s += c * k; });
     return w ? Math.round(s / w) : (cur.lo || 84);
   }
-  function defaultBase() { return 12 * Math.floor((richestKey() - 6) / 12); }
   function labelKeys() {
+    var want = {};
+    for (var i = 0; i < CODES.length; i++) { var k = mappedKey(i); if (k != null) want[k] = codeLabel(CODES[i]); }
     Object.keys(keyEls).forEach(function (k) {
-      var i = +k - kbBase, lab = keyEls[k].lastChild;
-      var t = (kbBase != null && i >= 0 && i < CODES.length) ? codeLabel(CODES[i]) : '';
+      var lab = keyEls[k].lastChild, t = want[k] || '';
       if (lab.textContent !== t) lab.textContent = t;
     });
   }
@@ -762,7 +807,11 @@
 
   var held = {};
   function typingTarget(t) {
-    return !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable));
+    // Text boxes keep their letters. A slider, a button or a song list that was
+    // just used does not: the keys should play straight after.
+    if (!t) return false;
+    if (t.tagName === 'INPUT') return !/^(range|checkbox|radio|button|submit|file)$/i.test(t.type || '');
+    return t.tagName === 'TEXTAREA' || t.isContentEditable;
   }
   function modalOpen() { return !!document.querySelector('#detail-modal[aria-hidden="false"], #about-modal[aria-hidden="false"], #menu-dd.open'); }
   document.addEventListener('keydown', function (e) {
@@ -774,18 +823,18 @@
       return;
     }
     if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
-      if (kbBase == null || !kbRange) return;
+      if (kbFrom == null || !kbRange) return;
       e.preventDefault();
-      kbBase = clamp(kbBase + (e.code === 'ArrowRight' ? 12 : -12), 12 * Math.floor(kbRange[0] / 12) - 12, 12 * Math.floor(kbRange[1] / 12));
-      labelKeys();
-      centerOn(clamp(kbBase + 12, kbRange[0], kbRange[1]));
+      shiftLetters(e.code === 'ArrowRight' ? 1 : -1);
       return;
     }
     var i = CODE_AT[e.code];
-    if (i == null || kbBase == null) return;
+    if (i == null || e.shiftKey) return;
+    var k = mappedKey(i);
+    if (k == null) return;
     e.preventDefault();
     if (e.repeat || held[e.code]) return;
-    held[e.code] = { k: kbBase + i, v: press(kbBase + i, true) };
+    held[e.code] = { k: k, v: press(k, true) };
   });
   function keyUp(code) {
     var h = held[code];
@@ -1092,7 +1141,7 @@
   }
 
   goBtn.addEventListener('click', toggleSong);
-  songSel.addEventListener('change', function () { selectSong(songSel.value); });
+  songSel.addEventListener('change', function () { selectSong(songSel.value); if (songSel.value !== 'own') songSel.blur(); });
   tempoEl.addEventListener('input', function () { setTempo(+tempoEl.value); if (song.id === 'day') renderDaySum(); });
   var ownT = 0;
   ownText.addEventListener('input', function () {
@@ -1245,7 +1294,7 @@
     }
     daySum.textContent = txt + '.';
   }
-  dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); } });
+  dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); } dayPick.blur(); });
 
   // ------------------------------------------------------------ lifecycle ----
   function init() {
