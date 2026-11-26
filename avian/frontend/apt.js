@@ -1828,8 +1828,9 @@
 
     // Top Species - top 5 species in the current window. ./avian/api/birdnet-api.php?action=recent
     // already returns species sorted by last_seen DESC; re-sort by count.
+    // Mojo (the family dog) is on the collage but never in a count or ranking.
     var ranked = (recent.species || [])
-      .slice()
+      .filter(function (s) { return s.sci !== 'Canis volaticus'; })
       .sort(function (a, b) { return (+b.n) - (+a.n); })
       .slice(0, 5);
     document.getElementById('statsTopSpec').innerHTML = ranked.length
