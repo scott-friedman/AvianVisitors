@@ -774,58 +774,81 @@ test('pitch helpers', () => {
 });
 
 // A made-up day: a busy dawn (robin, cardinal), a quiet middle (one titmouse),
-// an evening (cardinal, wren), a 3 am owl, and a junco with no notes at all.
-function fakeDay() {
-  const sp = (sci, slots) => ({ sci, com: sci, n: slots.reduce((a, s) => a + s[1], 0), slots });
+// an evening (cardinal, wren), a 3 am owl, a junco with no notes at all, and a
+// veery heard once and never in the month before.
+function fakeDay(date = '2026-05-10') {
+  const sp = (sci, slots, prev30 = 20) => ({ sci, com: sci, n: slots.reduce((a, s) => a + s[1], 0), slots, prev30 });
   const range = (a, b, n, step = 1) => { const o = []; for (let s = a; s <= b; s += step) o.push([s, n]); return o; };
-  return { date: '2026-05-10', start: 0, interval: 5, bins: 288, species: [
+  return { date, start: 0, interval: 5, bins: 288, species: [
     sp('robin', range(66, 100, 6)), sp('cardinal', range(70, 110, 3).concat(range(200, 230, 4))),
-    sp('titmouse', range(130, 180, 1, 10)), sp('wren', range(205, 235, 3)),
-    sp('owl', [[36, 2]]), sp('junco', range(70, 90, 5)),
+    sp('wren', range(205, 235, 3)), sp('titmouse', range(130, 180, 1, 10)),
+    sp('owl', [[36, 2]]), sp('junco', range(70, 90, 5)), sp('veery', [[150, 2]], 0),
   ] };
 }
 function fakeBoard() {
   const notes = [];
   const add = (sci, keys) => keys.forEach((k) => notes.push({ sci, key: k, rank: 1, odd: false }));
-  add('robin', [72, 74, 76, 79, 81, 75]);
-  add('cardinal', [67, 69, 72, 76, 84, 70]);
-  add('titmouse', [74, 79, 86]);
-  add('wren', [76, 81, 83, 88]);
+  add('robin', [67, 72, 74, 76, 79, 81, 75]);
+  add('cardinal', [67, 69, 72, 76, 79, 84, 70]);
+  add('titmouse', [71, 74, 79, 86]);
+  add('wren', [74, 76, 81, 83, 88]);
+  add('veery', [69, 72, 74, 76]);
   add('owl', [52]);
   const keys = {};
   notes.forEach((n) => (keys[n.key] = keys[n.key] || []).push(n));
   return { keys };
 }
 
-test('daySong: the day squeezed onto a beat, in one key, sung by that day\'s birds', () => {
+test('daySong: a short tune for the day, in one key, by the day\'s busiest birds', () => {
   const day = fakeDay(), board = fakeBoard();
   const a = S.daySong(day, board), b = S.daySong(day, board);
   assert.deepEqual(a, b, 'the same day gives the same tune');
-  assert.ok(a.notes.length > 20, 'a real tune: ' + a.notes.length);
-  assert.ok(a.beats >= 72 && a.beats <= 74, 'about 72 beats: ' + a.beats);
-  // The 3 am owl is trimmed; the day starts when the yard woke.
-  assert.equal(a.from, 66);
-  assert.ok(!a.singers.includes('owl'));
-  assert.ok(!a.singers.includes('junco'), 'a bird with no notes sits it out');
-  // One key: every note is in the chosen major pentatonic, on a real key of its bird.
-  const P = [0, 2, 4, 7, 9];
+  assert.ok(a.notes.length >= 16, 'a real tune: ' + a.notes.length);
+  // Short: eight bars, at a speed set by how busy the day was, so 30 s at most.
+  assert.ok(a.beats >= 32 && a.beats <= 34, 'about 8 bars: ' + a.beats);
+  assert.ok(a.bpm >= 72 && a.bpm <= 120);
+  assert.ok(a.beats * 60 / a.bpm <= 30, 'at most 30 s');
+  assert.equal(a.from, 66, 'the 3 am owl is trimmed');
+  // Only the busiest few sing (plus a rare visitor's flourish); never the owl or the note-less junco.
+  assert.ok(!a.singers.includes('owl') && !a.singers.includes('junco'));
+  assert.ok(a.singers.filter((s) => s !== 'veery').length <= 4);
+  // One key: every note but the flourish is in the day's pentatonic, on a real key of its bird.
+  const P = a.mood === 'bright' ? [0, 2, 4, 7, 9] : [0, 3, 5, 7, 10];
   for (const n of a.notes) {
-    assert.ok(P.includes(((n.m - a.tonic) % 12 + 12) % 12), 'in key: ' + n.m);
+    if (!n.flourish) assert.ok(P.includes(((n.m - a.tonic) % 12 + 12) % 12), 'in key: ' + n.m);
     assert.equal(board.keys[n.key][n.idx].sci, n.sci, 'the note is that bird\'s');
     assert.equal(n.t * 2, Math.round(n.t * 2), 'on the eighth-note grid');
-    assert.ok(n.d >= 0.5 && n.d <= 2);
   }
   for (let i = 1; i < a.notes.length; i++) assert.ok(a.notes[i].t >= a.notes[i - 1].t + a.notes[i - 1].d - 1e-9, 'no overlaps');
-  // Three sections, the lull in the middle, and the lull is the quiet part.
-  assert.deepEqual(a.sections.map((s) => s.name), ['dawn', 'midday lull', 'evening']);
-  const inSec = (s) => a.notes.filter((n) => n.t >= s.t && n.t < s.end).length / (s.end - s.t);
-  assert.ok(inSec(a.sections[1]) < inSec(a.sections[0]) && inSec(a.sections[1]) < inSec(a.sections[2]), 'the lull rests');
-  // Birds sing when they called: dawn is robin and cardinal, the lull is the titmouse.
-  const who = (s) => new Set(a.notes.filter((n) => n.t >= s.t && n.t < s.end).map((n) => n.sci));
-  assert.ok(who(a.sections[0]).has('robin') && who(a.sections[0]).has('cardinal'));
-  assert.ok(!who(a.sections[0]).has('wren'), 'the wren only called in the evening');
-  assert.deepEqual([...who(a.sections[1])], ['titmouse']);
-  assert.ok(who(a.sections[2]).has('wren'));
+  // The shape: morning, a midday lull that rests, evening.
+  assert.deepEqual(a.sections.map((s) => s.name), ['morning', 'midday lull', 'evening']);
+  const dens = (s) => a.notes.filter((n) => n.t >= s.t && n.t < s.end && !n.flourish).length / (s.end - s.t);
+  assert.ok(dens(a.sections[1]) < dens(a.sections[0]) && dens(a.sections[1]) < dens(a.sections[2]), 'the lull rests');
+  // The rare veery gets its flourish: three quick notes, going up.
+  assert.equal(a.rare.length, 1); assert.equal(a.rare[0].sci, 'veery');
+  const fl = a.notes.filter((n) => n.flourish);
+  assert.equal(fl.length, 3);
+  assert.ok(fl[0].m <= fl[1].m && fl[1].m <= fl[2].m);
+  // It ends on the home note, held.
+  const end = a.notes[a.notes.length - 1];
+  assert.equal(((end.m - a.tonic) % 12 + 12) % 12, 0);
+  assert.equal(end.d, 2);
+});
+
+test('daySong: the day\'s facts set its mood and speed', () => {
+  const board = fakeBoard(), busy = fakeDay();
+  // A thin day: two birds, a handful of calls.
+  const thin = { date: '2026-05-11', interval: 5, species: [
+    { sci: 'robin', com: 'robin', n: 6, slots: [[80, 2], [120, 2], [200, 2]], prev30: 20 },
+    { sci: 'cardinal', com: 'cardinal', n: 3, slots: [[90, 1], [150, 1], [210, 1]], prev30: 20 }] };
+  const A = S.daySong(busy, board), B = S.daySong(thin, board);
+  assert.equal(A.mood, 'bright');
+  assert.equal(B.mood, 'gentle');
+  assert.ok(A.bpm > B.bpm, A.bpm + ' > ' + B.bpm);
+  assert.ok(B.notes.length > 0 && B.notes.length < A.notes.length);
+  // Another date with the same calls keeps the shape but not the same hook.
+  const C = S.daySong(fakeDay('2026-05-12'), board);
+  assert.equal(C.mood, A.mood); assert.equal(C.bpm, A.bpm);
 });
 
 test('daySong: an empty or note-less day gives no tune', () => {
