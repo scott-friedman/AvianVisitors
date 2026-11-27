@@ -40,6 +40,7 @@
 
 import { frameMirrorInfo, frameMirrorPng, frameConfirmed } from './panel-mirror.js';
 import puppeteer from '@cloudflare/puppeteer';
+import { dayShape, daysFromRows } from './day-shape.js';
 import { nightPlan, nightKey, moonPhase, starReason, rankCallers, NIGHT_DEFAULTS, STAR } from './night.js';
 
 const CORS = {
@@ -1461,7 +1462,7 @@ async function wiki(url) {
 // staleness is bounded by the bucket (≤5 min) and a new detection busts it
 // instantly. species/frame-config stay uncached (rare / must-be-fresh).
 const POLL_CACHE = new Map(); // key → { ver, bucket, status, body }
-const POLL_CACHE_ACTIONS = new Set(['recent', 'stats', 'lifelist', 'timeseries', 'firstseen', 'hourly', 'facts', 'rhythm', 'chorus']);
+const POLL_CACHE_ACTIONS = new Set(['recent', 'stats', 'lifelist', 'timeseries', 'firstseen', 'hourly', 'facts', 'rhythm', 'chorus', 'day-songs']);
 const POLL_CACHE_BUCKET_MS = 5 * 60 * 1000;
 const POLL_CACHE_MAX = 200; // bound ?hours=/?days= key variants; FIFO-evict beyond
 
@@ -1482,6 +1483,7 @@ const POLL_CACHE_PARAMS = {
   hourly:     [['hours', 24, 1, 1000000]],
   rhythm:     [['days', 14, 1, 90], ['top', 12, 1, 40]],
   chorus:     [['hours', 12, 1, 48], ['interval', 30, 10, 120], ['top', 24, 1, 60]],
+  'day-songs': [['days', 7, 1, 42]],
 };
 function pollKey(action, url) {
   const parts = (POLL_CACHE_PARAMS[action] || [])
@@ -1497,7 +1499,7 @@ async function queryApi(request, env, url) {
   // action-less default to 'recent' is the PHP-shim contract — but only for
   // birdnet-api.php / the bare /api root; an unknown path is a real 404 (it
   // used to silently serve `recent`, masking typos from monitors and probes).
-  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config', 'chorus', 'day'];
+  const known = ['recent', 'stats', 'lifelist', 'timeseries', 'species', 'firstseen', 'hourly', 'rhythm', 'facts', 'frame-config', 'chorus', 'day', 'day-songs'];
   const seg = url.pathname.replace(/\/+$/, '').split('/').pop() || '';
   let action = url.searchParams.get('action');
   if (!action) {
@@ -1520,6 +1522,7 @@ async function queryApi(request, env, url) {
       case 'rhythm': return rhythm(env, url, tz, now);
       case 'chorus': return chorus(env, url, tz, now);
       case 'day': return day(env, url, tz, now);
+      case 'day-songs': return daySongs(env, url, now);
       case 'species': return species(env, url, tz);
       case 'firstseen': return firstseen(env, url, tz);
       case 'frame-config': return getFrameWindow(env).then((h) => json({ window_hours: h }));
@@ -2134,7 +2137,7 @@ async function day(env, url, tz, now) {
   const { results } = await env.DB.prepare(
     `SELECT CAST((ts - ?) / ? AS INT) AS slot, sci, com, COUNT(*) AS n
        FROM detections INDEXED BY idx_detections_ts
-      WHERE ts >= ? AND ts < ?
+      WHERE ts >= ? AND ts < ? AND ${NOT_MOJO}
       GROUP BY slot, sci
       ORDER BY slot`
   ).bind(b.start, iv, b.start, b.end).all();
@@ -2178,6 +2181,33 @@ async function day(env, url, tz, now) {
     first_slot: first, last_slot: last, species, days,
     as_of: new Date().toISOString(),
   }, 200, b.end <= now ? { 'Cache-Control': 'public, max-age=3600' } : {});
+}
+
+// The last ?days local days (default 7, at most 42, today first), each as the
+// shape its day song's picture is drawn from (src/day-shape.js): how busy each
+// eighth of the day was, who led it, the lull, the mood, a rare visitor. Fetched
+// on every page load by the "today's song" button, so it sits in the poll cache.
+// One windowed query on the ts index, reaching back 30 days before the oldest
+// day for the rare-visitor test. Mojo is shown, never counted: not here either.
+async function daySongs(env, url, now) {
+  const n = clampInt(url.searchParams.get('days'), 7, 1, 42);
+  const days = [];
+  for (let i = 0; i < n; i++) {
+    const date = localIsoDate(env, now - i * 86400);
+    if (days.length && days[days.length - 1].date === date) continue;   // a 25-hour day
+    const b = localDayBounds(env, date);
+    if (b) days.push({ date, start: b.start, end: b.end });
+  }
+  if (!days.length) return json({ days: [] });
+  const origin = days[days.length - 1].start - 30 * 86400;
+  const { results } = await env.DB.prepare(
+    `SELECT CAST((ts - ?) / 300 AS INT) AS b, sci, MIN(com) AS com, COUNT(*) AS n
+       FROM detections INDEXED BY idx_detections_ts
+      WHERE ts >= ? AND ts < ? AND ${NOT_MOJO}
+      GROUP BY b, sci`
+  ).bind(origin, origin, days[0].end).all();
+  const shapes = daysFromRows(results || [], days, origin).map(dayShape);
+  return json({ days: shapes, as_of: new Date().toISOString() });
 }
 
 async function chorus(env, url, tz, now) {
