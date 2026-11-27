@@ -112,7 +112,7 @@
     };
   }
 
-  var state = { inited: false, visible: false, failed: false, depth: 0 };
+  var state = { inited: false, visible: false, bg: false, failed: false, depth: 0 };   // bg: a day song started from another page
 
   // ---------------------------------------------------------------- audio ----
   var ctx = null, master = null, voices = [];
@@ -139,7 +139,7 @@
   // to be the END of the tap. Resume on every kind of gesture, cheaply.
   ['pointerup', 'touchend', 'click', 'keydown'].forEach(function (ev) {
     document.addEventListener(ev, function () {
-      if (ctx && ctx.state !== 'running' && state.visible) { try { ctx.resume(); } catch (e) {} }
+      if (ctx && ctx.state !== 'running' && (state.visible || state.bg)) { try { ctx.resume(); } catch (e) {} }
     }, { passive: true, capture: true });
   });
 
@@ -431,7 +431,7 @@
     if (front) queue.unshift(task); else queue.push(task);
   }
   function pump() {
-    while (state.visible && active < NET_PAR && queue.length) runTask(queue.shift());
+    while ((state.visible || state.bg) && active < NET_PAR && queue.length) runTask(queue.shift());
     renderStatus();
   }
   function runTask(task) {
@@ -447,7 +447,7 @@
       // The last clip is in: show the finished board now, not a beat later.
       if (!queue.length && !active) {
         if (dirtyT) rebuild();
-        listenDeeper();
+        if (state.visible) listenDeeper();     // the deeper listen only while the play tab is open
       }
       pump();
     });
@@ -549,6 +549,7 @@
     renderPads();
     refitAll();
     renderStatus();
+    if (dayState.autoplay) tryAutoplay();
   }
   function shownIdx(k) {
     var arr = cur.keys[k];
@@ -1067,6 +1068,7 @@
     if (ks.length) centerOn(ks[ks.length >> 1]);
     tick();
     play.timer = setInterval(tick, 50);
+    if (song.id === 'day') { litK = -2; renderDays(); renderCard(); }
     cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(frame);
   }
@@ -1083,6 +1085,7 @@
     // The keys go back to showing their own birds.
     var was = turn; turn = {};
     Object.keys(was).forEach(function (k) { updateKey(+k); });
+    if (song.id === 'day') dayStopped();
   }
   function toggleSong() { if (play) stopSong(); else startSong(); }
   function tick() {
@@ -1123,10 +1126,12 @@
       var ev = visuals.shift();
       showOnKey(ev.key, ev.note);
       flashKey(ev.key, ev.ms);
+      if (song.id === 'day' && ev.note) glowOnCollage(ev.note.sci, ev.ms);
       var rn = rollEl.querySelector('.rn[data-i="' + ev.i + '"]');
       if (rn) { rn.classList.add('on'); (function (el, ms) { setTimeout(function () { el.classList.remove('on'); }, clamp(ms, 120, 900)); })(rn, ev.ms); }
       if (now - lastNowAt > 0.14 || !visuals.length) { lastNowAt = now; showNow(ev.key, ev.note); }
     }
+    dayFrame(now);
     var inner = rollEl.firstChild, head = inner && inner.querySelector ? inner.querySelector('.roll-head') : null;
     if (head) {
       var beats = Math.max(song.beats, 0.5), beat = (now - play.t0) / play.spb;
@@ -1220,6 +1225,7 @@
       }
     }
     if (statusEl.innerHTML !== html) statusEl.innerHTML = html;
+    if (dayState.autoplay) renderCard();
   }
   statusEl.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('button');
@@ -1271,12 +1277,15 @@
         if (!dayState.days.some(function (x) { return x.date === want; })) dayState.days.unshift({ date: want, n: d.total });
         dayState.data = d; dayState.loading = false;
         buildDayPick();
-        if (song.id === 'day') { stopSong(); refitSong(); if (dayState.song && dayState.song.notes.length) { setTempo(dayState.song.bpm); renderDaySum(); } }
+        if (song.id === 'day') { if (!dayState.autoplay) stopSong(); refitSong(); if (dayState.song && dayState.song.notes.length) { setTempo(dayState.song.bpm); renderDaySum(); } }
+        renderDays();
+        tryAutoplay();
       })
       .catch(function () {
         if (dayState.date !== want) return;
         dayState.loading = false; dayState.failed = true;
         if (song.id === 'day') { renderRoll(); renderDaySum(); }
+        tryAutoplay();
       });
   }
   // One line on the day: when it woke and went quiet, how much was heard,
@@ -1305,8 +1314,267 @@
       andList(ds.singers.filter(function (s) { return ds.notes.some(function (n) { return n.sci === s && !n.flourish; }); }).map(nameOf)) + '.';
     if (ds.rare.length) { var rn = nameOf(ds.rare[0].sci); txt += ' Listen for the little flourish: ' + (/^[aeiou]/i.test(rn) ? 'an ' : 'a ') + rn + ', rare here.'; }
     daySum.textContent = txt;
+    if (lineEl && dayState.date === shownDate()) lineEl.textContent = cap(shortDay(dayState.date)) + (dayState.date === todayIso() ? ', so far' : '') + ': ' + txt.replace(/^The day in/, 'its song lasts');
   }
-  dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); } dayPick.blur(); });
+  dayPick.addEventListener('change', function () { if (dayPick.value) { stopSong(); loadDay(dayPick.value); renderDays(); } dayPick.blur(); });
+
+  // ------------------------------------------------------ the day songs ----
+  // Every day writes its own song (daySong above), and each day is drawn as a
+  // feather grown from that day (day-feather.js, from GET /api/day-songs). Two
+  // ways in, both one tap (Scott, 2026-11-27):
+  //   - on the play tab, a strip of the last seven days: tap one and it plays;
+  //     the day you hear is drawn large and lights up as its song moves through
+  //     the day; "the whole month" opens five weeks of them;
+  //   - on every other page, today's song sits in the top bar showing off its
+  //     feather; hover for what made it, tap and it plays over whatever you are
+  //     looking at (the birds singing glow on the collage).
+  // The words say "song", never "feather" (his ask): the feather is its picture.
+  var F = window.AvianFeather;
+  var shapes = { list: [], by: {}, n: 0, loading: null, at: 0 };
+  var daysEl = $('playDays'), weekEl = $('pdWeek'), bigEl = $('pdBig'), lineEl = $('pdLine');
+  var pdBar = $('pdBar'), moreBtn = $('pdMore'), monthEl = $('pdMonth');
+  var pill = $('songPill'), pillBtn = $('songPillBtn'), pillArt = $('songPillArt'), pillTitle = $('songPillTitle'), pillSub = $('songPillSub');
+  var card = $('songCard'), cardArt = $('songCardArt'), cardT = $('songCardT'), cardS = $('songCardS');
+  var cardPlay = $('songCardPlay'), cardBar = $('songCardBar'), cardNow = $('songCardNow'), cardHint = $('songCardHint');
+  var litK = -2, autoT = 0;
+
+  function todayIso() { return isoOf(new Date()); }
+  function yestIso() { return isoOf(new Date(Date.now() - 86400000)); }
+  function shortDay(iso) {
+    if (iso === todayIso()) return 'today';
+    if (iso === yestIso()) return 'yesterday';
+    return new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+  }
+  function longDay(iso) {
+    return new Date(iso + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' });
+  }
+  function clockMin(m) {
+    var h = Math.floor(m / 60) % 24, mm = m % 60;
+    return ((h % 12) || 12) + ':' + (mm < 10 ? '0' : '') + mm + (h < 12 ? ' am' : ' pm');
+  }
+  // Today's drawing is still growing: its length follows how much of a usual
+  // (ten-hour) day has been heard so far.
+  function growOf(sh) { return sh.date === todayIso() && sh.from != null ? clamp((sh.to - sh.from) / 600, 0.35, 1) : 1; }
+  function featherHtml(sh, cls) {
+    return F.draw(sh, { hue: APP.hue, cls: cls, grow: growOf(sh), label: shortDay(sh.date) + '’s song' });
+  }
+  function loadShapes(n) {
+    if (shapes.loading && shapes.n >= n) return shapes.loading;
+    shapes.n = Math.max(n, shapes.n);
+    shapes.loading = fetch(API + '/api/day-songs?days=' + shapes.n)
+      .then(function (r) { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+      .then(function (j) {
+        shapes.list = j.days || []; shapes.by = {}; shapes.at = Date.now();
+        shapes.list.forEach(function (d) { shapes.by[d.date] = d; });
+        renderDays(); renderPill();
+      })
+      .catch(function () {})
+      .then(function () { shapes.loading = null; });
+    return shapes.loading;
+  }
+  // The day the play tab shows before anything is tapped: the day song that
+  // is selected, else yesterday (today is still being written), else the
+  // newest day with calls.
+  function shownDate() {
+    if (song.id === 'day' && dayState.date) return dayState.date;
+    var y = shapes.by[yestIso()];
+    if (y && y.calls) return y.date;
+    for (var i = 0; i < shapes.list.length; i++) if (shapes.list[i].calls) return shapes.list[i].date;
+    return null;
+  }
+  function playingDay() { return play && song.id === 'day' ? dayState.date : null; }
+
+  function renderDays() {
+    if (!daysEl || !F) return;
+    if (!shapes.list.length) { daysEl.hidden = true; return; }
+    daysEl.hidden = false;
+    var sel = shownDate(), on = playingDay(), html = '';
+    shapes.list.slice(0, 7).reverse().forEach(function (d) {
+      var quiet = !d.calls;
+      html += '<button type="button" class="pd-day' + (d.date === sel ? ' sel' : '') + (d.date === on ? ' on' : '') + '" data-date="' + esc(d.date) + '"' +
+        (quiet ? ' disabled' : '') + ' aria-label="' + esc(longDay(d.date) + (quiet ? ', nothing heard' : ': play its song')) + '">' +
+        '<b>' + esc(shortDay(d.date) === 'yesterday' ? 'yest.' : shortDay(d.date)) + (d.date === todayIso() ? '<i> so far</i>' : '') + '</b>' +
+        featherHtml(d, 'small') +
+        '<small>' + (quiet ? 'quiet' : d.calls.toLocaleString('en-US') + ' calls') + '</small></button>';
+    });
+    weekEl.innerHTML = html;
+    weekEl.scrollLeft = weekEl.scrollWidth;      // a phone scrolls the strip: start on the newest days
+    var sh = sel && shapes.by[sel];
+    bigEl.innerHTML = sh ? '<div class="pd-big-in" data-date="' + esc(sh.date) + '">' + featherHtml(sh, 'big') + '</div>' : '';
+    if (!(song.id === 'day' && dayState.date === sel && dayState.data)) lineEl.textContent = sh ? shapeLine(sh) : '';
+    if (!monthEl.hidden) renderMonth();
+    if (on) { litK = -2; }
+  }
+  // One line on a day from its shape alone (before its calls are loaded).
+  function shapeLine(sh) {
+    if (!sh.calls) return longDay(sh.date) + ': nothing was heard.';
+    var who = [];
+    sh.lead.forEach(function (s) { if (s && who.indexOf(s) < 0) who.push(s); });
+    return cap(shortDay(sh.date)) + (shortDay(sh.date) === 'today' || shortDay(sh.date) === 'yesterday' ? ' (' + longDay(sh.date) + ')' : ', ' + longDay(sh.date).replace(/^\w+, /, '')) + ': ' +
+      (sh.mood === 'bright' ? 'a lively day' : 'a quiet day') + ', ' + sh.calls.toLocaleString('en-US') + ' calls from ' + plural(sh.kinds, 'kind') + ' of bird' +
+      (sh.from != null ? ', ' + clockMin(sh.from) + ' to ' + clockMin(sh.to) : '') + '. Led by ' + andList(who.slice(0, 3).map(function (s) { return (sh.names && sh.names[s]) || nameOf(s); })) + '. Tap to hear it.';
+  }
+  function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+  function renderMonth() {
+    var html = '';
+    shapes.list.forEach(function (d) {
+      var quiet = !d.calls;
+      html += '<button type="button" class="pd-m' + (d.date === shownDate() ? ' sel' : '') + '" data-date="' + esc(d.date) + '"' + (quiet ? ' disabled' : '') +
+        ' aria-label="' + esc(longDay(d.date)) + '">' + featherHtml(d, 'small') +
+        '<small>' + esc(d.date === todayIso() ? 'today' : d.date === yestIso() ? 'yest.' : new Date(d.date + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })) + '</small></button>';
+    });
+    monthEl.innerHTML = '<p class="play-help">Five weeks of songs, newest first. Darker, fuller ones were busier days. Tap any one to hear it.</p><div class="pd-grid">' + html + '</div>';
+  }
+
+  // Play a day's song: one tap, from the strip, the month or the top bar.
+  function playDay(date) {
+    if (!date) return;
+    audio();                                  // inside the tap, so the sound is allowed
+    if (playingDay() === date) { stopSong(); return; }
+    stopSong();
+    dayState.autoplay = date; dayState.autoAt = Date.now();
+    if (song.id !== 'day') {
+      dayState.date = date; dayState.data = null; dayState.loading = false;
+      songSel.value = 'day';
+      selectSong('day');
+    } else if (dayState.date !== date || (!dayState.data && !dayState.loading)) {
+      loadDay(date);
+    }
+    if (dayPick.querySelector('option[value="' + date + '"]')) dayPick.value = date;
+    renderDays(); renderCard();
+    tryAutoplay();
+  }
+  // Start the waiting day song once its calls are read and the birds have
+  // their notes. On a first visit that is the first listen through the
+  // recordings (a few seconds); after 8 s it starts with what it has.
+  function notesReady() {
+    if (!cur.list.length) return false;
+    return state.depth > 0 || (!queue.length && !active) || Date.now() - dayState.autoAt > 8000;
+  }
+  function tryAutoplay() {
+    clearTimeout(autoT);
+    var want = dayState.autoplay;
+    if (!want) return;
+    if (play || dayState.date !== want) { dayState.autoplay = null; return; }
+    if (dayState.failed || (dayState.data && !dayState.data.total)) { dayState.autoplay = null; renderCard(); return; }
+    if (!dayState.loading && dayState.data && notesReady()) {
+      refitSong();
+      if (song.fit && song.fit.notes.length && song.fit.rest !== song.fit.total) {
+        dayState.autoplay = null;
+        startSong();
+        return;
+      }
+    }
+    autoT = setTimeout(tryAutoplay, 700);
+    renderCard();
+  }
+
+  // Lights the part of the day that is playing, and moves the progress bars.
+  function dayFrame(now) {
+    if (!play || song.id !== 'day' || !F) return;
+    var beat = (now - play.t0) / play.spb, frac = clamp(beat / Math.max(song.beats, 1), 0, 1);
+    var k = beat < 0 ? -1 : Math.min(7, Math.floor(beat / 4));
+    if (k !== litK) { litK = k; F.light(document, dayState.date, k); renderCard(); }
+    if (pdBar) pdBar.style.width = (100 * frac).toFixed(1) + '%';
+    if (cardBar) cardBar.style.width = (100 * frac).toFixed(1) + '%';
+  }
+  function dayStopped() {
+    litK = -2;
+    if (F && dayState.date) F.light(document, dayState.date, -1);
+    if (pdBar) pdBar.style.width = '0';
+    if (cardBar) cardBar.style.width = '0';
+    document.querySelectorAll('.gtile.sings').forEach(function (el) { el.classList.remove('sings'); });
+    renderDays(); renderCard();
+  }
+  // The bird singing now glows on the collage behind.
+  function glowOnCollage(sci, ms) {
+    if (state.visible || !APP.view || APP.view() !== 0) return;
+    var el = document.querySelector('#v0 .gtile[data-sci="' + (window.CSS && CSS.escape ? CSS.escape(sci) : sci) + '"]');
+    if (!el) return;
+    el.classList.add('sings');
+    clearTimeout(el._singT);
+    el._singT = setTimeout(function () { el.classList.remove('sings'); }, clamp(ms, 250, 1200));
+  }
+
+  // ---- the top bar: today's song, showing off ----
+  function pillShape() {
+    var t = shapes.by[todayIso()];
+    if (t && t.calls) return t;
+    var y = shapes.by[yestIso()];
+    return y && y.calls ? y : null;
+  }
+  function renderPill() {
+    if (!pill || !F) return;
+    var sh = pillShape();
+    if (!sh) { pill.hidden = true; return; }
+    var today = sh.date === todayIso();
+    pill.hidden = state.visible;
+    pill.setAttribute('data-date', sh.date);
+    pillArt.innerHTML = featherHtml(sh, 'pill');
+    pillArt.setAttribute('data-date', sh.date);
+    pillTitle.textContent = today ? 'today’s song' : 'yesterday’s song';
+    pillSub.textContent = (today ? 'still growing · ' : '') + sh.calls.toLocaleString('en-US') + ' calls';
+    pillBtn.setAttribute('aria-label', (playingDay() === sh.date ? 'stop ' : 'play ') + (today ? 'today’s song' : 'yesterday’s song'));
+    cardArt.innerHTML = '<div data-date="' + esc(sh.date) + '">' + featherHtml(sh, 'card') + '</div>';
+    var who = [];
+    sh.lead.forEach(function (s) { if (s && who.indexOf(s) < 0) who.push(s); });
+    cardT.textContent = today ? 'Today’s song, so far' : 'Yesterday’s song';
+    cardS.textContent = 'Grown from ' + sh.calls.toLocaleString('en-US') + ' calls by ' + plural(sh.kinds, 'kind') + ' of bird' +
+      (sh.from != null ? (today ? ' since ' + clockMin(sh.from) : ', ' + clockMin(sh.from) + ' to ' + clockMin(sh.to)) : '') + '. ' +
+      'Its colours are the birds that led each part of the day: ' + andList(who.slice(0, 4).map(function (s) { return (sh.names && sh.names[s]) || s; })) + '.' +
+      (sh.rare ? ' The eye-spot is ' + (/^[aeiou]/i.test(sh.rare.com || '') ? 'an ' : 'a ') + (sh.rare.com || sh.rare.sci) + ', rare here.' : '') +
+      (today ? ' It keeps growing until the yard goes quiet.' : '');
+    renderCard();
+  }
+  // The card under the button: what made the song, or, once tapped, how it is
+  // getting on (gathering the birds' notes, then playing).
+  function renderCard() {
+    if (!pill || pill.hidden) return;
+    var date = pill.getAttribute('data-date');
+    var mine = dayState.date === date && song.id === 'day';
+    var waiting = mine && dayState.autoplay === date;
+    var playing = playingDay() === date;
+    pill.classList.toggle('on', playing || waiting);
+    $('songPillGo').textContent = playing || waiting ? '■' : '▶';
+    card.classList.toggle('open', playing || waiting);
+    cardPlay.hidden = !(playing || waiting);
+    cardHint.hidden = playing || waiting;
+    if (waiting) {
+      cardNow.textContent = dayState.loading || !dayState.data ? 'reading the day’s calls…' :
+        'gathering the birds’ notes' + (stats.want ? ': ' + stats.done + ' of ' + stats.want : '…');
+    } else if (playing) {
+      var secs = dayState.song ? Math.round(dayState.song.beats * 60 / bpm) : 0;
+      cardNow.textContent = 'playing' + (secs ? ' · ' + secs + ' seconds' : '') + (litK >= 0 ? ' · ' + ['first light', 'early morning', 'morning', 'late morning', 'midday', 'afternoon', 'late afternoon', 'evening'][litK] : '');
+    }
+  }
+  if (pillBtn) pillBtn.addEventListener('click', function () {
+    var date = pill.getAttribute('data-date');
+    if (playingDay() === date || dayState.autoplay === date) { dayState.autoplay = null; clearTimeout(autoT); stopSong(); renderCard(); return; }
+    state.bg = true;
+    if (!state.inited) init();
+    pump();
+    playDay(date);
+  });
+  if ($('songCardOpen')) $('songCardOpen').addEventListener('click', function () { if (APP.go) APP.go(4); });
+
+  if (weekEl) weekEl.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.pd-day');
+    if (b && !b.disabled) playDay(b.getAttribute('data-date'));
+  });
+  if (monthEl) monthEl.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.pd-m');
+    if (b && !b.disabled) playDay(b.getAttribute('data-date'));
+  });
+  if (bigEl) bigEl.addEventListener('click', function () { var d = shownDate(); if (d) playDay(d); });
+  if (moreBtn) moreBtn.addEventListener('click', function () {
+    var open = monthEl.hidden;
+    monthEl.hidden = !open;
+    moreBtn.textContent = open ? 'hide the month' : 'the whole month';
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { renderMonth(); if (shapes.n < 35) loadShapes(35); }
+  });
+  // Today's song keeps growing: look again every ten minutes while the page is open.
+  setInterval(function () { if (!document.hidden && Date.now() - shapes.at > 9 * 60000) loadShapes(shapes.n || 7); }, 60000);
 
   // ------------------------------------------------------------ lifecycle ----
   function init() {
@@ -1327,15 +1595,23 @@
   }
   function show() {
     state.visible = true;
+    if (pill) pill.hidden = true;
     if (!state.inited) init();
     requestAnimationFrame(layoutKeyboard);
+    renderDays();
+    if (!queue.length && !active && order.length && state.depth === 0) listenDeeper();
     pump();
   }
   function hide() {
     state.visible = false;
+    // A day song carries on over the other pages (the top bar shows it playing);
+    // anything else stops when the play tab is left.
+    if ((play && song.id === 'day') || dayState.autoplay) { state.bg = true; stopVoicesNotSong(); renderPill(); return; }
     stopEverything();
     APP.audioRelease(stopEverything);
+    renderPill();
   }
+  function stopVoicesNotSong() { Object.keys(held).forEach(function (c) { keyUp(c); }); }
   var resizeT = 0;
   window.addEventListener('resize', function () {
     if (!state.inited) return;
@@ -1346,6 +1622,7 @@
     if (document.hidden && state.inited) { stopSong(); stopVoices(); }
   });
 
-  window.AvianPlay = { show: show, hide: hide };
+  window.AvianPlay = { show: show, hide: hide, playDay: playDay };
+  if (F) loadShapes(7);
   if (APP.view && APP.view() === 4) show();     // arrived by the #play link
 })();

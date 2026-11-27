@@ -25,13 +25,15 @@ mkdir -p "$TMP/assets"
 # view is three more files: sampler-core.js (note-finding engine — the page
 # ALSO starts it as a Web Worker, from the same ?v=-stamped URL as its
 # <script> tag, so page and worker can never run different versions),
-# songbook.js (the tunes) and instrument.js (the view).
+# songbook.js (the tunes) and instrument.js (the view); day-feather.js draws
+# each day's song as a feather (the play tab's days + today's song in the top bar).
 cp "$ROOT"/avian/frontend/index.html \
    "$ROOT"/avian/frontend/apt.js \
    "$ROOT"/avian/frontend/spectral-core.js \
    "$ROOT"/avian/frontend/sampler-core.js \
    "$ROOT"/avian/frontend/songbook.js \
    "$ROOT"/avian/frontend/instrument.js \
+   "$ROOT"/avian/frontend/day-feather.js \
    "$ROOT"/avian/frontend/night.js \
    "$ROOT"/avian/frontend/owls.html \
    "$ROOT"/avian/frontend/config.js \
@@ -79,7 +81,7 @@ fi
 # content-hashed URLs instead: a changed file gets a new cache key instantly;
 # unchanged files keep their warm cache. (HTML itself is not edge-cached long:
 # must-revalidate at the origin, 5-min TTL on the proxy.)
-for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js night.js config.js styles.css favicon.png; do
+for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js day-feather.js night.js config.js styles.css favicon.png; do
   h="$( (md5 -q "$TMP/$f" 2>/dev/null || md5sum "$TMP/$f" | awk '{print $1}') | cut -c1-8)"
   perl -pi -e "s#\./\Q$f\E\"#./$f?v=$h\"#g" "$TMP/index.html"
   grep -q "$f?v=$h" "$TMP/index.html" || {

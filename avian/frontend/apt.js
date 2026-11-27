@@ -3780,6 +3780,7 @@
     api: AV_API, esc: esc, slugify: slugify, img: avImg, hue: chorusHue,
     readLS: readLS, writeLS: writeLS, syncPill: syncPill, wireToggleAdvance: wireToggleAdvance,
     audioClaim: audioClaim, audioRelease: audioRelease,
-    view: function () { return currentView; }
+    view: function () { return currentView; },
+    go: function (i) { go(i); }
   };
 })();

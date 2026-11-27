@@ -28,6 +28,7 @@ cat > "$FIX/avian/frontend/index.html" <<'HTML'
 <script src="./apt.js"></script>
 <script src="./sampler-core.js"></script>
 <script src="./songbook.js"></script>
+<script src="./day-feather.js"></script>
 <script src="./instrument.js"></script>
 <script src="./night.js"></script>
 HTML
@@ -36,6 +37,7 @@ echo 'var core=1;' > "$FIX/avian/frontend/spectral-core.js"
 echo 'var sampler=1;' > "$FIX/avian/frontend/sampler-core.js"
 echo 'var book=1;'    > "$FIX/avian/frontend/songbook.js"
 echo 'var play=1;'    > "$FIX/avian/frontend/instrument.js"
+echo 'var fth=1;'     > "$FIX/avian/frontend/day-feather.js"
 echo 'var night=1;'   > "$FIX/avian/frontend/night.js"
 echo '<p>owls</p>'    > "$FIX/avian/frontend/owls.html"
 echo 'var cfg=1;'  > "$FIX/avian/frontend/config.js"
@@ -57,11 +59,11 @@ AVIAN_ROOT="$FIX" bash "$BUILD" "$OUT" > "$WORK/build.log" \
   || fail "build-site.sh exited nonzero on the happy path: $(cat "$WORK/build.log")"
 
 # 1. every shell asset reference in index.html is ?v=<8-hex> stamped
-for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js night.js config.js styles.css favicon.png; do
+for f in apt.js spectral-core.js sampler-core.js songbook.js instrument.js day-feather.js night.js config.js styles.css favicon.png; do
   grep -Eq "\./$f\?v=[0-9a-f]{8}\"" "$OUT/index.html" \
     || fail "index.html reference to $f is not content-hash stamped"
 done
-ok "index.html stamps all nine shell assets"
+ok "index.html stamps all ten shell assets"
 grep -q '"\./apt\.js"' "$OUT/index.html" && fail "bare ./apt.js reference survived"
 ok "no bare shell-asset references survive"
 
@@ -84,7 +86,7 @@ ok "apt.js stamped with the post-rewrite json hash"
 # 3b. the play view's engine is shipped, and stamped: instrument.js starts its
 #     Web Worker from that <script> tag's URL, so a bare reference would pin
 #     the worker to a day-old cached engine while the page ran the new one.
-for f in sampler-core.js songbook.js instrument.js; do
+for f in sampler-core.js songbook.js instrument.js day-feather.js; do
   [ -f "$OUT/$f" ] || fail "$f was not copied into the site"
 done
 ok "play view files shipped"

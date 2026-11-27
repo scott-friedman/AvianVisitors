@@ -21,7 +21,7 @@
   html.frame, html.frame body { background: #fff !important; }
   html.frame { --paper: #fff; --paper-2: #fff; --paper-3: #fff; }
   /* Strip interactive chrome; the frame is just the collage. */
-  html.frame .top, html.frame .slider, html.frame #menu-dd,
+  html.frame .top, html.frame .slider, html.frame .song-pill, html.frame #menu-dd,
   html.frame .static-head,
   html.frame #detail-modal, html.frame #about-modal, html.frame #frameZoom { display: none !important; }
   /* Pin to the collage view and let it fill the panel (no slider gutter). */
@@ -40,6 +40,19 @@
     <button data-h="24"  type="button" aria-current="true">24H</button>
     <button data-h="168" type="button">7D</button>
     <button data-h="1000000" type="button">ALL</button>
+  </div>
+  <!-- Today's song, showing off the feather its day grew (instrument.js +
+       day-feather.js). Hover for what made it; tap and it plays over whatever
+       page you are on. Hidden on the play tab, which has its own strip of days. -->
+  <div class="song-pill" id="songPill" hidden>
+    <button type="button" class="sp-btn" id="songPillBtn"><span class="sp-art" id="songPillArt"></span><span class="sp-t"><b id="songPillTitle">today’s song</b><small id="songPillSub"></small></span><span class="sp-go" id="songPillGo" aria-hidden="true">▶</span></button>
+    <div class="song-card" id="songCard">
+      <div class="sc-art" id="songCardArt"></div>
+      <p class="sc-t" id="songCardT"></p>
+      <p class="sc-s" id="songCardS"></p>
+      <div class="sc-play" id="songCardPlay" hidden><i class="st-bar"><b id="songCardBar"></b></i><span class="sc-now" id="songCardNow" aria-live="polite"></span><button type="button" class="pn-btn" id="songCardOpen">open in play</button></div>
+      <span class="sc-hint" id="songCardHint">tap to hear the day it grew from</span>
+    </div>
   </div>
   <button class="menu-btn" id="menuBtn">menu</button>
 </header>
@@ -234,6 +247,17 @@
           <div class="play-status" id="playStatus" aria-live="polite"></div>
         </div>
 
+        <!-- The day songs: every day writes its own song, drawn as a feather
+             grown from that day. Tap a day and it plays. -->
+        <section class="play-panel play-days" id="playDays" aria-label="Day songs" hidden>
+          <header class="play-head"><h3>the yard’s songs</h3><small>every day writes its own song from the birds it heard. tap a day to hear it.</small></header>
+          <div class="pd-week" id="pdWeek"></div>
+          <div class="pd-big" id="pdBig"></div>
+          <p class="pd-line" id="pdLine" aria-live="polite"></p>
+          <div class="pd-foot"><i class="st-bar pd-bar"><b id="pdBar"></b></i><button type="button" class="pd-more" id="pdMore" aria-expanded="false">the whole month</button></div>
+          <div class="pd-month" id="pdMonth" hidden></div>
+        </section>
+
         <div class="play-stage">
           <div class="play-now" id="playNow"></div>
           <div class="play-kb-row">
@@ -395,6 +419,7 @@
      instrument.js the view itself. All three wait for the view to be opened. -->
 <script src="./sampler-core.js"></script>
 <script src="./songbook.js"></script>
+<script src="./day-feather.js"></script>
 <script src="./instrument.js"></script>
 <!-- Night screens for the e-ink frame (?frame=1&night=…); inert otherwise. -->
 <script src="./night.js"></script>
